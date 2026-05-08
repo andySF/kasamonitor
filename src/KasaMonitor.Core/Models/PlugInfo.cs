@@ -1,4 +1,13 @@
 namespace KasaMonitor.Core.Models;
 
-// Stub: full model lands in Chunk 2 (Task 2.1).
-public sealed record PlugInfo;
+public sealed record PlugInfo(
+    string Mac,
+    string Alias,
+    string Model,
+    string HwVer,
+    string SwVer,
+    string OemId,
+    bool RelayOn,
+    int RssiDbm,
+    TimeSpan OnTime
+);

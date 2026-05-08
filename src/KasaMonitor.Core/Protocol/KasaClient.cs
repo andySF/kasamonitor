@@ -26,15 +26,15 @@ public sealed class KasaClient : IKasaClient
 
     public async Task<PlugInfo> GetSysInfoAsync(IPAddress ip, CancellationToken ct)
     {
-        // Chunk 2 will map SysInfoDto -> PlugInfo here.
         _ = await TcpQueryAsync<SysInfoDto>(ip, "{\"system\":{\"get_sysinfo\":{}}}", "system", "get_sysinfo", ct);
-        return new PlugInfo();
+        // TODO(Task 2.2): map dto to PlugInfo. Sentinel keeps Chunk-2 Task 2.1 compilable.
+        return new PlugInfo(string.Empty, string.Empty, string.Empty, string.Empty, string.Empty, string.Empty, false, 0, TimeSpan.Zero);
     }
 
     public async Task<EmeterReading> GetRealtimeAsync(IPAddress ip, CancellationToken ct)
     {
         _ = await TcpQueryAsync<EmeterRealtimeDto>(ip, "{\"emeter\":{\"get_realtime\":{}}}", "emeter", "get_realtime", ct);
-        return new EmeterReading();
+        return new EmeterReading(0, 0, 0, 0);
     }
 
     public async Task<IReadOnlyList<DailyKwh>> GetDayStatAsync(IPAddress ip, int year, int month, CancellationToken ct)

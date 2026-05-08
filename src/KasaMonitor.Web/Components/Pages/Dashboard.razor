@@ -1,0 +1,72 @@
+@page "/"
+@rendermode InteractiveServer
+@inject IPlugStateBroadcaster Broadcaster
+@implements IDisposable
+
+<PageTitle>KasaMonitor — Dashboard</PageTitle>
+
+<h1>Plugs</h1>
+
+@if (_states.Count == 0)
+{
+    <p><em>No plugs discovered yet — check broadcast network configuration and wait ~30s after startup.</em></p>
+}
+else
+{
+    <div class="plug-grid">
+        @foreach (var s in _states.Values.OrderBy(s => s.Alias))
+        {
+            <div class="plug-card @(s.IsOnline ? "online" : "offline")">
+                <h3>@s.Alias</h3>
+                <p class="status">@(s.IsOnline ? "ONLINE" : "OFFLINE")</p>
+                @if (s.LastReading is not null)
+                {
+                    <p>@((s.LastReading.PowerMw / 1000.0).ToString("0.0")) W</p>
+                    <p>@((s.LastReading.VoltageMv / 1000.0).ToString("0.0")) V · @s.LastReading.CurrentMa mA</p>
+                    <p>Total: @((s.LastReading.TotalWh / 1000.0).ToString("0.000")) kWh</p>
+                }
+                <p class="age">last sample @((_now - s.LastSampleUtc).TotalSeconds.ToString("0")) s ago</p>
+            </div>
+        }
+    </div>
+}
+
+<style>
+    .plug-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 1em; }
+    .plug-card { border: 1px solid #ddd; border-radius: 6px; padding: 1em; }
+    .plug-card.online { border-left: 4px solid #4c4; }
+    .plug-card.offline { border-left: 4px solid #a33; opacity: 0.6; }
+    .plug-card .status { font-weight: bold; }
+    .plug-card .age { color: #888; font-size: 0.85em; }
+</style>
+
+@code {
+    private Dictionary<Guid, PlugLiveState> _states = new();
+    private DateTimeOffset _now = DateTimeOffset.UtcNow;
+    private System.Threading.Timer? _refreshTimer;
+
+    protected override void OnInitialized()
+    {
+        _states = Broadcaster.Snapshot().ToDictionary(kv => kv.Key, kv => kv.Value);
+        Broadcaster.StateChanged += OnStateChanged;
+        _refreshTimer = new System.Threading.Timer(_ =>
+            InvokeAsync(() => { _now = DateTimeOffset.UtcNow; StateHasChanged(); }),
+            null, 1000, 1000);
+    }
+
+    private void OnStateChanged(PlugLiveState state)
+    {
+        InvokeAsync(() =>
+        {
+            _states[state.PlugId] = state;
+            _now = DateTimeOffset.UtcNow;
+            StateHasChanged();
+        });
+    }
+
+    public void Dispose()
+    {
+        Broadcaster.StateChanged -= OnStateChanged;
+        _refreshTimer?.Dispose();
+    }
+}

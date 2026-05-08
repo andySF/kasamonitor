@@ -189,8 +189,8 @@ namespace KasaMonitor.Data.Migrations
                     b.Property<int?>("Rssi")
                         .HasColumnType("INTEGER");
 
-                    b.Property<DateTimeOffset>("TimestampUtc")
-                        .HasColumnType("TEXT");
+                    b.Property<long>("TimestampUtc")
+                        .HasColumnType("INTEGER");
 
                     b.Property<long?>("TotalWh")
                         .HasColumnType("INTEGER");

@@ -22,34 +22,18 @@ public sealed class SampleRepository : ISampleRepository
         await _db.SaveChangesAsync(ct);
     }
 
-    public async Task<IReadOnlyList<Sample>> ListByPlugAsync(Guid plugId, DateTimeOffset fromUtc, DateTimeOffset toUtc, CancellationToken ct)
-    {
-        var entities = await _db.Samples
+    public async Task<IReadOnlyList<Sample>> ListByPlugAsync(Guid plugId, DateTimeOffset fromUtc, DateTimeOffset toUtc, CancellationToken ct) =>
+        await _db.Samples
             .AsNoTracking()
-            .Where(s => s.PlugId == plugId)
+            .Where(s => s.PlugId == plugId && s.TimestampUtc >= fromUtc && s.TimestampUtc <= toUtc)
+            .OrderBy(s => s.TimestampUtc)
+            .Select(s => Map(s))
             .ToListAsync(ct);
 
-        return entities
-            .Where(s => s.TimestampUtc >= fromUtc && s.TimestampUtc <= toUtc)
-            .OrderBy(s => s.TimestampUtc)
-            .Select(Map)
-            .ToList();
-    }
-
-    public async Task<int> DeleteOlderThanAsync(DateTimeOffset cutoffUtc, CancellationToken ct)
-    {
-        var allSamples = await _db.Samples.ToListAsync(ct);
-        var toDelete = allSamples
+    public async Task<int> DeleteOlderThanAsync(DateTimeOffset cutoffUtc, CancellationToken ct) =>
+        await _db.Samples
             .Where(s => s.TimestampUtc < cutoffUtc)
-            .ToList();
-
-        var count = toDelete.Count;
-        if (count == 0) return 0;
-
-        _db.Samples.RemoveRange(toDelete);
-        await _db.SaveChangesAsync(ct);
-        return count;
-    }
+            .ExecuteDeleteAsync(ct);
 
     private static SampleEntity MapToEntity(Sample s) => new()
     {

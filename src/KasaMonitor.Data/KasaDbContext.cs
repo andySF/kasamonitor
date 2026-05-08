@@ -1,5 +1,6 @@
 using KasaMonitor.Data.Entities;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 
 namespace KasaMonitor.Data;
 
@@ -24,11 +25,16 @@ public sealed class KasaDbContext : DbContext
             e.HasIndex(p => p.Mac).IsUnique();
         });
 
+        var dateTimeOffsetConverter = new ValueConverter<DateTimeOffset, long>(
+            v => v.UtcTicks,
+            v => new DateTimeOffset(v, TimeSpan.Zero));
+
         mb.Entity<SampleEntity>(e =>
         {
             e.ToTable("Samples");
             e.HasKey(s => s.Id);
             e.Property(s => s.Id).ValueGeneratedOnAdd();
+            e.Property(s => s.TimestampUtc).HasConversion(dateTimeOffsetConverter);
             e.HasIndex(s => new { s.PlugId, s.TimestampUtc })
                 .IsDescending(false, true)
                 .HasDatabaseName("idx_samples_plug_time");

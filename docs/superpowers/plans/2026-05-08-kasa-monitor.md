@@ -5135,3 +5135,430 @@ git commit -m "feat(deploy): add docker-compose.yml for QNAP/Portainer + deploym
 - [ ] Step 4 (optional, if Docker is available): `docker build -t kasamonitor:dev -f deploy/Dockerfile .` succeeds.
 
 ---
+
+## Chunk 7: UI completeness — NavMenu, Plugs, Settings, History pages
+
+Final UI chunk. Adds the three missing pages and a left-side navigation. History uses ApexCharts.Blazor (the spec's default chart lib).
+
+**Expected commit count:** 5. **Expected test count after Chunk 7:** 70 (UI is manually smoke-tested).
+
+### Task 7.1: NavMenu + MainLayout + Plugs page
+
+**Files:**
+- Create: `src/KasaMonitor.Web/Components/Layout/NavMenu.razor`
+- Modify: `src/KasaMonitor.Web/Components/Layout/MainLayout.razor`
+- Create: `src/KasaMonitor.Web/Components/Pages/Plugs.razor`
+
+`NavMenu.razor` — left sidebar with 4 links:
+
+```razor
+<nav class="nav-menu">
+    <NavLink href="/" Match="NavLinkMatch.All">Dashboard</NavLink>
+    <NavLink href="/history">History</NavLink>
+    <NavLink href="/plugs">Plugs</NavLink>
+    <NavLink href="/settings">Settings</NavLink>
+</nav>
+
+<style>
+.nav-menu { display: flex; gap: 1em; padding: 0.5em 1em; background: #f5f5f5; border-bottom: 1px solid #ddd; }
+.nav-menu a { text-decoration: none; color: #333; padding: 0.4em 0.8em; border-radius: 4px; }
+.nav-menu a:hover { background: #e8e8e8; }
+.nav-menu a.active { background: #4c4; color: white; }
+</style>
+```
+
+Update `MainLayout.razor` to include `<NavMenu />` above `@Body`:
+
+```razor
+@inherits LayoutComponentBase
+
+<NavMenu />
+<main style="padding: 1em;">
+    @Body
+</main>
+
+<div id="blazor-error-ui" data-nosnippet>
+    An unhandled error has occurred.
+    <a href="." class="reload">Reload</a>
+    <a class="dismiss">&#x2716;</a>
+</div>
+```
+
+`Plugs.razor` — list, rename alias, archive toggle:
+
+```razor
+@page "/plugs"
+@rendermode InteractiveServer
+@inject IServiceScopeFactory ScopeFactory
+@implements IDisposable
+
+<PageTitle>KasaMonitor — Plugs</PageTitle>
+<h1>Plugs</h1>
+
+@if (_plugs is null)
+{
+    <p><em>Loading…</em></p>
+}
+else if (_plugs.Count == 0)
+{
+    <p><em>No plugs in the database yet. Run discovery first.</em></p>
+}
+else
+{
+    <table class="plugs-table">
+        <thead>
+            <tr><th>Alias</th><th>MAC</th><th>IP</th><th>Model</th><th>SwVer</th><th>First seen</th><th>Last seen</th><th>Archived</th><th></th></tr>
+        </thead>
+        <tbody>
+            @foreach (var p in _plugs.OrderBy(p => p.Alias))
+            {
+                <tr class="@(p.IsArchived ? "archived" : "")">
+                    <td>
+                        @if (_editingId == p.Id)
+                        {
+                            <input @bind="_editAlias" />
+                            <button @onclick="() => SaveAlias(p.Id)">Save</button>
+                            <button @onclick="CancelEdit">Cancel</button>
+                        }
+                        else
+                        {
+                            <span>@p.Alias</span> @if (p.AliasIsCustom) { <small>(custom)</small> }
+                            <button @onclick="() => StartEdit(p)">Edit</button>
+                        }
+                    </td>
+                    <td><code>@p.Mac</code></td>
+                    <td>@p.IpAddress</td>
+                    <td>@p.Model</td>
+                    <td>@p.SwVer</td>
+                    <td>@p.FirstSeenUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm")</td>
+                    <td>@p.LastSeenUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm")</td>
+                    <td>
+                        <button @onclick="() => ToggleArchive(p)">@(p.IsArchived ? "Unarchive" : "Archive")</button>
+                    </td>
+                </tr>
+            }
+        </tbody>
+    </table>
+}
+
+<style>
+.plugs-table { width: 100%; border-collapse: collapse; }
+.plugs-table th, .plugs-table td { padding: 0.4em 0.6em; border-bottom: 1px solid #eee; text-align: left; }
+.plugs-table tr.archived { opacity: 0.5; }
+.plugs-table button { margin-left: 0.4em; }
+.plugs-table input { padding: 0.2em 0.4em; }
+</style>
+
+@code {
+    private List<Plug>? _plugs;
+    private Guid? _editingId;
+    private string _editAlias = "";
+    private System.Threading.Timer? _refresh;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await ReloadAsync();
+        _refresh = new System.Threading.Timer(_ => InvokeAsync(ReloadAsync), null, 5000, 5000);
+    }
+
+    private async Task ReloadAsync()
+    {
+        using var scope = ScopeFactory.CreateScope();
+        var repo = scope.ServiceProvider.GetRequiredService<IPlugRepository>();
+        _plugs = (await repo.ListAllAsync(CancellationToken.None)).ToList();
+        StateHasChanged();
+    }
+
+    private void StartEdit(Plug p)
+    {
+        _editingId = p.Id;
+        _editAlias = p.Alias;
+    }
+
+    private void CancelEdit()
+    {
+        _editingId = null;
+        _editAlias = "";
+    }
+
+    private async Task SaveAlias(Guid plugId)
+    {
+        using var scope = ScopeFactory.CreateScope();
+        var repo = scope.ServiceProvider.GetRequiredService<IPlugRepository>();
+        await repo.SetAliasAsync(plugId, _editAlias, isCustom: true, CancellationToken.None);
+        _editingId = null;
+        _editAlias = "";
+        await ReloadAsync();
+    }
+
+    private async Task ToggleArchive(Plug p)
+    {
+        using var scope = ScopeFactory.CreateScope();
+        var repo = scope.ServiceProvider.GetRequiredService<IPlugRepository>();
+        await repo.SetArchivedAsync(p.Id, !p.IsArchived, CancellationToken.None);
+        await ReloadAsync();
+    }
+
+    public void Dispose() => _refresh?.Dispose();
+}
+```
+
+Note: the `_Imports.razor` already has `@using KasaMonitor.Core.Models` from Chunk 5 Task 5.3. Add `@using Microsoft.Extensions.DependencyInjection` if it's missing (needed for `GetRequiredService`).
+
+- [ ] Step 1: Create the 3 files (NavMenu, modified MainLayout, Plugs).
+- [ ] Step 2: Build clean.
+- [ ] Step 3: Run all tests (70 still pass).
+- [ ] Step 4: Smoke-test in browser: `/` and `/plugs` should render with NavMenu visible at top.
+- [ ] Step 5: Commit `feat(web): add NavMenu + Plugs management page (rename alias + archive)`.
+
+### Task 7.2: Settings page
+
+**Files:**
+- Create: `src/KasaMonitor.Web/Components/Pages/Settings.razor`
+
+The settings page edits a few key/value entries via `ISettingsRepository`. Loads on init, saves on submit.
+
+```razor
+@page "/settings"
+@rendermode InteractiveServer
+@inject IServiceScopeFactory ScopeFactory
+
+<PageTitle>KasaMonitor — Settings</PageTitle>
+<h1>Settings</h1>
+
+@if (_loading)
+{
+    <p><em>Loading…</em></p>
+}
+else
+{
+    <div class="settings-form">
+        <label>Tariff (RON / kWh)</label>
+        <input @bind="_tariff" type="number" step="0.01" />
+
+        <label>Poll interval (seconds)</label>
+        <input @bind="_pollSec" type="number" min="5" max="300" />
+
+        <label>Broadcast networks (comma-separated)</label>
+        <input @bind="_broadcast" />
+
+        <div class="actions">
+            <button @onclick="SaveAsync">Save</button>
+            @if (_saved) { <span class="saved-msg">Saved.</span> }
+        </div>
+        <p class="note"><em>Note: poll interval and broadcast networks are read at startup. Restart the container for them to take effect. Tariff updates live.</em></p>
+    </div>
+}
+
+<style>
+.settings-form { display: grid; grid-template-columns: max-content 1fr; gap: 0.6em; max-width: 600px; align-items: center; }
+.settings-form .actions { grid-column: 1 / -1; margin-top: 1em; }
+.settings-form .actions button { padding: 0.4em 1em; }
+.settings-form .saved-msg { margin-left: 1em; color: #4a4; }
+.settings-form .note { grid-column: 1 / -1; color: #888; font-size: 0.85em; }
+</style>
+
+@code {
+    private bool _loading = true;
+    private bool _saved;
+    private decimal _tariff;
+    private int _pollSec;
+    private string _broadcast = "";
+
+    protected override async Task OnInitializedAsync()
+    {
+        using var scope = ScopeFactory.CreateScope();
+        var repo = scope.ServiceProvider.GetRequiredService<ISettingsRepository>();
+
+        var tariffStr = await repo.GetAsync("TariffRonPerKwh", CancellationToken.None);
+        _tariff = decimal.TryParse(tariffStr, out var t) ? t : 1.30m;
+
+        var pollStr = await repo.GetAsync("PollIntervalSeconds", CancellationToken.None);
+        _pollSec = int.TryParse(pollStr, out var p) ? p : 10;
+
+        _broadcast = await repo.GetAsync("BroadcastNetworks", CancellationToken.None) ?? "";
+
+        _loading = false;
+    }
+
+    private async Task SaveAsync()
+    {
+        using var scope = ScopeFactory.CreateScope();
+        var repo = scope.ServiceProvider.GetRequiredService<ISettingsRepository>();
+        await repo.SetAsync("TariffRonPerKwh", _tariff.ToString(System.Globalization.CultureInfo.InvariantCulture), CancellationToken.None);
+        await repo.SetAsync("PollIntervalSeconds", _pollSec.ToString(), CancellationToken.None);
+        await repo.SetAsync("BroadcastNetworks", _broadcast, CancellationToken.None);
+        _saved = true;
+        StateHasChanged();
+        await Task.Delay(2000);
+        _saved = false;
+        StateHasChanged();
+    }
+}
+```
+
+- [ ] Step 1: Create the file.
+- [ ] Step 2: Build clean. Tests pass (70).
+- [ ] Step 3: Smoke-test `/settings` — load + save round-trips persist.
+- [ ] Step 4: Commit `feat(web): add Settings page (tariff + poll interval + broadcast networks)`.
+
+### Task 7.3: History page (charts via ApexCharts.Blazor)
+
+**Files:**
+- Modify: `src/KasaMonitor.Web/KasaMonitor.Web.csproj` (add ApexCharts package ref)
+- Create: `src/KasaMonitor.Web/Components/Pages/History.razor`
+
+Add to `_Imports.razor`:
+
+```razor
+@using ApexCharts
+```
+
+Add to `KasaMonitor.Web.csproj`:
+
+```xml
+<PackageReference Include="Blazor-ApexCharts" Version="*" />
+```
+
+Run `dotnet restore` to pull the package.
+
+Then `History.razor`:
+
+```razor
+@page "/history"
+@rendermode InteractiveServer
+@inject IServiceScopeFactory ScopeFactory
+
+<PageTitle>KasaMonitor — History</PageTitle>
+<h1>History</h1>
+
+@if (_plugs is null || _plugs.Count == 0)
+{
+    <p><em>No plugs available.</em></p>
+}
+else
+{
+    <div class="history-controls">
+        <label>Plug:
+            <select @bind="_selectedPlugId" @bind:after="ReloadDataAsync">
+                @foreach (var p in _plugs.OrderBy(p => p.Alias))
+                {
+                    <option value="@p.Id">@p.Alias</option>
+                }
+            </select>
+        </label>
+        <label>Range:
+            <select @bind="_rangeDays" @bind:after="ReloadDataAsync">
+                <option value="7">Last 7 days</option>
+                <option value="30">Last 30 days</option>
+                <option value="365">Last 12 months</option>
+            </select>
+        </label>
+    </div>
+
+    @if (_dailyData is null)
+    {
+        <p><em>Loading data…</em></p>
+    }
+    else if (_dailyData.Count == 0)
+    {
+        <p><em>No daily history yet — wait for the HistorySync worker to run (every 6h, or on plug discovery).</em></p>
+    }
+    else
+    {
+        <h3>Energy per day (kWh)</h3>
+        <ApexChart TItem="DailyKwhPoint" Title="kWh / day"
+                   Options="_chartOptions">
+            <ApexPointSeries TItem="DailyKwhPoint"
+                             Items="_dailyData"
+                             Name="kWh"
+                             SeriesType="SeriesType.Bar"
+                             XValue="@(d => d.Date)"
+                             YValue="@(d => (decimal)(d.EnergyWh / 1000.0))" />
+        </ApexChart>
+    }
+}
+
+<style>
+.history-controls { display: flex; gap: 1em; margin-bottom: 1em; }
+.history-controls label { display: flex; gap: 0.4em; align-items: center; }
+.history-controls select { padding: 0.3em; }
+</style>
+
+@code {
+    private List<Plug>? _plugs;
+    private Guid _selectedPlugId;
+    private int _rangeDays = 30;
+    private List<DailyKwhPoint>? _dailyData;
+    private ApexChartOptions<DailyKwhPoint> _chartOptions = new()
+    {
+        Chart = new Chart { Toolbar = new Toolbar { Show = false } }
+    };
+
+    public record DailyKwhPoint(string Date, long EnergyWh);
+
+    protected override async Task OnInitializedAsync()
+    {
+        using var scope = ScopeFactory.CreateScope();
+        var repo = scope.ServiceProvider.GetRequiredService<IPlugRepository>();
+        _plugs = (await repo.ListAllAsync(CancellationToken.None)).Where(p => !p.IsArchived).ToList();
+        if (_plugs.Count > 0)
+        {
+            _selectedPlugId = _plugs.First().Id;
+            await ReloadDataAsync();
+        }
+    }
+
+    private async Task ReloadDataAsync()
+    {
+        if (_selectedPlugId == Guid.Empty) return;
+        using var scope = ScopeFactory.CreateScope();
+        var historyRepo = scope.ServiceProvider.GetRequiredService<IHistoryRepository>();
+        var to = DateOnly.FromDateTime(DateTime.UtcNow);
+        var from = to.AddDays(-_rangeDays);
+        var entries = await historyRepo.GetDailyRangeAsync(_selectedPlugId, from, to, CancellationToken.None);
+        _dailyData = entries.Select(d => new DailyKwhPoint(
+            $"{d.Year:D4}-{d.Month:D2}-{d.Day:D2}", d.EnergyWh)).ToList();
+        StateHasChanged();
+    }
+}
+```
+
+- [ ] Step 1: Add ApexCharts package + restore.
+- [ ] Step 2: Add the @using ApexCharts to _Imports.
+- [ ] Step 3: Create History.razor.
+- [ ] Step 4: Build clean. Tests pass.
+- [ ] Step 5: Smoke-test `/history` — confirm dropdowns work; chart renders if any DailyEnergy rows exist.
+- [ ] Step 6: Commit `feat(web): add History page with kWh-per-day bar chart (ApexCharts.Blazor)`.
+
+### Task 7.4: ApexCharts JS reference in App.razor
+
+ApexCharts.Blazor needs the JS bundle loaded. Update `src/KasaMonitor.Web/Components/App.razor` `<head>` section to include the ApexCharts JS via the package's static web asset path.
+
+Read the package docs (or check `obj/Release/staticwebassets`) for the exact URL. Typically it's:
+
+```html
+<script src="_content/Blazor-ApexCharts/js/blazor-apexcharts.js"></script>
+```
+
+Add the `<script>` tag to `App.razor` before the closing `</body>`:
+
+```razor
+<script src="_framework/blazor.web.js"></script>
+<script src="_content/Blazor-ApexCharts/js/blazor-apexcharts.js"></script>
+```
+
+Verify by smoke test.
+
+- [ ] Step 1: Edit `App.razor`.
+- [ ] Step 2: Smoke-test the History page — chart should render without console errors.
+- [ ] Step 3: Commit `fix(web): load ApexCharts JS bundle in App.razor`.
+
+### Task 7.5: Chunk-7 verification gate
+
+- [ ] Step 1: `dotnet build` clean.
+- [ ] Step 2: `dotnet test` 70 passed.
+- [ ] Step 3: Manual smoke: visit `/`, `/history`, `/plugs`, `/settings` — all four pages render via NavMenu.
+- [ ] Step 4: `git status` clean. Log shows ~5 chunk-7 commits.
+
+---

@@ -6,5 +6,5 @@ public interface IPlugStateBroadcaster
 {
     void Publish(PlugLiveState state);
     IReadOnlyDictionary<Guid, PlugLiveState> Snapshot();
-    event Action<PlugLiveState> StateChanged;
+    event Action<PlugLiveState>? StateChanged;
 }

@@ -1,0 +1,13 @@
+<nav class="nav-menu">
+    <NavLink href="/" Match="NavLinkMatch.All">Dashboard</NavLink>
+    <NavLink href="/history">History</NavLink>
+    <NavLink href="/plugs">Plugs</NavLink>
+    <NavLink href="/settings">Settings</NavLink>
+</nav>
+
+<style>
+    .nav-menu { display: flex; gap: 1em; padding: 0.5em 1em; background: #f5f5f5; border-bottom: 1px solid #ddd; }
+    .nav-menu a { text-decoration: none; color: #333; padding: 0.4em 0.8em; border-radius: 4px; }
+    .nav-menu a:hover { background: #e8e8e8; }
+    .nav-menu a.active { background: #4c4; color: white; }
+</style>

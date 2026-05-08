@@ -1,0 +1,114 @@
+@page "/plugs"
+@rendermode InteractiveServer
+@inject IServiceScopeFactory ScopeFactory
+@implements IDisposable
+
+<PageTitle>KasaMonitor — Plugs</PageTitle>
+<h1>Plugs</h1>
+
+@if (_plugs is null)
+{
+    <p><em>Loading…</em></p>
+}
+else if (_plugs.Count == 0)
+{
+    <p><em>No plugs in the database yet. Run discovery first.</em></p>
+}
+else
+{
+    <table class="plugs-table">
+        <thead>
+            <tr><th>Alias</th><th>MAC</th><th>IP</th><th>Model</th><th>SwVer</th><th>First seen</th><th>Last seen</th><th>Archived</th><th></th></tr>
+        </thead>
+        <tbody>
+            @foreach (var p in _plugs.OrderBy(p => p.Alias))
+            {
+                <tr class="@(p.IsArchived ? "archived" : "")">
+                    <td>
+                        @if (_editingId == p.Id)
+                        {
+                            <input @bind="_editAlias" />
+                            <button @onclick="() => SaveAlias(p.Id)">Save</button>
+                            <button @onclick="CancelEdit">Cancel</button>
+                        }
+                        else
+                        {
+                            <span>@p.Alias</span> @if (p.AliasIsCustom) { <small>(custom)</small> }
+                            <button @onclick="() => StartEdit(p)">Edit</button>
+                        }
+                    </td>
+                    <td><code>@p.Mac</code></td>
+                    <td>@p.IpAddress</td>
+                    <td>@p.Model</td>
+                    <td>@p.SwVer</td>
+                    <td>@p.FirstSeenUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm")</td>
+                    <td>@p.LastSeenUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm")</td>
+                    <td>
+                        <button @onclick="() => ToggleArchive(p)">@(p.IsArchived ? "Unarchive" : "Archive")</button>
+                    </td>
+                </tr>
+            }
+        </tbody>
+    </table>
+}
+
+<style>
+    .plugs-table { width: 100%; border-collapse: collapse; }
+    .plugs-table th, .plugs-table td { padding: 0.4em 0.6em; border-bottom: 1px solid #eee; text-align: left; }
+    .plugs-table tr.archived { opacity: 0.5; }
+    .plugs-table button { margin-left: 0.4em; }
+    .plugs-table input { padding: 0.2em 0.4em; }
+</style>
+
+@code {
+    private List<Plug>? _plugs;
+    private Guid? _editingId;
+    private string _editAlias = "";
+    private System.Threading.Timer? _refresh;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await ReloadAsync();
+        _refresh = new System.Threading.Timer(_ => InvokeAsync(ReloadAsync), null, 5000, 5000);
+    }
+
+    private async Task ReloadAsync()
+    {
+        using var scope = ScopeFactory.CreateScope();
+        var repo = scope.ServiceProvider.GetRequiredService<IPlugRepository>();
+        _plugs = (await repo.ListAllAsync(CancellationToken.None)).ToList();
+        StateHasChanged();
+    }
+
+    private void StartEdit(Plug p)
+    {
+        _editingId = p.Id;
+        _editAlias = p.Alias;
+    }
+
+    private void CancelEdit()
+    {
+        _editingId = null;
+        _editAlias = "";
+    }
+
+    private async Task SaveAlias(Guid plugId)
+    {
+        using var scope = ScopeFactory.CreateScope();
+        var repo = scope.ServiceProvider.GetRequiredService<IPlugRepository>();
+        await repo.SetAliasAsync(plugId, _editAlias, isCustom: true, CancellationToken.None);
+        _editingId = null;
+        _editAlias = "";
+        await ReloadAsync();
+    }
+
+    private async Task ToggleArchive(Plug p)
+    {
+        using var scope = ScopeFactory.CreateScope();
+        var repo = scope.ServiceProvider.GetRequiredService<IPlugRepository>();
+        await repo.SetArchivedAsync(p.Id, !p.IsArchived, CancellationToken.None);
+        await ReloadAsync();
+    }
+
+    public void Dispose() => _refresh?.Dispose();
+}

@@ -4599,3 +4599,286 @@ public static class DependencyInjectionExtensions
 - [ ] Step 3: `git status` clean, `git log --oneline | head -12` shows the 9 chunk-4 commits.
 
 ---
+
+## Chunk 5: Blazor Web — `KasaMonitor.Web` project, live dashboard, health endpoint
+
+This chunk delivers the **first user-visible build of the app** — a Blazor Server site that boots, applies migrations, runs all 4 background workers under `IHostedService`, and renders a live dashboard at `/` with one card per discovered plug. Cards push updates via the `IPlugStateBroadcaster.StateChanged` event (Blazor Server's native SignalR transports them to the browser).
+
+Out of scope for Chunk 5: history page, plugs management, settings page (deferred to Chunk 6 or later).
+
+**Expected commit count:** 7. **Expected test count after Chunk 5:** ~71 (1 small Razor render smoke test added; rest is manual UI verification).
+
+### Task 5.1: Scaffold `KasaMonitor.Web` (Blazor Server)
+
+- [ ] Step 1: `dotnet new blazor -n KasaMonitor.Web -o src/KasaMonitor.Web -f net10.0 --interactivity Server --use-program-main false --empty false`. Some flags may differ between dotnet versions; if `--empty` isn't supported, use the default template — Step 3 trims it.
+
+- [ ] Step 2: Replace `src/KasaMonitor.Web/KasaMonitor.Web.csproj` with:
+
+```xml
+<Project Sdk="Microsoft.NET.Sdk.Web">
+  <PropertyGroup>
+    <RootNamespace>KasaMonitor.Web</RootNamespace>
+    <UserSecretsId>kasamonitor-web</UserSecretsId>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="10.*" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\KasaMonitor.Core\KasaMonitor.Core.csproj" />
+    <ProjectReference Include="..\KasaMonitor.Data\KasaMonitor.Data.csproj" />
+    <ProjectReference Include="..\KasaMonitor.Workers\KasaMonitor.Workers.csproj" />
+  </ItemGroup>
+</Project>
+```
+
+- [ ] Step 3: Trim the generated content. Keep only:
+  - `Components/App.razor`
+  - `Components/Routes.razor`
+  - `Components/_Imports.razor`
+  - `Components/Layout/MainLayout.razor`
+  - `Components/Pages/Home.razor` → rename to `Components/Pages/Dashboard.razor`
+  - `Components/Pages/Error.razor`
+  - `wwwroot/` directory (delete `bootstrap/`, `app.css` blank-out)
+
+  Delete generated `Components/Pages/Counter.razor`, `Components/Pages/Weather.razor`, the `Components/Layout/NavMenu.razor`'s extras, `Components/Layout/MainLayout.razor.css`, etc. — anything beyond bare scaffolding.
+
+- [ ] Step 4: Add to solution and build:
+
+```bash
+dotnet sln add src/KasaMonitor.Web/KasaMonitor.Web.csproj
+dotnet build
+```
+
+Expected: 0 errors / 0 warnings (the empty-template scaffolding may emit a few warnings under our strict settings; if so, suppress with the `<NoWarn>` of just those codes scoped to the Web csproj — for instance, CS8767 from `[HttpGet]`-style scaffolds).
+
+- [ ] Step 5: Tests still pass (70).
+
+- [ ] Step 6: Commit `chore: scaffold KasaMonitor.Web (Blazor Server, .NET 10)`.
+
+### Task 5.2: `Program.cs` with full DI wiring + hosted services + migrate on start
+
+`src/KasaMonitor.Web/Program.cs`:
+
+```csharp
+using KasaMonitor.Core.Abstractions;
+using KasaMonitor.Core.Protocol;
+using KasaMonitor.Data;
+using KasaMonitor.Web.Components;
+using KasaMonitor.Workers;
+using Microsoft.EntityFrameworkCore;
+using System.Net;
+
+var builder = WebApplication.CreateBuilder(args);
+
+builder.Services.AddRazorComponents()
+    .AddInteractiveServerComponents();
+
+var dbPath = builder.Configuration["KasaMonitor:DbPath"] ?? "kasa.db";
+builder.Services.AddDbContext<KasaDbContext>(o =>
+    o.UseSqlite($"Data Source={dbPath};Cache=Shared"));
+
+builder.Services.AddSingleton<IKasaClient, KasaClient>();
+builder.Services.AddKasaWorkers();
+
+var broadcastAddrs = (builder.Configuration["KasaMonitor:BroadcastNetworks"] ?? "")
+    .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+    .Select(IPAddress.Parse)
+    .ToList();
+if (broadcastAddrs.Count == 0) broadcastAddrs.Add(IPAddress.Broadcast);
+
+var pollIntervalSec = builder.Configuration.GetValue("KasaMonitor:PollIntervalSeconds", 10);
+
+builder.Services.AddSingleton<DiscoveryWorker>(sp => new DiscoveryWorker(
+    sp.GetRequiredService<IKasaClient>(),
+    sp.CreateScope().ServiceProvider.GetRequiredService<IPlugRepository>(),
+    sp.GetRequiredService<IPlugDiscoveredChannel>(),
+    broadcastAddrs,
+    TimeSpan.FromSeconds(2.5),
+    TimeSpan.FromMinutes(5),
+    sp.GetRequiredService<ILogger<DiscoveryWorker>>()));
+builder.Services.AddHostedService(sp => sp.GetRequiredService<DiscoveryWorker>());
+
+builder.Services.AddSingleton<PollingWorker>(sp =>
+{
+    var ctxFactory = () => sp.CreateScope().ServiceProvider.GetRequiredService<KasaDbContext>();
+    return new PollingWorker(
+        sp.GetRequiredService<IKasaClient>(),
+        ctxFactory,
+        async ct =>
+        {
+            using var scope = sp.CreateScope();
+            return await scope.ServiceProvider.GetRequiredService<IPlugRepository>().ListAllAsync(ct);
+        },
+        sp.CreateScope().ServiceProvider.GetRequiredService<ISampleRepository>(),
+        sp.GetRequiredService<IPlugStateBroadcaster>(),
+        TimeSpan.FromSeconds(pollIntervalSec),
+        sp.GetRequiredService<ILogger<PollingWorker>>());
+});
+builder.Services.AddHostedService(sp => sp.GetRequiredService<PollingWorker>());
+
+// (HistorySync + Rollup workers omitted for chunk-5 minimum; add later.)
+
+var app = builder.Build();
+
+using (var scope = app.Services.CreateScope())
+{
+    var ctx = scope.ServiceProvider.GetRequiredService<KasaDbContext>();
+    ctx.Database.Migrate();
+    // SQLite WAL mode for concurrent reader/writer
+    ctx.Database.ExecuteSqlRaw("PRAGMA journal_mode=WAL;");
+    ctx.Database.ExecuteSqlRaw("PRAGMA busy_timeout=5000;");
+}
+
+app.UseStaticFiles();
+app.UseRouting();
+app.UseAntiforgery();
+app.MapRazorComponents<App>().AddInteractiveServerRenderMode();
+
+app.MapGet("/health", async (KasaDbContext ctx) =>
+{
+    try { await ctx.Plugs.AnyAsync(); return Results.Ok("healthy"); }
+    catch (Exception ex) { return Results.Problem(ex.Message, statusCode: 503); }
+});
+
+app.Run();
+```
+
+- [ ] Step 1: Write `Program.cs` as above.
+- [ ] Step 2: Build — confirm 0/0. Some scoped/singleton service-lifetime warnings may appear; the `sp.CreateScope()` pattern resolves them.
+- [ ] Step 3: Commit `feat(web): wire DI, hosted services, migrate-on-startup, health endpoint`.
+
+### Task 5.3: appsettings.json + Development overrides
+
+- [ ] Step 1: `src/KasaMonitor.Web/appsettings.json`:
+
+```json
+{
+  "Logging": {
+    "LogLevel": {
+      "Default": "Information",
+      "Microsoft.AspNetCore": "Warning",
+      "Microsoft.EntityFrameworkCore": "Warning"
+    }
+  },
+  "AllowedHosts": "*",
+  "KasaMonitor": {
+    "DbPath": "kasa.db",
+    "BroadcastNetworks": "",
+    "PollIntervalSeconds": 10,
+    "TariffRonPerKwh": 1.30
+  }
+}
+```
+
+- [ ] Step 2: `src/KasaMonitor.Web/appsettings.Development.json` — same shape, can override BroadcastNetworks for local testing if needed.
+
+- [ ] Step 3: Commit `chore(web): default appsettings with KasaMonitor section`.
+
+### Task 5.4: Live dashboard page
+
+`src/KasaMonitor.Web/Components/Pages/Dashboard.razor`:
+
+```razor
+@page "/"
+@rendermode InteractiveServer
+@using KasaMonitor.Core.Abstractions
+@using KasaMonitor.Core.Models
+@inject IPlugStateBroadcaster Broadcaster
+@implements IDisposable
+
+<PageTitle>KasaMonitor — Dashboard</PageTitle>
+
+<h1>Plugs</h1>
+
+@if (_states.Count == 0)
+{
+    <p><em>No plugs discovered yet — check broadcast network configuration and wait ~30s after startup.</em></p>
+}
+else
+{
+    <div class="plug-grid">
+        @foreach (var s in _states.Values.OrderBy(s => s.Alias))
+        {
+            <div class="plug-card @(s.IsOnline ? "online" : "offline")">
+                <h3>@s.Alias</h3>
+                <p class="status">@(s.IsOnline ? "ONLINE" : "OFFLINE")</p>
+                @if (s.LastReading is not null)
+                {
+                    <p>@(s.LastReading.PowerMw / 1000.0) W</p>
+                    <p>@(s.LastReading.VoltageMv / 1000.0) V · @(s.LastReading.CurrentMa) mA</p>
+                    <p>Total: @(s.LastReading.TotalWh / 1000.0) kWh</p>
+                }
+                <p class="age">last sample @(_now - s.LastSampleUtc).TotalSeconds:F0 s ago</p>
+            </div>
+        }
+    </div>
+}
+
+<style>
+.plug-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 1em; }
+.plug-card { border: 1px solid #ddd; border-radius: 6px; padding: 1em; }
+.plug-card.online { border-left: 4px solid #4c4; }
+.plug-card.offline { border-left: 4px solid #a33; opacity: 0.6; }
+.plug-card .status { font-weight: bold; }
+.plug-card .age { color: #888; font-size: 0.85em; }
+</style>
+
+@code {
+    private Dictionary<Guid, PlugLiveState> _states = new();
+    private DateTimeOffset _now = DateTimeOffset.UtcNow;
+    private System.Threading.Timer? _refreshTimer;
+
+    protected override void OnInitialized()
+    {
+        _states = Broadcaster.Snapshot().ToDictionary(kv => kv.Key, kv => kv.Value);
+        Broadcaster.StateChanged += OnStateChanged;
+        _refreshTimer = new System.Threading.Timer(_ => InvokeAsync(() => { _now = DateTimeOffset.UtcNow; StateHasChanged(); }), null, 1000, 1000);
+    }
+
+    private void OnStateChanged(PlugLiveState state)
+    {
+        InvokeAsync(() =>
+        {
+            _states[state.PlugId] = state;
+            _now = DateTimeOffset.UtcNow;
+            StateHasChanged();
+        });
+    }
+
+    public void Dispose()
+    {
+        Broadcaster.StateChanged -= OnStateChanged;
+        _refreshTimer?.Dispose();
+    }
+}
+```
+
+- [ ] Step 1: Write the Dashboard.razor file (replacing the generated `Home.razor` if you didn't rename it earlier).
+- [ ] Step 2: Update `Components/Routes.razor` if needed to route `/` to `Dashboard.razor`.
+- [ ] Step 3: Build clean.
+- [ ] Step 4: Commit `feat(web): live dashboard with one card per plug + auto-refresh on state change`.
+
+### Task 5.5: Smoke test the running app
+
+- [ ] Step 1: From repo root: `dotnet run --project src/KasaMonitor.Web`. Wait for startup logs.
+
+- [ ] Step 2: In another terminal (or browser): `curl -s http://localhost:5000/health` should return `"healthy"` (port may differ — the launchSettings.json from the template will pick something like 5000 or 5001/5002).
+
+- [ ] Step 3: Open `http://localhost:5000/` in a browser. The dashboard should render with the "No plugs discovered yet" message (no real plugs unless the dev machine is on `192.168.254.0/24`).
+
+- [ ] Step 4: Stop the app (`Ctrl+C`).
+
+- [ ] Step 5: If a SQLite file `kasa.db` was created in the project root, that's normal — it's gitignored (`.db` pattern in `.gitignore`).
+
+- [ ] Step 6: No commit if everything works as-is. If any tweaks were needed (port conflicts, missing static files, missing `Routes.razor` entry), fix and commit `fix(web): ...`.
+
+### Task 5.6: Chunk-5 verification gate
+
+- [ ] Step 1: `dotnet build` → 0/0.
+- [ ] Step 2: `dotnet test` → 70+ passed (Web has no automated tests yet).
+- [ ] Step 3: `git status` clean.
+- [ ] Step 4: Manual smoke from Task 5.5 succeeded — health endpoint OK, dashboard renders.
+
+---

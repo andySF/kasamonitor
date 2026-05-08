@@ -1,9 +1,11 @@
 using KasaMonitor.Core.Abstractions;
 using KasaMonitor.Core.Protocol;
 using KasaMonitor.Data;
+using KasaMonitor.Web;
 using KasaMonitor.Web.Components;
 using KasaMonitor.Workers;
 using Microsoft.EntityFrameworkCore;
+using Prometheus;
 using System.Net;
 
 if (args is ["--healthcheck"])
@@ -69,6 +71,8 @@ builder.Services.AddHostedService(sp => new RollupWorker(
     sp.GetRequiredService<IServiceScopeFactory>(),
     sp.GetRequiredService<ILogger<RollupWorker>>()));
 
+builder.Services.AddHostedService<KasaMetrics>();
+
 var app = builder.Build();
 
 using (var scope = app.Services.CreateScope())
@@ -89,5 +93,7 @@ app.MapGet("/health", async (KasaDbContext ctx) =>
     try { await ctx.Plugs.AnyAsync(); return Results.Ok("healthy"); }
     catch (Exception ex) { return Results.Problem(ex.Message, statusCode: 503); }
 });
+
+app.MapMetrics();
 
 app.Run();

@@ -1,6 +1,7 @@
 using KasaMonitor.Core.Models;
 using KasaMonitor.Core.Protocol.Dtos;
 using System.Buffers.Binary;
+using System.Linq;
 using System.Net;
 using System.Net.Sockets;
 using System.Runtime.CompilerServices;
@@ -26,33 +27,38 @@ public sealed class KasaClient : IKasaClient
 
     public async Task<PlugInfo> GetSysInfoAsync(IPAddress ip, CancellationToken ct)
     {
-        _ = await TcpQueryAsync<SysInfoDto>(ip, "{\"system\":{\"get_sysinfo\":{}}}", "system", "get_sysinfo", ct);
-        // TODO(Task 2.2): map dto to PlugInfo. Sentinel keeps Chunk-2 Task 2.1 compilable.
-        return new PlugInfo(string.Empty, string.Empty, string.Empty, string.Empty, string.Empty, string.Empty, false, 0, TimeSpan.Zero);
+        var dto = await TcpQueryAsync<SysInfoDto>(ip, "{\"system\":{\"get_sysinfo\":{}}}", "system", "get_sysinfo", ct);
+        return MapSysInfo(dto);
     }
 
     public async Task<EmeterReading> GetRealtimeAsync(IPAddress ip, CancellationToken ct)
     {
-        _ = await TcpQueryAsync<EmeterRealtimeDto>(ip, "{\"emeter\":{\"get_realtime\":{}}}", "emeter", "get_realtime", ct);
-        return new EmeterReading(0, 0, 0, 0);
+        var dto = await TcpQueryAsync<EmeterRealtimeDto>(ip, "{\"emeter\":{\"get_realtime\":{}}}", "emeter", "get_realtime", ct);
+        if (dto.ErrCode != 0)
+            throw new KasaProtocolException($"Device returned err_code {dto.ErrCode} for get_realtime.", dto.ErrCode, "get_realtime");
+        return new EmeterReading(dto.PowerMw, dto.VoltageMv, dto.CurrentMa, dto.TotalWh);
     }
 
     public async Task<IReadOnlyList<DailyKwh>> GetDayStatAsync(IPAddress ip, int year, int month, CancellationToken ct)
     {
-        _ = await TcpQueryAsync<DayStatDto>(
+        var dto = await TcpQueryAsync<DayStatDto>(
             ip,
             $"{{\"emeter\":{{\"get_daystat\":{{\"month\":{month},\"year\":{year}}}}}}}",
             "emeter", "get_daystat", ct);
-        return Array.Empty<DailyKwh>();
+        if (dto.ErrCode != 0)
+            throw new KasaProtocolException($"Device returned err_code {dto.ErrCode} for get_daystat.", dto.ErrCode, "get_daystat");
+        return dto.DayList.Select(d => new DailyKwh(d.Year, d.Month, d.Day, d.EnergyWh)).ToList();
     }
 
     public async Task<IReadOnlyList<MonthlyKwh>> GetMonthStatAsync(IPAddress ip, int year, CancellationToken ct)
     {
-        _ = await TcpQueryAsync<MonthStatDto>(
+        var dto = await TcpQueryAsync<MonthStatDto>(
             ip,
             $"{{\"emeter\":{{\"get_monthstat\":{{\"year\":{year}}}}}}}",
             "emeter", "get_monthstat", ct);
-        return Array.Empty<MonthlyKwh>();
+        if (dto.ErrCode != 0)
+            throw new KasaProtocolException($"Device returned err_code {dto.ErrCode} for get_monthstat.", dto.ErrCode, "get_monthstat");
+        return dto.MonthList.Select(m => new MonthlyKwh(m.Year, m.Month, m.EnergyWh)).ToList();
     }
 
     public async IAsyncEnumerable<DiscoveredPlug> DiscoverAsync(
@@ -103,4 +109,23 @@ public sealed class KasaClient : IKasaClient
             throw new TimeoutException($"Kasa query to {ip}:{_port} timed out after {_timeout.TotalMilliseconds:0} ms.");
         }
     }
+
+    private static PlugInfo MapSysInfo(SysInfoDto dto)
+    {
+        var alias = dto.Alias ?? throw new KasaProtocolException("sysinfo missing alias", operation: "get_sysinfo");
+        var mac   = NormalizeMac(dto.Mac ?? throw new KasaProtocolException("sysinfo missing mac", operation: "get_sysinfo"));
+        return new PlugInfo(
+            Mac:     mac,
+            Alias:   alias,
+            Model:   dto.Model ?? string.Empty,
+            HwVer:   dto.HwVer ?? string.Empty,
+            SwVer:   dto.SwVer ?? string.Empty,
+            OemId:   dto.OemId ?? string.Empty,
+            RelayOn: dto.RelayState != 0,
+            RssiDbm: dto.Rssi,
+            OnTime:  TimeSpan.FromSeconds(dto.OnTime));
+    }
+
+    private static string NormalizeMac(string raw) =>
+        new string(raw.Where(c => c != ':' && c != '-').ToArray()).ToLowerInvariant();
 }

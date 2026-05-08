@@ -48,7 +48,8 @@ public class KasaClientTests
 
             await Task.WhenAll(clientTask, serverTask);
             var result = await clientTask;
-            result.Should().NotBeNull();   // proper model assertions land in Chunk 2
+            result.Mac.Should().Be("c006c3702bfc");
+            result.Alias.Should().Be("Birou");
         }
         finally { listener.Stop(); }
     }

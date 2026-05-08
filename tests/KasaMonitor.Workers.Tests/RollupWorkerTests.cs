@@ -30,9 +30,8 @@ public class RollupWorkerTests
             await sampleRepo.InsertManyAsync(samples, CancellationToken.None);
         }
 
-        using var sampleCtx = f.CreateContext();
-        var sampleRepo2 = new SampleRepository(sampleCtx);
-        var worker = new RollupWorker(() => f.CreateContext(), sampleRepo2, NullLogger<RollupWorker>.Instance);
+        var scopeFactory = new TestScopeFactory(f.CreateContext);
+        var worker = new RollupWorker(scopeFactory, NullLogger<RollupWorker>.Instance);
         await worker.RollupSamplesToMinutesAsync(new DateOnly(2026, 5, 8), CancellationToken.None);
 
         using var ctxRead = f.CreateContext();

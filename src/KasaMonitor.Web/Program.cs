@@ -18,6 +18,9 @@ builder.Services.AddDbContext<KasaDbContext>(o =>
 builder.Services.AddSingleton<IKasaClient, KasaClient>();
 builder.Services.AddKasaWorkers();
 
+var tariff = builder.Configuration.GetValue("KasaMonitor:TariffRonPerKwh", 1.30m);
+builder.Services.AddSingleton(new KasaMonitor.Core.Costing.TariffCalculator(tariff));
+
 var broadcastAddrs = (builder.Configuration["KasaMonitor:BroadcastNetworks"] ?? "")
     .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
     .Select(IPAddress.Parse)
@@ -42,7 +45,15 @@ builder.Services.AddHostedService(sp => new PollingWorker(
     TimeSpan.FromSeconds(pollIntervalSec),
     sp.GetRequiredService<ILogger<PollingWorker>>()));
 
-// HistorySync + Rollup workers omitted from chunk 5 for brevity; can be enabled later.
+builder.Services.AddHostedService(sp => new HistorySyncWorker(
+    sp.GetRequiredService<IKasaClient>(),
+    sp.GetRequiredService<IServiceScopeFactory>(),
+    () => DateTime.UtcNow,
+    sp.GetRequiredService<ILogger<HistorySyncWorker>>()));
+
+builder.Services.AddHostedService(sp => new RollupWorker(
+    sp.GetRequiredService<IServiceScopeFactory>(),
+    sp.GetRequiredService<ILogger<RollupWorker>>()));
 
 var app = builder.Build();
 

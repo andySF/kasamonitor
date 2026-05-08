@@ -2,6 +2,7 @@ using KasaMonitor.Core.Abstractions;
 using KasaMonitor.Data;
 using KasaMonitor.Data.Entities;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 
@@ -9,14 +10,12 @@ namespace KasaMonitor.Workers;
 
 public sealed class RollupWorker : BackgroundService
 {
-    private readonly Func<KasaDbContext> _ctxFactory;
-    private readonly ISampleRepository _samples;
+    private readonly IServiceScopeFactory _scopeFactory;
     private readonly ILogger<RollupWorker> _log;
 
-    public RollupWorker(Func<KasaDbContext> ctxFactory, ISampleRepository samples, ILogger<RollupWorker> log)
+    public RollupWorker(IServiceScopeFactory scopeFactory, ILogger<RollupWorker> log)
     {
-        _ctxFactory = ctxFactory;
-        _samples = samples;
+        _scopeFactory = scopeFactory;
         _log = log;
     }
 
@@ -26,7 +25,8 @@ public sealed class RollupWorker : BackgroundService
         var dayEnd = dayStart.AddDays(1);
         var ticksPerMinute = TimeSpan.TicksPerMinute;
 
-        using var ctx = _ctxFactory();
+        using var scope = _scopeFactory.CreateScope();
+        var ctx = scope.ServiceProvider.GetRequiredService<KasaDbContext>();
         // Pull samples for the day; compare DateTimeOffset directly so the value converter
         // handles the long-ticks column translation (s.TimestampUtc.UtcTicks is not EF-translatable).
         var rows = await ctx.Samples.AsNoTracking()
@@ -68,8 +68,12 @@ public sealed class RollupWorker : BackgroundService
         await ctx.SaveChangesAsync(ct);
     }
 
-    public Task<int> PruneOldSamplesAsync(int retentionDays, CancellationToken ct) =>
-        _samples.DeleteOlderThanAsync(DateTimeOffset.UtcNow.AddDays(-retentionDays), ct);
+    public async Task<int> PruneOldSamplesAsync(int retentionDays, CancellationToken ct)
+    {
+        using var scope = _scopeFactory.CreateScope();
+        var samples = scope.ServiceProvider.GetRequiredService<ISampleRepository>();
+        return await samples.DeleteOlderThanAsync(DateTimeOffset.UtcNow.AddDays(-retentionDays), ct);
+    }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {

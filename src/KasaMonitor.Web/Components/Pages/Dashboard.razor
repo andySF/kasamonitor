@@ -1,11 +1,18 @@
 @page "/"
 @rendermode InteractiveServer
 @inject IPlugStateBroadcaster Broadcaster
+@inject KasaMonitor.Core.Costing.TariffCalculator Tariff
 @implements IDisposable
 
 <PageTitle>KasaMonitor — Dashboard</PageTitle>
 
-<h1>Plugs</h1>
+<div class="top-bar">
+    <h1>KasaMonitor</h1>
+    <div class="totals">
+        <span class="total-power">@TotalPowerW.ToString("0") W</span>
+        <span class="total-cost">@(HourlyCostRon.ToString("0.000")) RON/h</span>
+    </div>
+</div>
 
 @if (_states.Count == 0)
 {
@@ -38,12 +45,22 @@ else
     .plug-card.offline { border-left: 4px solid #a33; opacity: 0.6; }
     .plug-card .status { font-weight: bold; }
     .plug-card .age { color: #888; font-size: 0.85em; }
+    .top-bar { display: flex; justify-content: space-between; align-items: baseline; padding: 0.5em 0; border-bottom: 1px solid #eee; margin-bottom: 1em; }
+    .top-bar .totals { font-size: 1.2em; }
+    .top-bar .total-power { font-weight: bold; margin-right: 1em; }
+    .top-bar .total-cost { color: #666; }
 </style>
 
 @code {
     private Dictionary<Guid, PlugLiveState> _states = new();
     private DateTimeOffset _now = DateTimeOffset.UtcNow;
     private System.Threading.Timer? _refreshTimer;
+
+    private double TotalPowerW => _states.Values
+        .Where(s => s.IsOnline && s.LastReading is not null)
+        .Sum(s => s.LastReading!.PowerMw / 1000.0);
+
+    private decimal HourlyCostRon => Tariff.CostFromWh((long)TotalPowerW);
 
     protected override void OnInitialized()
     {

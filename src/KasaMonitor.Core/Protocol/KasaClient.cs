@@ -4,13 +4,12 @@ using System.Buffers.Binary;
 using System.Linq;
 using System.Net;
 using System.Net.Sockets;
-using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.Json;
 
 namespace KasaMonitor.Core.Protocol;
 
-public sealed class KasaClient : IKasaClient
+public sealed partial class KasaClient : IKasaClient
 {
     private const int DefaultPort = 9999;
     private readonly TimeSpan _timeout;
@@ -59,16 +58,6 @@ public sealed class KasaClient : IKasaClient
         if (dto.ErrCode != 0)
             throw new KasaProtocolException($"Device returned err_code {dto.ErrCode} for get_monthstat.", dto.ErrCode, "get_monthstat");
         return dto.MonthList.Select(m => new MonthlyKwh(m.Year, m.Month, m.EnergyWh)).ToList();
-    }
-
-    public async IAsyncEnumerable<DiscoveredPlug> DiscoverAsync(
-        IReadOnlyList<IPAddress> broadcastAddresses,
-        TimeSpan timeout,
-        [EnumeratorCancellation] CancellationToken ct)
-    {
-        // Full implementation lands in Chunk 2 (Task 2.x: KasaClient.Udp.cs partial).
-        await Task.CompletedTask;
-        yield break;
     }
 
     private async Task<T> TcpQueryAsync<T>(

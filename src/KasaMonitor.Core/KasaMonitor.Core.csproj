@@ -1,0 +1,5 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <RootNamespace>KasaMonitor.Core</RootNamespace>
+  </PropertyGroup>
+</Project>

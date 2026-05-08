@@ -1,5 +1,6 @@
 using KasaMonitor.Core.Abstractions;
 using KasaMonitor.Core.Protocol;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 
@@ -8,42 +9,44 @@ namespace KasaMonitor.Workers;
 public sealed class HistorySyncWorker : BackgroundService
 {
     private readonly IKasaClient _kasa;
-    private readonly IPlugRepository _plugRepo;
-    private readonly IHistoryRepository _historyRepo;
-    private readonly DateTime _now;
+    private readonly IServiceScopeFactory _scopeFactory;
+    private readonly Func<DateTime> _nowProvider;
     private readonly ILogger<HistorySyncWorker> _log;
 
     public HistorySyncWorker(
         IKasaClient kasa,
-        IPlugRepository plugRepo,
-        IHistoryRepository historyRepo,
-        DateTime now,
+        IServiceScopeFactory scopeFactory,
+        Func<DateTime> nowProvider,
         ILogger<HistorySyncWorker> log)
     {
         _kasa = kasa;
-        _plugRepo = plugRepo;
-        _historyRepo = historyRepo;
-        _now = now;
+        _scopeFactory = scopeFactory;
+        _nowProvider = nowProvider;
         _log = log;
     }
 
     public async Task SyncOneAsync(Guid plugId, CancellationToken ct)
     {
-        var plug = (await _plugRepo.ListAllAsync(ct)).FirstOrDefault(p => p.Id == plugId);
+        using var scope = _scopeFactory.CreateScope();
+        var plugRepo = scope.ServiceProvider.GetRequiredService<IPlugRepository>();
+        var historyRepo = scope.ServiceProvider.GetRequiredService<IHistoryRepository>();
+
+        var plug = (await plugRepo.ListAllAsync(ct)).FirstOrDefault(p => p.Id == plugId);
         if (plug is null) return;
 
+        var now = _nowProvider();
         try
         {
-            var monthsThis = await _kasa.GetMonthStatAsync(plug.IpAddress, _now.Year, ct);
-            var monthsPrev = await _kasa.GetMonthStatAsync(plug.IpAddress, _now.Year - 1, ct);
-            await _historyRepo.UpsertMonthlyAsync(plugId, monthsThis, ct);
-            await _historyRepo.UpsertMonthlyAsync(plugId, monthsPrev, ct);
+            var monthsThis = await _kasa.GetMonthStatAsync(plug.IpAddress, now.Year, ct);
+            var monthsPrev = await _kasa.GetMonthStatAsync(plug.IpAddress, now.Year - 1, ct);
+            await historyRepo.UpsertMonthlyAsync(plugId, monthsThis, ct);
+            await historyRepo.UpsertMonthlyAsync(plugId, monthsPrev, ct);
 
-            var daysThis = await _kasa.GetDayStatAsync(plug.IpAddress, _now.Year, _now.Month, ct);
-            var prevMonth = _now.AddMonths(-1);
+            var daysThis = await _kasa.GetDayStatAsync(plug.IpAddress, now.Year, now.Month, ct);
+            var prevMonth = now.AddMonths(-1);
             var daysPrev = await _kasa.GetDayStatAsync(plug.IpAddress, prevMonth.Year, prevMonth.Month, ct);
-            await _historyRepo.UpsertDailyAsync(plugId, daysThis, ct);
-            await _historyRepo.UpsertDailyAsync(plugId, daysPrev, ct);
+            await historyRepo.UpsertDailyAsync(plugId, daysThis, ct);
+            await historyRepo.UpsertDailyAsync(plugId, daysPrev, ct);
         }
         catch (Exception ex)
         {
@@ -57,7 +60,9 @@ public sealed class HistorySyncWorker : BackgroundService
         {
             try
             {
-                var plugs = await _plugRepo.ListAllAsync(stoppingToken);
+                using var scope = _scopeFactory.CreateScope();
+                var plugRepo = scope.ServiceProvider.GetRequiredService<IPlugRepository>();
+                var plugs = await plugRepo.ListAllAsync(stoppingToken);
                 foreach (var p in plugs.Where(p => !p.IsArchived))
                     await SyncOneAsync(p.Id, stoppingToken);
             }

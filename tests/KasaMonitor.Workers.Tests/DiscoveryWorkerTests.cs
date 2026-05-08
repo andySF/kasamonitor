@@ -16,15 +16,14 @@ public class DiscoveryWorkerTests
     public async Task RunOnceAsync_NewPlugs_AreUpserted_AndPublishedAsDiscovered()
     {
         using var f = new TestDbFactory();
-        using var ctx = f.CreateContext();
-        var plugRepo = new PlugRepository(ctx);
         var fake = new FakeKasaClient();
         fake.DiscoveredPlugs.Add(Make("aa", ip: "192.168.254.105"));
         fake.DiscoveredPlugs.Add(Make("bb", ip: "192.168.254.106"));
         var channel = new PlugDiscoveredChannel();
 
+        var scopeFactory = new TestScopeFactory(f.CreateContext);
         var worker = new DiscoveryWorker(
-            fake, plugRepo, channel,
+            fake, scopeFactory, channel,
             new[] { IPAddress.Parse("192.168.254.255") },
             TimeSpan.FromMilliseconds(500),
             TimeSpan.FromMinutes(5),
@@ -32,6 +31,8 @@ public class DiscoveryWorkerTests
 
         await worker.RunOnceAsync(CancellationToken.None);
 
+        using var ctx = f.CreateContext();
+        var plugRepo = new PlugRepository(ctx);
         var plugs = await plugRepo.ListAllAsync(CancellationToken.None);
         plugs.Should().HaveCount(2);
     }
@@ -40,16 +41,19 @@ public class DiscoveryWorkerTests
     public async Task RunOnceAsync_AlreadyKnownPlug_NotPublishedAgain()
     {
         using var f = new TestDbFactory();
-        using var ctx = f.CreateContext();
-        var plugRepo = new PlugRepository(ctx);
-        await plugRepo.UpsertFromDiscoveryAsync(Make("aa"), DateTimeOffset.UtcNow, CancellationToken.None);
+        using (var ctx = f.CreateContext())
+        {
+            var plugRepo = new PlugRepository(ctx);
+            await plugRepo.UpsertFromDiscoveryAsync(Make("aa"), DateTimeOffset.UtcNow, CancellationToken.None);
+        }
 
         var fake = new FakeKasaClient();
         fake.DiscoveredPlugs.Add(Make("aa"));
         var channel = new PlugDiscoveredChannel();
 
+        var scopeFactory = new TestScopeFactory(f.CreateContext);
         var worker = new DiscoveryWorker(
-            fake, plugRepo, channel,
+            fake, scopeFactory, channel,
             new[] { IPAddress.Parse("192.168.254.255") },
             TimeSpan.FromMilliseconds(500),
             TimeSpan.FromMinutes(5),

@@ -22,27 +22,22 @@ public class PollingWorkerTests
             plugId = await plugRepo.UpsertFromDiscoveryAsync(dp, DateTimeOffset.UtcNow, CancellationToken.None);
         }
 
-        using var ctxRead = f.CreateContext();
-        var sampleRepo = new SampleRepository(ctxRead);
         var fake = new FakeKasaClient
         {
             OnGetRealtime = ip => Task.FromResult(new EmeterReading(50_000, 230_000, 200, 100))
         };
         var bc = new PlugStateBroadcaster();
 
+        var scopeFactory = new TestScopeFactory(f.CreateContext);
         var worker = new PollingWorker(
-            fake, () => f.CreateContext(),
-            async ct =>
-            {
-                using var c = f.CreateContext();
-                return await new PlugRepository(c).ListAllAsync(ct);
-            },
-            sampleRepo, bc,
+            fake, scopeFactory, bc,
             TimeSpan.FromSeconds(10),
             NullLogger<PollingWorker>.Instance);
 
         await worker.RunOnceAsync(CancellationToken.None);
 
+        using var ctxRead = f.CreateContext();
+        var sampleRepo = new SampleRepository(ctxRead);
         var samples = await sampleRepo.ListByPlugAsync(plugId,
             DateTimeOffset.UtcNow.AddMinutes(-1), DateTimeOffset.UtcNow.AddMinutes(1),
             CancellationToken.None);
@@ -66,27 +61,22 @@ public class PollingWorkerTests
             plugId = await plugRepo.UpsertFromDiscoveryAsync(dp, DateTimeOffset.UtcNow, CancellationToken.None);
         }
 
-        using var ctxRead = f.CreateContext();
-        var sampleRepo = new SampleRepository(ctxRead);
         var fake = new FakeKasaClient
         {
             OnGetRealtime = _ => Task.FromException<EmeterReading>(new TimeoutException("simulated"))
         };
         var bc = new PlugStateBroadcaster();
 
+        var scopeFactory = new TestScopeFactory(f.CreateContext);
         var worker = new PollingWorker(
-            fake, () => f.CreateContext(),
-            async ct =>
-            {
-                using var c = f.CreateContext();
-                return await new PlugRepository(c).ListAllAsync(ct);
-            },
-            sampleRepo, bc,
+            fake, scopeFactory, bc,
             TimeSpan.FromSeconds(10),
             NullLogger<PollingWorker>.Instance);
 
         await worker.RunOnceAsync(CancellationToken.None);
 
+        using var ctxRead = f.CreateContext();
+        var sampleRepo = new SampleRepository(ctxRead);
         var samples = await sampleRepo.ListByPlugAsync(plugId,
             DateTimeOffset.UtcNow.AddMinutes(-1), DateTimeOffset.UtcNow.AddMinutes(1),
             CancellationToken.None);

@@ -22,10 +22,6 @@ public class HistorySyncWorkerTests
             plugId = await plugRepo.UpsertFromDiscoveryAsync(dp, DateTimeOffset.UtcNow, CancellationToken.None);
         }
 
-        using var ctxRead = f.CreateContext();
-        var plugRepo2 = new PlugRepository(ctxRead);
-        var historyRepo = new HistoryRepository(ctxRead);
-
         var fake = new FakeKasaClient
         {
             OnGetMonthStat = (_, year) => Task.FromResult<IReadOnlyList<MonthlyKwh>>(new[]
@@ -39,10 +35,14 @@ public class HistorySyncWorkerTests
         };
 
         var now = DateTime.UtcNow;
-        var worker = new HistorySyncWorker(fake, plugRepo2, historyRepo, now,
+        var scopeFactory = new TestScopeFactory(f.CreateContext);
+        var worker = new HistorySyncWorker(fake, scopeFactory, () => now,
             NullLogger<HistorySyncWorker>.Instance);
 
         await worker.SyncOneAsync(plugId, CancellationToken.None);
+
+        using var ctxRead = f.CreateContext();
+        var historyRepo = new HistoryRepository(ctxRead);
 
         var thisYear = now.Year;
         var monthly = await historyRepo.GetMonthlyRangeAsync(plugId, thisYear - 1, thisYear, CancellationToken.None);

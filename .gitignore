@@ -1,0 +1,38 @@
+# build output
+bin/
+obj/
+out/
+publish/
+artifacts/
+
+# IDE
+.vs/
+.vscode/
+.idea/
+*.user
+*.suo
+
+# test output
+TestResults/
+*.coverage
+coverage/
+*.lcov
+
+# database & runtime data
+*.db
+*.db-shm
+*.db-wal
+data/
+
+# logs
+*.log
+logs/
+
+# secrets
+appsettings.*.local.json
+.env
+.env.*
+
+# OS
+Thumbs.db
+.DS_Store

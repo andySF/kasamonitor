@@ -592,7 +592,7 @@ public static class KasaCodec
 dotnet test tests/KasaMonitor.Core.Tests --filter "FullyQualifiedName~KasaCodec"
 ```
 
-Expected: 5 passed, 0 failed.
+Expected: 7 passed, 0 failed (4 facts + 3 InlineData rows on `RoundTrip_PreservesAnyAsciiInput`).
 
 - [ ] **Step 5: Commit**
 
@@ -1219,9 +1219,9 @@ Expected: 2 passed.
 dotnet test tests/KasaMonitor.Core.Tests
 ```
 
-Expected: 21 passed, 0 failed.
+Expected: 22 passed, 0 failed.
 
-Tally: KasaCodec = 6 (3 facts + 3 theory rows on `RoundTrip_PreservesAnyAsciiInput`), KasaWireProtocol = 8, DtoMapping = 5, KasaClient = 2.
+Tally: KasaCodec = 7 (4 facts + 3 theory rows on `RoundTrip_PreservesAnyAsciiInput`), KasaWireProtocol = 8, DtoMapping = 5, KasaClient = 2.
 
 - [ ] **Step 7: Commit**
 
@@ -1246,7 +1246,7 @@ Expected: 0 errors, 0 warnings (because of `TreatWarningsAsErrors`).
 dotnet test
 ```
 
-Expected: 21 passed, 0 failed.
+Expected: 22 passed, 0 failed.
 
 - [ ] **Step 3: Confirm there is a clean working tree**
 

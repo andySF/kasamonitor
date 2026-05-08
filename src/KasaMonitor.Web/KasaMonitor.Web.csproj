@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+  <PropertyGroup>
+    <RootNamespace>KasaMonitor.Web</RootNamespace>
+    <UserSecretsId>kasamonitor-web</UserSecretsId>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="10.*" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\KasaMonitor.Core\KasaMonitor.Core.csproj" />
+    <ProjectReference Include="..\KasaMonitor.Data\KasaMonitor.Data.csproj" />
+    <ProjectReference Include="..\KasaMonitor.Workers\KasaMonitor.Workers.csproj" />
+  </ItemGroup>
+</Project>

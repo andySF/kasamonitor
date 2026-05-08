@@ -4882,3 +4882,256 @@ else
 - [ ] Step 4: Manual smoke from Task 5.5 succeeded — health endpoint OK, dashboard renders.
 
 ---
+
+## Chunk 6: Deployment-ready — wire all workers, cost display, healthcheck CLI, Docker
+
+This chunk closes the gap between "Blazor renders live data" (end of Chunk 5) and "container running on QNAP via Portainer" (the spec's deployment target). It does NOT add the `/history`, `/plugs`, or `/settings` pages — those are scoped to Chunk 7.
+
+**Expected commit count:** 5. **Expected test count after Chunk 6:** 70 (no new tests; manual smoke verifies Docker build + run).
+
+### Task 6.1: Wire HistorySync + Rollup workers + total-power cost display
+
+**Files:**
+- Modify: `src/KasaMonitor.Web/Program.cs` — register `HistorySyncWorker` + `RollupWorker` as hosted services; expose `TariffCalculator` via DI.
+- Modify: `src/KasaMonitor.Web/Components/Pages/Dashboard.razor` — add a top bar with total instant W + hourly cost.
+
+- [ ] Step 1: In `Program.cs`, after the existing `AddHostedService` calls, register the two missing workers:
+
+```csharp
+builder.Services.AddHostedService(sp => new HistorySyncWorker(
+    sp.GetRequiredService<IKasaClient>(),
+    sp.GetRequiredService<IServiceScopeFactory>(),
+    () => DateTime.UtcNow,
+    sp.GetRequiredService<ILogger<HistorySyncWorker>>()));
+
+builder.Services.AddHostedService(sp => new RollupWorker(
+    sp.GetRequiredService<IServiceScopeFactory>(),
+    sp.GetRequiredService<ILogger<RollupWorker>>()));
+```
+
+**Note:** `RollupWorker`'s current constructor takes `Func<KasaDbContext>` and `ISampleRepository`. Like the previous worker refactor, change it to take `IServiceScopeFactory` (consistency with Discovery/Polling/HistorySync). Update the existing test in `RollupWorkerTests.cs` to pass `TestScopeFactory(f.CreateContext)`.
+
+- [ ] Step 2: Register `TariffCalculator` (from `KasaMonitor.Core.Costing`) as a singleton:
+
+```csharp
+var tariff = builder.Configuration.GetValue("KasaMonitor:TariffRonPerKwh", 1.30m);
+builder.Services.AddSingleton(new KasaMonitor.Core.Costing.TariffCalculator(tariff));
+```
+
+(Place this near the other singleton registrations.)
+
+- [ ] Step 3: Update `src/KasaMonitor.Web/Components/Pages/Dashboard.razor`:
+
+Add `@inject KasaMonitor.Core.Costing.TariffCalculator Tariff` after the existing `@inject` lines.
+
+Replace the `<h1>Plugs</h1>` section with a top-bar block:
+
+```razor
+<div class="top-bar">
+    <h1>KasaMonitor</h1>
+    <div class="totals">
+        <span class="total-power">@TotalPowerW.ToString("0") W</span>
+        <span class="total-cost">@(HourlyCostRon.ToString("0.000")) RON/h</span>
+    </div>
+</div>
+```
+
+Add to the `@code { ... }` block:
+
+```csharp
+private double TotalPowerW => _states.Values
+    .Where(s => s.IsOnline && s.LastReading is not null)
+    .Sum(s => s.LastReading!.PowerMw / 1000.0);
+
+private decimal HourlyCostRon => Tariff.CostFromWh((long)TotalPowerW);
+```
+
+Add styling:
+
+```css
+.top-bar { display: flex; justify-content: space-between; align-items: baseline; padding: 0.5em 0; border-bottom: 1px solid #eee; margin-bottom: 1em; }
+.top-bar .totals { font-size: 1.2em; }
+.top-bar .total-power { font-weight: bold; margin-right: 1em; }
+.top-bar .total-cost { color: #666; }
+```
+
+- [ ] Step 4: Build clean. Run all tests (70 still pass after RollupWorker test update).
+
+- [ ] Step 5: Smoke-test the app briefly — confirm the top bar renders and top-bar values update with live data.
+
+- [ ] Step 6: Commit:
+
+```bash
+git add src/KasaMonitor.Web/Program.cs src/KasaMonitor.Web/Components/Pages/Dashboard.razor src/KasaMonitor.Workers/RollupWorker.cs tests/KasaMonitor.Workers.Tests/RollupWorkerTests.cs
+git commit -m "feat(web): wire history-sync + rollup hosted services; show total power + RON/h on dashboard"
+```
+
+### Task 6.2: Healthcheck CLI mode
+
+**Files:**
+- Modify: `src/KasaMonitor.Web/Program.cs`
+
+The Dockerfile's `HEALTHCHECK` runs `dotnet KasaMonitor.Web.dll --healthcheck`, which should exit 0 if the local server returns a 200 from `/health`, exit 1 otherwise. No `curl`/`wget` dependency in the runtime base image.
+
+- [ ] Step 1: At the very top of `Program.cs` (before `WebApplication.CreateBuilder(args)`), add:
+
+```csharp
+if (args is ["--healthcheck"])
+{
+    using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(3) };
+    try
+    {
+        var resp = await http.GetAsync("http://localhost:8910/health");
+        Environment.Exit(resp.IsSuccessStatusCode ? 0 : 1);
+    }
+    catch
+    {
+        Environment.Exit(1);
+    }
+}
+```
+
+This requires `Program.cs` to be top-level statements (which it is). The port 8910 matches the Docker `EXPOSE` and `KASA_MONITOR__URLS` env var (set in the Dockerfile).
+
+- [ ] Step 2: Build clean.
+
+- [ ] Step 3: Smoke-test locally:
+  - Start the app on port 5174 (default launch profile).
+  - The healthcheck CLI hard-codes 8910, so it'll fail locally — that's expected; only Docker uses it. Don't try to make it work outside the container.
+
+- [ ] Step 4: Commit:
+
+```bash
+git add src/KasaMonitor.Web/Program.cs
+git commit -m "feat(web): add --healthcheck CLI mode for Docker HEALTHCHECK probe"
+```
+
+### Task 6.3: Dockerfile (multi-stage, linux/amd64)
+
+**Files:**
+- Create: `deploy/Dockerfile`
+- Create: `deploy/.dockerignore` (extends repo-root .dockerignore for build context relative to `deploy/`)
+
+The build is done from the repo root because `Dockerfile` references `src/` and `tests/`.
+
+- [ ] Step 1: `deploy/Dockerfile`:
+
+```dockerfile
+# syntax=docker/dockerfile:1
+FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
+WORKDIR /src
+COPY KasaMonitor.sln Directory.Build.props ./
+COPY src/ src/
+COPY tests/ tests/
+RUN dotnet restore
+RUN dotnet publish src/KasaMonitor.Web/KasaMonitor.Web.csproj \
+    -c Release -o /app --no-self-contained -r linux-x64
+
+FROM mcr.microsoft.com/dotnet/aspnet:10.0 AS runtime
+WORKDIR /app
+COPY --from=build /app .
+ENV ASPNETCORE_URLS=http://+:8910 \
+    KasaMonitor__DbPath=/data/kasa.db \
+    TZ=Europe/Bucharest
+EXPOSE 8910
+VOLUME ["/data"]
+HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
+  CMD ["dotnet", "KasaMonitor.Web.dll", "--healthcheck"]
+ENTRYPOINT ["dotnet", "KasaMonitor.Web.dll"]
+```
+
+- [ ] Step 2: Verify Docker is available locally: `docker --version`. If not installed (or daemon not running), skip the local-build step (3) but still commit the Dockerfile — the user can build on a machine with Docker.
+
+- [ ] Step 3 (optional): Build the image locally:
+
+```bash
+docker build -t kasamonitor:dev -f deploy/Dockerfile .
+```
+
+Expected: builds successfully. Image size ~120 MB.
+
+- [ ] Step 4: Commit:
+
+```bash
+git add deploy/Dockerfile
+git commit -m "feat(deploy): add multi-stage Dockerfile (linux/amd64, .NET 10, healthcheck via CLI)"
+```
+
+### Task 6.4: docker-compose.yml + deploy README
+
+**Files:**
+- Create: `deploy/docker-compose.yml`
+- Create: `deploy/README.md`
+
+- [ ] Step 1: `deploy/docker-compose.yml`:
+
+```yaml
+services:
+  kasamonitor:
+    image: andysf/kasamonitor:latest
+    container_name: kasamonitor
+    network_mode: host          # REQUIRED for UDP broadcast discovery on the LAN
+    restart: unless-stopped
+    volumes:
+      - /share/Container/kasamonitor/data:/data
+    environment:
+      TZ: Europe/Bucharest
+      KasaMonitor__BroadcastNetworks: "192.168.254.255"
+      KasaMonitor__TariffRonPerKwh: "1.30"
+      KasaMonitor__PollIntervalSeconds: "10"
+```
+
+- [ ] Step 2: `deploy/README.md` — short deployment guide:
+
+```markdown
+# KasaMonitor — Deployment
+
+## Local build & push to Docker Hub
+
+```powershell
+docker build -t andysf/kasamonitor:latest -t andysf/kasamonitor:0.1.0 -f deploy/Dockerfile .
+docker login
+docker push andysf/kasamonitor:latest
+docker push andysf/kasamonitor:0.1.0
+```
+
+## QNAP / Portainer deployment
+
+1. SSH to QNAP, ensure `/share/Container/kasamonitor/data` exists.
+2. In Portainer → Stacks → Add stack → paste contents of `docker-compose.yml`.
+3. Deploy. Wait ~30s.
+4. Browse to `http://<qnap-ip>:8910/`.
+
+## Configuration overrides
+
+All `KasaMonitor__*` env vars are read on startup. The DB at `/data/kasa.db` persists across container restarts.
+
+| Var | Default | Notes |
+|---|---|---|
+| `KasaMonitor__BroadcastNetworks` | (empty → use 255.255.255.255) | Comma-separated IPv4 broadcast addrs |
+| `KasaMonitor__TariffRonPerKwh` | `1.30` | Cost calculation rate |
+| `KasaMonitor__PollIntervalSeconds` | `10` | Plug poll interval |
+| `KasaMonitor__DbPath` | `/data/kasa.db` | SQLite file location |
+
+## Troubleshooting
+
+- **No plugs discovered** → confirm `network_mode: host` is set; Container Station sometimes resets it. Without host networking, the UDP broadcast can't reach the LAN.
+- **Database locked errors** → another container instance may be running against the same volume. Stop all but one.
+- **Health endpoint 503** → check container logs; usually means EF migration failed at startup.
+```
+
+- [ ] Step 3: Commit:
+
+```bash
+git add deploy/docker-compose.yml deploy/README.md
+git commit -m "feat(deploy): add docker-compose.yml for QNAP/Portainer + deployment README"
+```
+
+### Task 6.5: Chunk-6 verification gate
+
+- [ ] Step 1: `dotnet build` → 0/0.
+- [ ] Step 2: `dotnet test` → 70+ passed.
+- [ ] Step 3: `git status` clean, log shows 4 chunk-6 commits.
+- [ ] Step 4 (optional, if Docker is available): `docker build -t kasamonitor:dev -f deploy/Dockerfile .` succeeds.
+
+---

@@ -1,6 +1,6 @@
 services:
   kasamonitor:
-    image: andysf/kasamonitor:latest
+    image: duobit/kasamonitor:latest
     container_name: kasamonitor
     network_mode: host          # REQUIRED for UDP broadcast discovery on the LAN
     restart: unless-stopped

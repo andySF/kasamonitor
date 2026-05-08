@@ -3,10 +3,10 @@
 ## Local build & push to Docker Hub
 
 ```powershell
-docker build -t andysf/kasamonitor:latest -t andysf/kasamonitor:0.1.0 -f deploy/Dockerfile .
+docker build -t duobit/kasamonitor:latest -t duobit/kasamonitor:0.1.0 -f deploy/Dockerfile .
 docker login
-docker push andysf/kasamonitor:latest
-docker push andysf/kasamonitor:0.1.0
+docker push duobit/kasamonitor:latest
+docker push duobit/kasamonitor:0.1.0
 ```
 
 ## QNAP / Portainer deployment

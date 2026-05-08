@@ -5,7 +5,7 @@
 
 param(
     [string]$Version = "0.1.0",
-    [string]$Repo = "andysf/kasamonitor",
+    [string]$Repo = "duobit/kasamonitor",
     [switch]$NoPush
 )
 

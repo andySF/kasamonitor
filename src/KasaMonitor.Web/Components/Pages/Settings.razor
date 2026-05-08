@@ -1,0 +1,76 @@
+@page "/settings"
+@rendermode InteractiveServer
+@inject IServiceScopeFactory ScopeFactory
+
+<PageTitle>KasaMonitor — Settings</PageTitle>
+<h1>Settings</h1>
+
+@if (_loading)
+{
+    <p><em>Loading…</em></p>
+}
+else
+{
+    <div class="settings-form">
+        <label>Tariff (RON / kWh)</label>
+        <input @bind="_tariff" type="number" step="0.01" />
+
+        <label>Poll interval (seconds)</label>
+        <input @bind="_pollSec" type="number" min="5" max="300" />
+
+        <label>Broadcast networks (comma-separated)</label>
+        <input @bind="_broadcast" />
+
+        <div class="actions">
+            <button @onclick="SaveAsync">Save</button>
+            @if (_saved) { <span class="saved-msg">Saved.</span> }
+        </div>
+        <p class="note"><em>Note: poll interval and broadcast networks are read at startup. Restart the container for them to take effect. Tariff updates live on next page load.</em></p>
+    </div>
+}
+
+<style>
+    .settings-form { display: grid; grid-template-columns: max-content 1fr; gap: 0.6em; max-width: 600px; align-items: center; }
+    .settings-form .actions { grid-column: 1 / -1; margin-top: 1em; }
+    .settings-form .actions button { padding: 0.4em 1em; }
+    .settings-form .saved-msg { margin-left: 1em; color: #4a4; }
+    .settings-form .note { grid-column: 1 / -1; color: #888; font-size: 0.85em; }
+</style>
+
+@code {
+    private bool _loading = true;
+    private bool _saved;
+    private decimal _tariff;
+    private int _pollSec;
+    private string _broadcast = "";
+
+    protected override async Task OnInitializedAsync()
+    {
+        using var scope = ScopeFactory.CreateScope();
+        var repo = scope.ServiceProvider.GetRequiredService<ISettingsRepository>();
+
+        var tariffStr = await repo.GetAsync("TariffRonPerKwh", CancellationToken.None);
+        _tariff = decimal.TryParse(tariffStr, System.Globalization.CultureInfo.InvariantCulture, out var t) ? t : 1.30m;
+
+        var pollStr = await repo.GetAsync("PollIntervalSeconds", CancellationToken.None);
+        _pollSec = int.TryParse(pollStr, out var p) ? p : 10;
+
+        _broadcast = await repo.GetAsync("BroadcastNetworks", CancellationToken.None) ?? "";
+
+        _loading = false;
+    }
+
+    private async Task SaveAsync()
+    {
+        using var scope = ScopeFactory.CreateScope();
+        var repo = scope.ServiceProvider.GetRequiredService<ISettingsRepository>();
+        await repo.SetAsync("TariffRonPerKwh", _tariff.ToString(System.Globalization.CultureInfo.InvariantCulture), CancellationToken.None);
+        await repo.SetAsync("PollIntervalSeconds", _pollSec.ToString(), CancellationToken.None);
+        await repo.SetAsync("BroadcastNetworks", _broadcast, CancellationToken.None);
+        _saved = true;
+        StateHasChanged();
+        await Task.Delay(2000);
+        _saved = false;
+        StateHasChanged();
+    }
+}

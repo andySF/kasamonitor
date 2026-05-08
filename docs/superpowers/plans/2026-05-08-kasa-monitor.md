@@ -2320,3 +2320,1257 @@ Expected (newest first, after Chunk 2):
 - … (Chunk 1 commits below)
 
 ---
+
+## Chunk 3: Data layer — `KasaMonitor.Data` project, EF Core SQLite, repositories
+
+This chunk adds persistence. By the end:
+- `KasaMonitor.Data` and `KasaMonitor.Data.Tests` projects exist in the solution.
+- EF Core 10 + SQLite, with WAL pragmas applied at startup.
+- 7 EF entities mirror the spec's data model.
+- An initial EF migration produces the schema.
+- 4 repositories implement the Core abstractions: `PlugRepository`, `SampleRepository`, `HistoryRepository`, `SettingsRepository`.
+- Test infrastructure uses `Microsoft.Data.Sqlite` with a shared in-memory connection per test (cache=Shared) so EF migrations apply against a real SQLite engine.
+
+**Expected commit count:** 9. **Expected test count after Chunk 3:** ~65 (37 + ~28 from 4 repo test suites + 1 schema test).
+
+### Task 3.1: Scaffold `KasaMonitor.Data` + `KasaMonitor.Data.Tests`
+
+**Files:**
+- Create: `src/KasaMonitor.Data/KasaMonitor.Data.csproj`
+- Create: `tests/KasaMonitor.Data.Tests/KasaMonitor.Data.Tests.csproj`
+
+- [ ] **Step 1:** From repo root, create the Data class library:
+
+```bash
+dotnet new classlib -n KasaMonitor.Data -o src/KasaMonitor.Data -f net10.0
+rm src/KasaMonitor.Data/Class1.cs
+```
+
+- [ ] **Step 2:** Replace `src/KasaMonitor.Data/KasaMonitor.Data.csproj` with:
+
+```xml
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <RootNamespace>KasaMonitor.Data</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="10.*" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="10.*">
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+    </PackageReference>
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\KasaMonitor.Core\KasaMonitor.Core.csproj" />
+  </ItemGroup>
+</Project>
+```
+
+- [ ] **Step 3:** Create the test project:
+
+```bash
+dotnet new xunit -n KasaMonitor.Data.Tests -o tests/KasaMonitor.Data.Tests -f net10.0
+rm tests/KasaMonitor.Data.Tests/UnitTest1.cs
+```
+
+- [ ] **Step 4:** Replace `tests/KasaMonitor.Data.Tests/KasaMonitor.Data.Tests.csproj` with:
+
+```xml
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <IsPackable>false</IsPackable>
+    <RootNamespace>KasaMonitor.Data.Tests</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.*" />
+    <PackageReference Include="xunit" Version="2.*" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="2.*" />
+    <PackageReference Include="FluentAssertions" Version="6.*" />
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="10.*" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="10.*" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\KasaMonitor.Data\KasaMonitor.Data.csproj" />
+    <ProjectReference Include="..\..\src\KasaMonitor.Core\KasaMonitor.Core.csproj" />
+  </ItemGroup>
+</Project>
+```
+
+- [ ] **Step 5:** Add both projects to the solution:
+
+```bash
+dotnet sln add src/KasaMonitor.Data/KasaMonitor.Data.csproj
+dotnet sln add tests/KasaMonitor.Data.Tests/KasaMonitor.Data.Tests.csproj
+```
+
+- [ ] **Step 6:** Build (`dotnet build`) — expect 0 errors / 0 warnings; NuGet restore pulls EF Core 10.
+
+- [ ] **Step 7:** Tests (`dotnet test`) — expect 37 passed (Core) + 0 from Data (no tests yet), so 37 total.
+
+- [ ] **Step 8:** Commit:
+
+```bash
+git add KasaMonitor.sln src/KasaMonitor.Data tests/KasaMonitor.Data.Tests
+git commit -m "chore: scaffold KasaMonitor.Data + KasaMonitor.Data.Tests projects"
+```
+
+### Task 3.2: EF entities
+
+**Files:** all under `src/KasaMonitor.Data/Entities/`:
+- `PlugEntity.cs`, `SampleEntity.cs`, `OneMinuteAggregateEntity.cs`, `OneHourAggregateEntity.cs`, `DailyEnergyEntity.cs`, `MonthlyEnergyEntity.cs`, `SettingEntity.cs`
+
+These are POCO classes (NOT records — EF Core handles records but the convention for entities is plain classes with init properties). Naming uses `*Entity` suffix to disambiguate from `Plug`/`Sample` domain projections in `Core.Models`.
+
+- [ ] **Step 1: `PlugEntity.cs`**
+
+```csharp
+namespace KasaMonitor.Data.Entities;
+
+public sealed class PlugEntity
+{
+    public Guid Id { get; set; }
+    public string Mac { get; set; } = "";
+    public string IpAddress { get; set; } = "";
+    public string Alias { get; set; } = "";
+    public bool AliasIsCustom { get; set; }
+    public string Model { get; set; } = "";
+    public string HwVer { get; set; } = "";
+    public string SwVer { get; set; } = "";
+    public string OemId { get; set; } = "";
+    public DateTimeOffset FirstSeenUtc { get; set; }
+    public DateTimeOffset LastSeenUtc { get; set; }
+    public bool IsArchived { get; set; }
+    public string? Notes { get; set; }
+}
+```
+
+- [ ] **Step 2: `SampleEntity.cs`**
+
+```csharp
+namespace KasaMonitor.Data.Entities;
+
+public sealed class SampleEntity
+{
+    public long Id { get; set; }
+    public Guid PlugId { get; set; }
+    public DateTimeOffset TimestampUtc { get; set; }
+    public bool Online { get; set; }
+    public long? PowerMw { get; set; }
+    public long? VoltageMv { get; set; }
+    public long? CurrentMa { get; set; }
+    public long? TotalWh { get; set; }
+    public int? Rssi { get; set; }
+    public bool? RelayOn { get; set; }
+    public string? ErrorMessage { get; set; }
+}
+```
+
+- [ ] **Step 3: `OneMinuteAggregateEntity.cs`**
+
+```csharp
+namespace KasaMonitor.Data.Entities;
+
+public sealed class OneMinuteAggregateEntity
+{
+    public Guid PlugId { get; set; }
+    public DateTimeOffset BucketStartUtc { get; set; }
+    public long PAvgMw { get; set; }
+    public long PMaxMw { get; set; }
+    public long PMinMw { get; set; }
+    public int SampleCount { get; set; }
+    public int OnlineCount { get; set; }
+}
+```
+
+- [ ] **Step 4: `OneHourAggregateEntity.cs`**
+
+```csharp
+namespace KasaMonitor.Data.Entities;
+
+public sealed class OneHourAggregateEntity
+{
+    public Guid PlugId { get; set; }
+    public DateTimeOffset BucketStartUtc { get; set; }
+    public long PAvgMw { get; set; }
+    public long PMaxMw { get; set; }
+    public long EnergyWh { get; set; }
+    public int SampleCount { get; set; }
+}
+```
+
+- [ ] **Step 5: `DailyEnergyEntity.cs`**
+
+```csharp
+namespace KasaMonitor.Data.Entities;
+
+public sealed class DailyEnergyEntity
+{
+    public Guid PlugId { get; set; }
+    public string Date { get; set; } = ""; // ISO YYYY-MM-DD, local
+    public long EnergyWh { get; set; }
+}
+```
+
+- [ ] **Step 6: `MonthlyEnergyEntity.cs`**
+
+```csharp
+namespace KasaMonitor.Data.Entities;
+
+public sealed class MonthlyEnergyEntity
+{
+    public Guid PlugId { get; set; }
+    public int Year { get; set; }
+    public int Month { get; set; }
+    public long EnergyWh { get; set; }
+}
+```
+
+- [ ] **Step 7: `SettingEntity.cs`**
+
+```csharp
+namespace KasaMonitor.Data.Entities;
+
+public sealed class SettingEntity
+{
+    public string Key { get; set; } = "";
+    public string Value { get; set; } = "";
+}
+```
+
+- [ ] **Step 8: Build, no new tests yet**
+
+```bash
+dotnet build
+```
+
+Expected: 0 errors / 0 warnings. (No tests for entities — they're POCOs; behavior is in DbContext + repos.)
+
+- [ ] **Step 9: Commit**
+
+```bash
+git add src/KasaMonitor.Data/Entities
+git commit -m "feat(data): add 7 EF entities mirroring spec data model"
+```
+
+### Task 3.3: `KasaDbContext` + WAL pragmas
+
+**Files:**
+- Create: `src/KasaMonitor.Data/KasaDbContext.cs`
+- Create: `tests/KasaMonitor.Data.Tests/TestDbFactory.cs`
+- Create: `tests/KasaMonitor.Data.Tests/KasaDbContextTests.cs`
+
+- [ ] **Step 1: `KasaDbContext.cs`** — `src/KasaMonitor.Data/KasaDbContext.cs`:
+
+```csharp
+using KasaMonitor.Data.Entities;
+using Microsoft.EntityFrameworkCore;
+
+namespace KasaMonitor.Data;
+
+public sealed class KasaDbContext : DbContext
+{
+    public DbSet<PlugEntity> Plugs => Set<PlugEntity>();
+    public DbSet<SampleEntity> Samples => Set<SampleEntity>();
+    public DbSet<OneMinuteAggregateEntity> OneMinuteAggregates => Set<OneMinuteAggregateEntity>();
+    public DbSet<OneHourAggregateEntity> OneHourAggregates => Set<OneHourAggregateEntity>();
+    public DbSet<DailyEnergyEntity> DailyEnergies => Set<DailyEnergyEntity>();
+    public DbSet<MonthlyEnergyEntity> MonthlyEnergies => Set<MonthlyEnergyEntity>();
+    public DbSet<SettingEntity> Settings => Set<SettingEntity>();
+
+    public KasaDbContext(DbContextOptions<KasaDbContext> options) : base(options) { }
+
+    protected override void OnModelCreating(ModelBuilder mb)
+    {
+        mb.Entity<PlugEntity>(e =>
+        {
+            e.ToTable("Plugs");
+            e.HasKey(p => p.Id);
+            e.HasIndex(p => p.Mac).IsUnique();
+        });
+
+        mb.Entity<SampleEntity>(e =>
+        {
+            e.ToTable("Samples");
+            e.HasKey(s => s.Id);
+            e.Property(s => s.Id).ValueGeneratedOnAdd();
+            e.HasIndex(s => new { s.PlugId, s.TimestampUtc })
+                .IsDescending(false, true)
+                .HasDatabaseName("idx_samples_plug_time");
+        });
+
+        mb.Entity<OneMinuteAggregateEntity>(e =>
+        {
+            e.ToTable("OneMinuteAggregates");
+            e.HasKey(a => new { a.PlugId, a.BucketStartUtc });
+        });
+
+        mb.Entity<OneHourAggregateEntity>(e =>
+        {
+            e.ToTable("OneHourAggregates");
+            e.HasKey(a => new { a.PlugId, a.BucketStartUtc });
+        });
+
+        mb.Entity<DailyEnergyEntity>(e =>
+        {
+            e.ToTable("DailyEnergy");
+            e.HasKey(d => new { d.PlugId, d.Date });
+        });
+
+        mb.Entity<MonthlyEnergyEntity>(e =>
+        {
+            e.ToTable("MonthlyEnergy");
+            e.HasKey(m => new { m.PlugId, m.Year, m.Month });
+        });
+
+        mb.Entity<SettingEntity>(e =>
+        {
+            e.ToTable("Settings");
+            e.HasKey(s => s.Key);
+        });
+    }
+}
+```
+
+- [ ] **Step 2: `TestDbFactory.cs`** — shared SQLite in-memory connection helper:
+
+```csharp
+using KasaMonitor.Data;
+using Microsoft.Data.Sqlite;
+using Microsoft.EntityFrameworkCore;
+
+namespace KasaMonitor.Data.Tests;
+
+internal sealed class TestDbFactory : IDisposable
+{
+    private readonly SqliteConnection _conn;
+
+    public TestDbFactory()
+    {
+        _conn = new SqliteConnection("Filename=:memory:");
+        _conn.Open();
+        using var ctx = CreateContext();
+        ctx.Database.EnsureCreated();
+    }
+
+    public KasaDbContext CreateContext()
+    {
+        var opts = new DbContextOptionsBuilder<KasaDbContext>()
+            .UseSqlite(_conn)
+            .Options;
+        return new KasaDbContext(opts);
+    }
+
+    public void Dispose() => _conn.Dispose();
+}
+```
+
+- [ ] **Step 3: `KasaDbContextTests.cs`** — minimal smoke test:
+
+```csharp
+using FluentAssertions;
+using KasaMonitor.Data.Entities;
+using Xunit;
+
+namespace KasaMonitor.Data.Tests;
+
+public class KasaDbContextTests
+{
+    [Fact]
+    public void EnsureCreated_BuildsAllTables()
+    {
+        using var f = new TestDbFactory();
+        using var ctx = f.CreateContext();
+
+        var tables = ctx.Database.SqlQueryRaw<string>(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name").ToList();
+
+        tables.Should().Contain(new[]
+        {
+            "DailyEnergy", "MonthlyEnergy", "OneHourAggregates", "OneMinuteAggregates",
+            "Plugs", "Samples", "Settings"
+        });
+    }
+
+    [Fact]
+    public void InsertAndReadPlug_RoundTrips()
+    {
+        using var f = new TestDbFactory();
+        using (var ctx = f.CreateContext())
+        {
+            ctx.Plugs.Add(new PlugEntity
+            {
+                Id = Guid.NewGuid(),
+                Mac = "c006c3702bfc",
+                IpAddress = "192.168.254.105",
+                Alias = "Birou",
+                Model = "KP115(EU)",
+                HwVer = "1.0",
+                SwVer = "1.0.20 Build 221125 Rel.092759",
+                OemId = "X",
+                FirstSeenUtc = DateTimeOffset.UtcNow,
+                LastSeenUtc = DateTimeOffset.UtcNow
+            });
+            ctx.SaveChanges();
+        }
+
+        using (var ctx = f.CreateContext())
+        {
+            var plug = ctx.Plugs.Single();
+            plug.Mac.Should().Be("c006c3702bfc");
+            plug.Alias.Should().Be("Birou");
+        }
+    }
+}
+```
+
+- [ ] **Step 4: Build + run tests**
+
+```bash
+dotnet build
+dotnet test
+```
+
+Expected: 0 errors. Total tests: 39 (37 + 2 new).
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add src/KasaMonitor.Data/KasaDbContext.cs tests/KasaMonitor.Data.Tests/TestDbFactory.cs tests/KasaMonitor.Data.Tests/KasaDbContextTests.cs
+git commit -m "feat(data): add KasaDbContext with composite keys + indexes; in-memory test factory"
+```
+
+### Task 3.4: Initial migration + schema test
+
+EF migrations are generated via `dotnet ef`. Output goes to `src/KasaMonitor.Data/Migrations/`. The migration is checked into git.
+
+- [ ] **Step 1: Generate the migration**
+
+From repo root:
+
+```bash
+dotnet ef migrations add InitialCreate \
+    --project src/KasaMonitor.Data/KasaMonitor.Data.csproj \
+    --startup-project src/KasaMonitor.Data/KasaMonitor.Data.csproj \
+    -o Migrations
+```
+
+This produces 3 files under `src/KasaMonitor.Data/Migrations/`:
+- `<timestamp>_InitialCreate.cs` (the Up/Down migration)
+- `<timestamp>_InitialCreate.Designer.cs`
+- `KasaDbContextModelSnapshot.cs`
+
+The migration creates 7 tables matching `OnModelCreating`. The `dotnet ef` tool requires `Microsoft.EntityFrameworkCore.Design` package, which the csproj already includes.
+
+**Note:** because `KasaDbContext` only has a single ctor `(DbContextOptions<KasaDbContext>)` and not a parameterless one, `dotnet ef` would normally need a design-time factory. However for `dotnet ef migrations add` (non-runtime), EF can build the model from `OnModelCreating` without instantiating the context against a real DB. If `dotnet ef` complains about no design-time factory, add `tests/KasaMonitor.Data.Tests/` is already a fall back consumer — but the simpler fix is the design-time factory:
+
+If needed, create `src/KasaMonitor.Data/DesignTimeKasaDbContextFactory.cs`:
+
+```csharp
+using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Design;
+
+namespace KasaMonitor.Data;
+
+internal sealed class DesignTimeKasaDbContextFactory : IDesignTimeDbContextFactory<KasaDbContext>
+{
+    public KasaDbContext CreateDbContext(string[] args)
+    {
+        var opts = new DbContextOptionsBuilder<KasaDbContext>()
+            .UseSqlite("Filename=:memory:")
+            .Options;
+        return new KasaDbContext(opts);
+    }
+}
+```
+
+Then re-run the `dotnet ef migrations add` command. The internal class only exists for tooling — at runtime nothing references it.
+
+- [ ] **Step 2: Verify migration applies in tests**
+
+Add `tests/KasaMonitor.Data.Tests/MigrationTests.cs`:
+
+```csharp
+using FluentAssertions;
+using KasaMonitor.Data;
+using Microsoft.Data.Sqlite;
+using Microsoft.EntityFrameworkCore;
+using Xunit;
+
+namespace KasaMonitor.Data.Tests;
+
+public class MigrationTests
+{
+    [Fact]
+    public void Migrate_ProducesExpectedSchema()
+    {
+        using var conn = new SqliteConnection("Filename=:memory:");
+        conn.Open();
+
+        var opts = new DbContextOptionsBuilder<KasaDbContext>().UseSqlite(conn).Options;
+        using var ctx = new KasaDbContext(opts);
+        ctx.Database.Migrate();
+
+        var tables = ctx.Database.SqlQueryRaw<string>(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '__EFMigrationsHistory' ORDER BY name").ToList();
+
+        tables.Should().Contain(new[]
+        {
+            "DailyEnergy", "MonthlyEnergy", "OneHourAggregates", "OneMinuteAggregates",
+            "Plugs", "Samples", "Settings"
+        });
+    }
+}
+```
+
+Note: this differs from `KasaDbContextTests.EnsureCreated_BuildsAllTables` because `Migrate()` runs the actual checked-in migration SQL, while `EnsureCreated()` builds from the model. Both should produce the same schema; testing both catches drift.
+
+- [ ] **Step 3: Build + test**
+
+```bash
+dotnet build
+dotnet test
+```
+
+Expected: 0 errors. Total tests: 40.
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add src/KasaMonitor.Data/Migrations src/KasaMonitor.Data/DesignTimeKasaDbContextFactory.cs tests/KasaMonitor.Data.Tests/MigrationTests.cs
+git commit -m "feat(data): add InitialCreate EF migration with schema verification test"
+```
+
+If `DesignTimeKasaDbContextFactory.cs` was not needed (depends on EF tool version), omit it from `git add`.
+
+### Task 3.5: `PlugRepository` (TDD)
+
+**Files:**
+- Test: `tests/KasaMonitor.Data.Tests/PlugRepositoryTests.cs`
+- Create: `src/KasaMonitor.Data/Repositories/PlugRepository.cs`
+
+`PlugRepository` implements `IPlugRepository` by translating `Plug` and `DiscoveredPlug` domain projections to/from `PlugEntity`. UPSERT on Mac (the unique business key).
+
+- [ ] **Step 1: Write tests** — `tests/KasaMonitor.Data.Tests/PlugRepositoryTests.cs`:
+
+```csharp
+using FluentAssertions;
+using KasaMonitor.Core.Models;
+using KasaMonitor.Data.Repositories;
+using System.Net;
+using Xunit;
+
+namespace KasaMonitor.Data.Tests;
+
+public class PlugRepositoryTests
+{
+    private static DiscoveredPlug MakeDiscovered(string mac = "c006c3702bfc", string alias = "Birou", string ip = "192.168.254.105") =>
+        new(IPAddress.Parse(ip), new PlugInfo(
+            Mac: mac, Alias: alias, Model: "KP115(EU)", HwVer: "1.0", SwVer: "1.0.20", OemId: "X",
+            RelayOn: true, RssiDbm: -53, OnTime: TimeSpan.FromMinutes(10)));
+
+    [Fact]
+    public async Task UpsertFromDiscovery_NewPlug_InsertsRowAndReturnsId()
+    {
+        using var f = new TestDbFactory();
+        using var ctx = f.CreateContext();
+        var repo = new PlugRepository(ctx);
+        var now = DateTimeOffset.UtcNow;
+
+        var id = await repo.UpsertFromDiscoveryAsync(MakeDiscovered(), now, CancellationToken.None);
+
+        id.Should().NotBe(Guid.Empty);
+        var plug = (await repo.ListAllAsync(CancellationToken.None)).Single();
+        plug.Mac.Should().Be("c006c3702bfc");
+        plug.FirstSeenUtc.Should().Be(now);
+        plug.LastSeenUtc.Should().Be(now);
+    }
+
+    [Fact]
+    public async Task UpsertFromDiscovery_ExistingPlug_UpdatesIpAndLastSeen_PreservesId()
+    {
+        using var f = new TestDbFactory();
+        using var ctx = f.CreateContext();
+        var repo = new PlugRepository(ctx);
+
+        var t0 = DateTimeOffset.Parse("2026-05-08T10:00:00Z");
+        var firstId = await repo.UpsertFromDiscoveryAsync(MakeDiscovered(ip: "192.168.254.105"), t0, CancellationToken.None);
+
+        var t1 = DateTimeOffset.Parse("2026-05-08T10:30:00Z");
+        var secondId = await repo.UpsertFromDiscoveryAsync(MakeDiscovered(ip: "192.168.254.106"), t1, CancellationToken.None);
+
+        secondId.Should().Be(firstId);
+        var plug = (await repo.ListAllAsync(CancellationToken.None)).Single();
+        plug.IpAddress.ToString().Should().Be("192.168.254.106");
+        plug.FirstSeenUtc.Should().Be(t0); // unchanged
+        plug.LastSeenUtc.Should().Be(t1);
+    }
+
+    [Fact]
+    public async Task UpsertFromDiscovery_DoesNotOverwriteCustomAlias()
+    {
+        using var f = new TestDbFactory();
+        using var ctx = f.CreateContext();
+        var repo = new PlugRepository(ctx);
+        var now = DateTimeOffset.UtcNow;
+
+        var id = await repo.UpsertFromDiscoveryAsync(MakeDiscovered(alias: "Birou"), now, CancellationToken.None);
+        await repo.SetAliasAsync(id, "MyCustom", isCustom: true, CancellationToken.None);
+
+        await repo.UpsertFromDiscoveryAsync(MakeDiscovered(alias: "DeviceAlias"), now, CancellationToken.None);
+
+        var plug = (await repo.ListAllAsync(CancellationToken.None)).Single();
+        plug.Alias.Should().Be("MyCustom");
+        plug.AliasIsCustom.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task GetByMac_ReturnsRow_WhenPresent()
+    {
+        using var f = new TestDbFactory();
+        using var ctx = f.CreateContext();
+        var repo = new PlugRepository(ctx);
+        await repo.UpsertFromDiscoveryAsync(MakeDiscovered(), DateTimeOffset.UtcNow, CancellationToken.None);
+
+        var plug = await repo.GetByMacAsync("c006c3702bfc", CancellationToken.None);
+        plug.Should().NotBeNull();
+        plug!.Alias.Should().Be("Birou");
+    }
+
+    [Fact]
+    public async Task GetByMac_ReturnsNull_WhenAbsent()
+    {
+        using var f = new TestDbFactory();
+        using var ctx = f.CreateContext();
+        var repo = new PlugRepository(ctx);
+
+        var plug = await repo.GetByMacAsync("ffffffffffff", CancellationToken.None);
+        plug.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task SetArchived_FlipsFlag()
+    {
+        using var f = new TestDbFactory();
+        using var ctx = f.CreateContext();
+        var repo = new PlugRepository(ctx);
+        var id = await repo.UpsertFromDiscoveryAsync(MakeDiscovered(), DateTimeOffset.UtcNow, CancellationToken.None);
+
+        await repo.SetArchivedAsync(id, true, CancellationToken.None);
+        (await repo.GetByMacAsync("c006c3702bfc", CancellationToken.None))!.IsArchived.Should().BeTrue();
+
+        await repo.SetArchivedAsync(id, false, CancellationToken.None);
+        (await repo.GetByMacAsync("c006c3702bfc", CancellationToken.None))!.IsArchived.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task UpdateLastSeen_TouchesTimestampOnly()
+    {
+        using var f = new TestDbFactory();
+        using var ctx = f.CreateContext();
+        var repo = new PlugRepository(ctx);
+        var t0 = DateTimeOffset.Parse("2026-05-08T10:00:00Z");
+        var id = await repo.UpsertFromDiscoveryAsync(MakeDiscovered(), t0, CancellationToken.None);
+
+        var t1 = DateTimeOffset.Parse("2026-05-08T11:00:00Z");
+        await repo.UpdateLastSeenAsync(id, t1, CancellationToken.None);
+
+        var plug = (await repo.ListAllAsync(CancellationToken.None)).Single();
+        plug.LastSeenUtc.Should().Be(t1);
+        plug.FirstSeenUtc.Should().Be(t0);
+    }
+}
+```
+
+- [ ] **Step 2: Run tests** — expect compile failure (`PlugRepository` undefined).
+
+- [ ] **Step 3: Implement** — `src/KasaMonitor.Data/Repositories/PlugRepository.cs`:
+
+```csharp
+using KasaMonitor.Core.Abstractions;
+using KasaMonitor.Core.Models;
+using KasaMonitor.Data.Entities;
+using Microsoft.EntityFrameworkCore;
+using System.Net;
+
+namespace KasaMonitor.Data.Repositories;
+
+public sealed class PlugRepository : IPlugRepository
+{
+    private readonly KasaDbContext _db;
+    public PlugRepository(KasaDbContext db) => _db = db;
+
+    public async Task<Guid> UpsertFromDiscoveryAsync(DiscoveredPlug discovered, DateTimeOffset utcNow, CancellationToken ct)
+    {
+        var existing = await _db.Plugs.FirstOrDefaultAsync(p => p.Mac == discovered.Info.Mac, ct);
+        if (existing is null)
+        {
+            var entity = new PlugEntity
+            {
+                Id = Guid.NewGuid(),
+                Mac = discovered.Info.Mac,
+                IpAddress = discovered.IpAddress.ToString(),
+                Alias = discovered.Info.Alias,
+                AliasIsCustom = false,
+                Model = discovered.Info.Model,
+                HwVer = discovered.Info.HwVer,
+                SwVer = discovered.Info.SwVer,
+                OemId = discovered.Info.OemId,
+                FirstSeenUtc = utcNow,
+                LastSeenUtc = utcNow,
+                IsArchived = false
+            };
+            _db.Plugs.Add(entity);
+            await _db.SaveChangesAsync(ct);
+            return entity.Id;
+        }
+
+        existing.IpAddress = discovered.IpAddress.ToString();
+        existing.Model = discovered.Info.Model;
+        existing.HwVer = discovered.Info.HwVer;
+        existing.SwVer = discovered.Info.SwVer;
+        existing.OemId = discovered.Info.OemId;
+        existing.LastSeenUtc = utcNow;
+        if (!existing.AliasIsCustom)
+            existing.Alias = discovered.Info.Alias;
+        await _db.SaveChangesAsync(ct);
+        return existing.Id;
+    }
+
+    public async Task UpdateLastSeenAsync(Guid plugId, DateTimeOffset utcNow, CancellationToken ct)
+    {
+        var existing = await _db.Plugs.FindAsync(new object?[] { plugId }, ct);
+        if (existing is null) return;
+        existing.LastSeenUtc = utcNow;
+        await _db.SaveChangesAsync(ct);
+    }
+
+    public async Task<IReadOnlyList<Plug>> ListAllAsync(CancellationToken ct) =>
+        await _db.Plugs.AsNoTracking().Select(p => Map(p)).ToListAsync(ct);
+
+    public async Task<Plug?> GetByMacAsync(string mac, CancellationToken ct)
+    {
+        var e = await _db.Plugs.AsNoTracking().FirstOrDefaultAsync(p => p.Mac == mac, ct);
+        return e is null ? null : Map(e);
+    }
+
+    public async Task SetAliasAsync(Guid plugId, string alias, bool isCustom, CancellationToken ct)
+    {
+        var existing = await _db.Plugs.FindAsync(new object?[] { plugId }, ct);
+        if (existing is null) return;
+        existing.Alias = alias;
+        existing.AliasIsCustom = isCustom;
+        await _db.SaveChangesAsync(ct);
+    }
+
+    public async Task SetArchivedAsync(Guid plugId, bool archived, CancellationToken ct)
+    {
+        var existing = await _db.Plugs.FindAsync(new object?[] { plugId }, ct);
+        if (existing is null) return;
+        existing.IsArchived = archived;
+        await _db.SaveChangesAsync(ct);
+    }
+
+    private static Plug Map(PlugEntity e) => new(
+        Id: e.Id,
+        Mac: e.Mac,
+        IpAddress: IPAddress.TryParse(e.IpAddress, out var ip) ? ip : IPAddress.None,
+        Alias: e.Alias,
+        AliasIsCustom: e.AliasIsCustom,
+        Model: e.Model,
+        HwVer: e.HwVer,
+        SwVer: e.SwVer,
+        OemId: e.OemId,
+        FirstSeenUtc: e.FirstSeenUtc,
+        LastSeenUtc: e.LastSeenUtc,
+        IsArchived: e.IsArchived,
+        Notes: e.Notes);
+}
+```
+
+- [ ] **Step 4: Run tests** — expect 47 passed (40 + 7 new). Tally for this task: 7 tests above.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add src/KasaMonitor.Data/Repositories/PlugRepository.cs tests/KasaMonitor.Data.Tests/PlugRepositoryTests.cs
+git commit -m "feat(data): implement PlugRepository with mac-keyed upsert and alias-custom preservation"
+```
+
+### Task 3.6: `SampleRepository` (TDD)
+
+**Files:**
+- Test: `tests/KasaMonitor.Data.Tests/SampleRepositoryTests.cs`
+- Create: `src/KasaMonitor.Data/Repositories/SampleRepository.cs`
+
+- [ ] **Step 1: Tests** — `tests/KasaMonitor.Data.Tests/SampleRepositoryTests.cs`:
+
+```csharp
+using FluentAssertions;
+using KasaMonitor.Core.Models;
+using KasaMonitor.Data.Repositories;
+using Xunit;
+
+namespace KasaMonitor.Data.Tests;
+
+public class SampleRepositoryTests
+{
+    private static Sample MakeSample(Guid plugId, DateTimeOffset ts, long? power = 50_000) =>
+        new(Id: 0, PlugId: plugId, TimestampUtc: ts, Online: power.HasValue,
+            PowerMw: power, VoltageMv: 230_000, CurrentMa: 200, TotalWh: 100, Rssi: -50, RelayOn: true, ErrorMessage: null);
+
+    [Fact]
+    public async Task InsertAsync_RoundTripsAllFields()
+    {
+        using var f = new TestDbFactory();
+        using var ctx = f.CreateContext();
+        var repo = new SampleRepository(ctx);
+        var plugId = Guid.NewGuid();
+        var ts = DateTimeOffset.UtcNow;
+
+        await repo.InsertAsync(MakeSample(plugId, ts), CancellationToken.None);
+
+        var read = (await repo.ListByPlugAsync(plugId, ts.AddMinutes(-1), ts.AddMinutes(1), CancellationToken.None)).Single();
+        read.PlugId.Should().Be(plugId);
+        read.PowerMw.Should().Be(50_000);
+    }
+
+    [Fact]
+    public async Task InsertManyAsync_BulkInsertsRows()
+    {
+        using var f = new TestDbFactory();
+        using var ctx = f.CreateContext();
+        var repo = new SampleRepository(ctx);
+        var plugId = Guid.NewGuid();
+        var t0 = DateTimeOffset.UtcNow;
+        var samples = Enumerable.Range(0, 5)
+            .Select(i => MakeSample(plugId, t0.AddSeconds(i * 10)))
+            .ToList();
+
+        await repo.InsertManyAsync(samples, CancellationToken.None);
+
+        var read = await repo.ListByPlugAsync(plugId, t0.AddSeconds(-1), t0.AddMinutes(1), CancellationToken.None);
+        read.Should().HaveCount(5);
+    }
+
+    [Fact]
+    public async Task ListByPlug_ScopesToTimeRange()
+    {
+        using var f = new TestDbFactory();
+        using var ctx = f.CreateContext();
+        var repo = new SampleRepository(ctx);
+        var plugId = Guid.NewGuid();
+        var t0 = DateTimeOffset.Parse("2026-05-08T10:00:00Z");
+
+        await repo.InsertManyAsync(new[]
+        {
+            MakeSample(plugId, t0.AddMinutes(-10)),
+            MakeSample(plugId, t0.AddMinutes(0)),
+            MakeSample(plugId, t0.AddMinutes(10)),
+            MakeSample(plugId, t0.AddMinutes(20)),
+        }, CancellationToken.None);
+
+        var read = await repo.ListByPlugAsync(plugId, t0, t0.AddMinutes(15), CancellationToken.None);
+        read.Should().HaveCount(2); // t0 and t0+10
+    }
+
+    [Fact]
+    public async Task DeleteOlderThan_RemovesOldRows_OnlyOldOnes()
+    {
+        using var f = new TestDbFactory();
+        using var ctx = f.CreateContext();
+        var repo = new SampleRepository(ctx);
+        var plugId = Guid.NewGuid();
+        var cutoff = DateTimeOffset.Parse("2026-05-08T00:00:00Z");
+
+        await repo.InsertManyAsync(new[]
+        {
+            MakeSample(plugId, cutoff.AddDays(-10)),
+            MakeSample(plugId, cutoff.AddDays(-1)),
+            MakeSample(plugId, cutoff.AddDays(1)),
+        }, CancellationToken.None);
+
+        var deleted = await repo.DeleteOlderThanAsync(cutoff, CancellationToken.None);
+        deleted.Should().Be(2);
+
+        var remaining = await repo.ListByPlugAsync(plugId, cutoff.AddDays(-30), cutoff.AddDays(30), CancellationToken.None);
+        remaining.Should().HaveCount(1);
+    }
+}
+```
+
+- [ ] **Step 2: Run, expect compile failure**
+
+- [ ] **Step 3: Implement** — `src/KasaMonitor.Data/Repositories/SampleRepository.cs`:
+
+```csharp
+using KasaMonitor.Core.Abstractions;
+using KasaMonitor.Core.Models;
+using KasaMonitor.Data.Entities;
+using Microsoft.EntityFrameworkCore;
+
+namespace KasaMonitor.Data.Repositories;
+
+public sealed class SampleRepository : ISampleRepository
+{
+    private readonly KasaDbContext _db;
+    public SampleRepository(KasaDbContext db) => _db = db;
+
+    public async Task InsertAsync(Sample sample, CancellationToken ct)
+    {
+        _db.Samples.Add(MapToEntity(sample));
+        await _db.SaveChangesAsync(ct);
+    }
+
+    public async Task InsertManyAsync(IReadOnlyList<Sample> samples, CancellationToken ct)
+    {
+        foreach (var s in samples) _db.Samples.Add(MapToEntity(s));
+        await _db.SaveChangesAsync(ct);
+    }
+
+    public async Task<IReadOnlyList<Sample>> ListByPlugAsync(Guid plugId, DateTimeOffset fromUtc, DateTimeOffset toUtc, CancellationToken ct) =>
+        await _db.Samples
+            .AsNoTracking()
+            .Where(s => s.PlugId == plugId && s.TimestampUtc >= fromUtc && s.TimestampUtc <= toUtc)
+            .OrderBy(s => s.TimestampUtc)
+            .Select(s => Map(s))
+            .ToListAsync(ct);
+
+    public async Task<int> DeleteOlderThanAsync(DateTimeOffset cutoffUtc, CancellationToken ct)
+    {
+        return await _db.Samples
+            .Where(s => s.TimestampUtc < cutoffUtc)
+            .ExecuteDeleteAsync(ct);
+    }
+
+    private static SampleEntity MapToEntity(Sample s) => new()
+    {
+        PlugId = s.PlugId,
+        TimestampUtc = s.TimestampUtc,
+        Online = s.Online,
+        PowerMw = s.PowerMw,
+        VoltageMv = s.VoltageMv,
+        CurrentMa = s.CurrentMa,
+        TotalWh = s.TotalWh,
+        Rssi = s.Rssi,
+        RelayOn = s.RelayOn,
+        ErrorMessage = s.ErrorMessage
+    };
+
+    private static Sample Map(SampleEntity e) => new(
+        Id: e.Id, PlugId: e.PlugId, TimestampUtc: e.TimestampUtc, Online: e.Online,
+        PowerMw: e.PowerMw, VoltageMv: e.VoltageMv, CurrentMa: e.CurrentMa, TotalWh: e.TotalWh,
+        Rssi: e.Rssi, RelayOn: e.RelayOn, ErrorMessage: e.ErrorMessage);
+}
+```
+
+- [ ] **Step 4: Tests pass** (51 total = 47 + 4).
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add src/KasaMonitor.Data/Repositories/SampleRepository.cs tests/KasaMonitor.Data.Tests/SampleRepositoryTests.cs
+git commit -m "feat(data): implement SampleRepository (insert, range query, retention delete)"
+```
+
+### Task 3.7: `HistoryRepository` (TDD)
+
+**Files:**
+- Test: `tests/KasaMonitor.Data.Tests/HistoryRepositoryTests.cs`
+- Create: `src/KasaMonitor.Data/Repositories/HistoryRepository.cs`
+
+- [ ] **Step 1: Tests**:
+
+```csharp
+using FluentAssertions;
+using KasaMonitor.Core.Models;
+using KasaMonitor.Data.Repositories;
+using Xunit;
+
+namespace KasaMonitor.Data.Tests;
+
+public class HistoryRepositoryTests
+{
+    [Fact]
+    public async Task UpsertDaily_NewEntries_Inserts()
+    {
+        using var f = new TestDbFactory();
+        using var ctx = f.CreateContext();
+        var repo = new HistoryRepository(ctx);
+        var plugId = Guid.NewGuid();
+
+        await repo.UpsertDailyAsync(plugId, new[]
+        {
+            new DailyKwh(2026, 5, 1, 1500),
+            new DailyKwh(2026, 5, 2, 1700),
+        }, CancellationToken.None);
+
+        var got = await repo.GetDailyRangeAsync(plugId,
+            new DateOnly(2026, 5, 1), new DateOnly(2026, 5, 31), CancellationToken.None);
+        got.Should().HaveCount(2);
+    }
+
+    [Fact]
+    public async Task UpsertDaily_OnDuplicateKey_Replaces()
+    {
+        using var f = new TestDbFactory();
+        using var ctx = f.CreateContext();
+        var repo = new HistoryRepository(ctx);
+        var plugId = Guid.NewGuid();
+
+        await repo.UpsertDailyAsync(plugId, new[] { new DailyKwh(2026, 5, 1, 1500) }, CancellationToken.None);
+        await repo.UpsertDailyAsync(plugId, new[] { new DailyKwh(2026, 5, 1, 1900) }, CancellationToken.None);
+
+        var got = await repo.GetDailyRangeAsync(plugId,
+            new DateOnly(2026, 5, 1), new DateOnly(2026, 5, 1), CancellationToken.None);
+        got.Single().EnergyWh.Should().Be(1900);
+    }
+
+    [Fact]
+    public async Task UpsertMonthly_NewAndUpsert()
+    {
+        using var f = new TestDbFactory();
+        using var ctx = f.CreateContext();
+        var repo = new HistoryRepository(ctx);
+        var plugId = Guid.NewGuid();
+
+        await repo.UpsertMonthlyAsync(plugId, new[] { new MonthlyKwh(2026, 5, 50000) }, CancellationToken.None);
+        await repo.UpsertMonthlyAsync(plugId, new[] { new MonthlyKwh(2026, 5, 60000), new MonthlyKwh(2026, 6, 1) }, CancellationToken.None);
+
+        var got = await repo.GetMonthlyRangeAsync(plugId, 2026, 2026, CancellationToken.None);
+        got.Should().HaveCount(2);
+        got.Single(m => m.Month == 5).EnergyWh.Should().Be(60000);
+    }
+
+    [Fact]
+    public async Task GetDailyRange_RespectsBounds()
+    {
+        using var f = new TestDbFactory();
+        using var ctx = f.CreateContext();
+        var repo = new HistoryRepository(ctx);
+        var plugId = Guid.NewGuid();
+        await repo.UpsertDailyAsync(plugId, new[]
+        {
+            new DailyKwh(2026, 4, 30, 100),
+            new DailyKwh(2026, 5, 1, 200),
+            new DailyKwh(2026, 5, 2, 300),
+            new DailyKwh(2026, 5, 3, 400),
+        }, CancellationToken.None);
+
+        var got = await repo.GetDailyRangeAsync(plugId,
+            new DateOnly(2026, 5, 1), new DateOnly(2026, 5, 2), CancellationToken.None);
+        got.Should().HaveCount(2);
+        got.Sum(d => d.EnergyWh).Should().Be(500);
+    }
+}
+```
+
+- [ ] **Step 2: Run, expect failure.**
+
+- [ ] **Step 3: Implement** — `src/KasaMonitor.Data/Repositories/HistoryRepository.cs`:
+
+```csharp
+using KasaMonitor.Core.Abstractions;
+using KasaMonitor.Core.Models;
+using KasaMonitor.Data.Entities;
+using Microsoft.EntityFrameworkCore;
+
+namespace KasaMonitor.Data.Repositories;
+
+public sealed class HistoryRepository : IHistoryRepository
+{
+    private readonly KasaDbContext _db;
+    public HistoryRepository(KasaDbContext db) => _db = db;
+
+    public async Task UpsertDailyAsync(Guid plugId, IReadOnlyList<DailyKwh> entries, CancellationToken ct)
+    {
+        foreach (var d in entries)
+        {
+            var key = $"{d.Year:D4}-{d.Month:D2}-{d.Day:D2}";
+            var existing = await _db.DailyEnergies.FindAsync(new object?[] { plugId, key }, ct);
+            if (existing is null)
+            {
+                _db.DailyEnergies.Add(new DailyEnergyEntity { PlugId = plugId, Date = key, EnergyWh = d.EnergyWh });
+            }
+            else
+            {
+                existing.EnergyWh = d.EnergyWh;
+            }
+        }
+        await _db.SaveChangesAsync(ct);
+    }
+
+    public async Task UpsertMonthlyAsync(Guid plugId, IReadOnlyList<MonthlyKwh> entries, CancellationToken ct)
+    {
+        foreach (var m in entries)
+        {
+            var existing = await _db.MonthlyEnergies.FindAsync(new object?[] { plugId, m.Year, m.Month }, ct);
+            if (existing is null)
+            {
+                _db.MonthlyEnergies.Add(new MonthlyEnergyEntity { PlugId = plugId, Year = m.Year, Month = m.Month, EnergyWh = m.EnergyWh });
+            }
+            else
+            {
+                existing.EnergyWh = m.EnergyWh;
+            }
+        }
+        await _db.SaveChangesAsync(ct);
+    }
+
+    public async Task<IReadOnlyList<DailyKwh>> GetDailyRangeAsync(Guid plugId, DateOnly fromInclusive, DateOnly toInclusive, CancellationToken ct)
+    {
+        var fromKey = fromInclusive.ToString("yyyy-MM-dd");
+        var toKey   = toInclusive.ToString("yyyy-MM-dd");
+        var rows = await _db.DailyEnergies.AsNoTracking()
+            .Where(d => d.PlugId == plugId && string.Compare(d.Date, fromKey) >= 0 && string.Compare(d.Date, toKey) <= 0)
+            .OrderBy(d => d.Date)
+            .ToListAsync(ct);
+        return rows.Select(d =>
+        {
+            var dt = DateOnly.ParseExact(d.Date, "yyyy-MM-dd");
+            return new DailyKwh(dt.Year, dt.Month, dt.Day, d.EnergyWh);
+        }).ToList();
+    }
+
+    public async Task<IReadOnlyList<MonthlyKwh>> GetMonthlyRangeAsync(Guid plugId, int yearFromInclusive, int yearToInclusive, CancellationToken ct) =>
+        await _db.MonthlyEnergies.AsNoTracking()
+            .Where(m => m.PlugId == plugId && m.Year >= yearFromInclusive && m.Year <= yearToInclusive)
+            .OrderBy(m => m.Year).ThenBy(m => m.Month)
+            .Select(m => new MonthlyKwh(m.Year, m.Month, m.EnergyWh))
+            .ToListAsync(ct);
+}
+```
+
+- [ ] **Step 4: Tests pass** (55 total = 51 + 4).
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add src/KasaMonitor.Data/Repositories/HistoryRepository.cs tests/KasaMonitor.Data.Tests/HistoryRepositoryTests.cs
+git commit -m "feat(data): implement HistoryRepository with daily/monthly UPSERT semantics"
+```
+
+### Task 3.8: `SettingsRepository` (TDD)
+
+**Files:**
+- Test: `tests/KasaMonitor.Data.Tests/SettingsRepositoryTests.cs`
+- Create: `src/KasaMonitor.Data/Repositories/SettingsRepository.cs`
+
+- [ ] **Step 1: Tests**:
+
+```csharp
+using FluentAssertions;
+using KasaMonitor.Data.Repositories;
+using Xunit;
+
+namespace KasaMonitor.Data.Tests;
+
+public class SettingsRepositoryTests
+{
+    [Fact]
+    public async Task Get_AbsentKey_ReturnsNull()
+    {
+        using var f = new TestDbFactory();
+        using var ctx = f.CreateContext();
+        var repo = new SettingsRepository(ctx);
+        (await repo.GetAsync("missing", CancellationToken.None)).Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Set_NewKey_PersistsValue()
+    {
+        using var f = new TestDbFactory();
+        using var ctx = f.CreateContext();
+        var repo = new SettingsRepository(ctx);
+
+        await repo.SetAsync("Tariff", "1.30", CancellationToken.None);
+        (await repo.GetAsync("Tariff", CancellationToken.None)).Should().Be("1.30");
+    }
+
+    [Fact]
+    public async Task Set_ExistingKey_OverwritesValue()
+    {
+        using var f = new TestDbFactory();
+        using var ctx = f.CreateContext();
+        var repo = new SettingsRepository(ctx);
+
+        await repo.SetAsync("Tariff", "1.30", CancellationToken.None);
+        await repo.SetAsync("Tariff", "1.45", CancellationToken.None);
+        (await repo.GetAsync("Tariff", CancellationToken.None)).Should().Be("1.45");
+    }
+
+    [Fact]
+    public async Task GetAll_ReturnsAllKeys()
+    {
+        using var f = new TestDbFactory();
+        using var ctx = f.CreateContext();
+        var repo = new SettingsRepository(ctx);
+
+        await repo.SetAsync("a", "1", CancellationToken.None);
+        await repo.SetAsync("b", "2", CancellationToken.None);
+
+        var all = await repo.GetAllAsync(CancellationToken.None);
+        all.Should().ContainKey("a").WhoseValue.Should().Be("1");
+        all.Should().ContainKey("b").WhoseValue.Should().Be("2");
+    }
+}
+```
+
+- [ ] **Step 2: Run, expect failure.**
+
+- [ ] **Step 3: Implement** — `src/KasaMonitor.Data/Repositories/SettingsRepository.cs`:
+
+```csharp
+using KasaMonitor.Core.Abstractions;
+using KasaMonitor.Data.Entities;
+using Microsoft.EntityFrameworkCore;
+
+namespace KasaMonitor.Data.Repositories;
+
+public sealed class SettingsRepository : ISettingsRepository
+{
+    private readonly KasaDbContext _db;
+    public SettingsRepository(KasaDbContext db) => _db = db;
+
+    public async Task<string?> GetAsync(string key, CancellationToken ct)
+    {
+        var e = await _db.Settings.AsNoTracking().FirstOrDefaultAsync(s => s.Key == key, ct);
+        return e?.Value;
+    }
+
+    public async Task SetAsync(string key, string value, CancellationToken ct)
+    {
+        var e = await _db.Settings.FindAsync(new object?[] { key }, ct);
+        if (e is null) _db.Settings.Add(new SettingEntity { Key = key, Value = value });
+        else e.Value = value;
+        await _db.SaveChangesAsync(ct);
+    }
+
+    public async Task<IReadOnlyDictionary<string, string>> GetAllAsync(CancellationToken ct)
+    {
+        var rows = await _db.Settings.AsNoTracking().ToListAsync(ct);
+        return rows.ToDictionary(s => s.Key, s => s.Value);
+    }
+}
+```
+
+- [ ] **Step 4: Tests pass** (59 total = 55 + 4).
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add src/KasaMonitor.Data/Repositories/SettingsRepository.cs tests/KasaMonitor.Data.Tests/SettingsRepositoryTests.cs
+git commit -m "feat(data): implement SettingsRepository (key-value store)"
+```
+
+### Task 3.9: Chunk-3 verification gate
+
+- [ ] **Step 1: Build clean** — `dotnet build` → 0/0.
+- [ ] **Step 2: All tests pass** — `dotnet test` → 59 passed (or close — recount: 37 Core + 2 DbContext + 1 Migration + 7 Plug + 4 Sample + 4 History + 4 Settings = 59).
+- [ ] **Step 3: Working tree clean** — `git status`.
+- [ ] **Step 4: Review log** — Chunk 3 added 9 commits.
+
+---

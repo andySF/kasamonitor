@@ -1,0 +1,13 @@
+services:
+  kasamonitor:
+    image: andysf/kasamonitor:latest
+    container_name: kasamonitor
+    network_mode: host          # REQUIRED for UDP broadcast discovery on the LAN
+    restart: unless-stopped
+    volumes:
+      - /share/Container/kasamonitor/data:/data
+    environment:
+      TZ: Europe/Bucharest
+      KasaMonitor__BroadcastNetworks: "192.168.254.255"
+      KasaMonitor__TariffRonPerKwh: "1.30"
+      KasaMonitor__PollIntervalSeconds: "10"

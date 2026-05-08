@@ -1,0 +1,29 @@
+{
+  "sw_ver": "1.0.20 Build 221125 Rel.092759",
+  "hw_ver": "1.0",
+  "model": "KP115(EU)",
+  "deviceId": "80068934D92FF1E95A2769FEE6A953D41E888191",
+  "oemId": "A9AD6FB31E10A787A48B31AB9A10BBEC",
+  "hwId": "24ACB9D5D9DA9BF17639988287D65DE6",
+  "rssi": -53,
+  "latitude_i": -1879048193,
+  "longitude_i": -1879048193,
+  "alias": "Birou",
+  "status": "configured",
+  "obd_src": "tplink",
+  "mic_type": "IOT.SMARTPLUGSWITCH",
+  "feature": "TIM:ENE",
+  "mac": "C0:06:C3:70:2B:FC",
+  "updating": 0,
+  "led_off": 0,
+  "relay_state": 1,
+  "on_time": 101451,
+  "icon_hash": "",
+  "dev_name": "Smart Wi-Fi Plug Mini",
+  "active_mode": "none",
+  "next_action": {
+    "type": -1
+  },
+  "ntc_state": 0,
+  "err_code": 0
+}

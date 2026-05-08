@@ -1,0 +1,30 @@
+{
+  "month_list": [
+    {
+      "year": 2026,
+      "month": 1,
+      "energy_wh": 75476
+    },
+    {
+      "year": 2026,
+      "month": 2,
+      "energy_wh": 91984
+    },
+    {
+      "year": 2026,
+      "month": 3,
+      "energy_wh": 112997
+    },
+    {
+      "year": 2026,
+      "month": 4,
+      "energy_wh": 92489
+    },
+    {
+      "year": 2026,
+      "month": 5,
+      "energy_wh": 17779
+    }
+  ],
+  "err_code": 0
+}

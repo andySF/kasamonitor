@@ -1,0 +1,53 @@
+{
+  "day_list": [
+    {
+      "year": 2026,
+      "month": 5,
+      "day": 1,
+      "energy_wh": 1518
+    },
+    {
+      "year": 2026,
+      "month": 5,
+      "day": 2,
+      "energy_wh": 2482
+    },
+    {
+      "year": 2026,
+      "month": 5,
+      "day": 3,
+      "energy_wh": 3196
+    },
+    {
+      "year": 2026,
+      "month": 5,
+      "day": 4,
+      "energy_wh": 2394
+    },
+    {
+      "year": 2026,
+      "month": 5,
+      "day": 5,
+      "energy_wh": 2750
+    },
+    {
+      "year": 2026,
+      "month": 5,
+      "day": 6,
+      "energy_wh": 2936
+    },
+    {
+      "year": 2026,
+      "month": 5,
+      "day": 7,
+      "energy_wh": 1848
+    },
+    {
+      "year": 2026,
+      "month": 5,
+      "day": 8,
+      "energy_wh": 655
+    }
+  ],
+  "err_code": 0
+}

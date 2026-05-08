@@ -5,6 +5,7 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <PackageReference Include="Blazor-ApexCharts" Version="*" />
     <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="10.*" />
   </ItemGroup>
 

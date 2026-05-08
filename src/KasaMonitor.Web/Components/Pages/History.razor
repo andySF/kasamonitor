@@ -1,0 +1,97 @@
+@page "/history"
+@rendermode InteractiveServer
+@inject IServiceScopeFactory ScopeFactory
+
+<PageTitle>KasaMonitor — History</PageTitle>
+<h1>History</h1>
+
+@if (_plugs is null || _plugs.Count == 0)
+{
+    <p><em>No plugs available.</em></p>
+}
+else
+{
+    <div class="history-controls">
+        <label>Plug:
+            <select @bind="_selectedPlugId" @bind:after="ReloadDataAsync">
+                @foreach (var p in _plugs.OrderBy(p => p.Alias))
+                {
+                    <option value="@p.Id">@p.Alias</option>
+                }
+            </select>
+        </label>
+        <label>Range:
+            <select @bind="_rangeDays" @bind:after="ReloadDataAsync">
+                <option value="7">Last 7 days</option>
+                <option value="30">Last 30 days</option>
+                <option value="365">Last 12 months</option>
+            </select>
+        </label>
+    </div>
+
+    @if (_dailyData is null)
+    {
+        <p><em>Loading data…</em></p>
+    }
+    else if (_dailyData.Count == 0)
+    {
+        <p><em>No daily history yet — wait for the HistorySync worker to run (every 6h, or on plug discovery).</em></p>
+    }
+    else
+    {
+        <h3>Energy per day (kWh)</h3>
+        <ApexChart TItem="DailyKwhPoint" Title="kWh / day"
+                   Options="_chartOptions">
+            <ApexPointSeries TItem="DailyKwhPoint"
+                             Items="_dailyData"
+                             Name="kWh"
+                             SeriesType="SeriesType.Bar"
+                             XValue="@(d => d.Date)"
+                             YValue="@(d => (decimal)(d.EnergyWh / 1000.0))" />
+        </ApexChart>
+    }
+}
+
+<style>
+    .history-controls { display: flex; gap: 1em; margin-bottom: 1em; }
+    .history-controls label { display: flex; gap: 0.4em; align-items: center; }
+    .history-controls select { padding: 0.3em; }
+</style>
+
+@code {
+    private List<Plug>? _plugs;
+    private Guid _selectedPlugId;
+    private int _rangeDays = 30;
+    private List<DailyKwhPoint>? _dailyData;
+    private ApexChartOptions<DailyKwhPoint> _chartOptions = new()
+    {
+        Chart = new Chart { Toolbar = new Toolbar { Show = false } }
+    };
+
+    public record DailyKwhPoint(string Date, long EnergyWh);
+
+    protected override async Task OnInitializedAsync()
+    {
+        using var scope = ScopeFactory.CreateScope();
+        var repo = scope.ServiceProvider.GetRequiredService<IPlugRepository>();
+        _plugs = (await repo.ListAllAsync(CancellationToken.None)).Where(p => !p.IsArchived).ToList();
+        if (_plugs.Count > 0)
+        {
+            _selectedPlugId = _plugs.First().Id;
+            await ReloadDataAsync();
+        }
+    }
+
+    private async Task ReloadDataAsync()
+    {
+        if (_selectedPlugId == Guid.Empty) return;
+        using var scope = ScopeFactory.CreateScope();
+        var historyRepo = scope.ServiceProvider.GetRequiredService<IHistoryRepository>();
+        var to = DateOnly.FromDateTime(DateTime.UtcNow);
+        var from = to.AddDays(-_rangeDays);
+        var entries = await historyRepo.GetDailyRangeAsync(_selectedPlugId, from, to, CancellationToken.None);
+        _dailyData = entries.Select(d => new DailyKwhPoint(
+            $"{d.Year:D4}-{d.Month:D2}-{d.Day:D2}", d.EnergyWh)).ToList();
+        StateHasChanged();
+    }
+}

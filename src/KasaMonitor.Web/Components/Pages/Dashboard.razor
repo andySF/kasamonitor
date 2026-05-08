@@ -23,7 +23,7 @@ else
     <div class="plug-grid">
         @foreach (var s in _states.Values.OrderBy(s => s.Alias))
         {
-            <div class="plug-card @(s.IsOnline ? "online" : "offline")">
+            <a class="plug-card @(s.IsOnline ? "online" : "offline")" href="/history?plugId=@s.PlugId">
                 <h3>@s.Alias</h3>
                 <p class="status">@(s.IsOnline ? "ONLINE" : "OFFLINE")</p>
                 @if (s.LastReading is not null)
@@ -33,14 +33,15 @@ else
                     <p>Total: @((s.LastReading.TotalWh / 1000.0).ToString("0.000")) kWh</p>
                 }
                 <p class="age">last sample @((_now - s.LastSampleUtc).TotalSeconds.ToString("0")) s ago</p>
-            </div>
+            </a>
         }
     </div>
 }
 
 <style>
     .plug-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 1em; }
-    .plug-card { border: 1px solid #ddd; border-radius: 6px; padding: 1em; }
+    .plug-card { display: block; border: 1px solid #ddd; border-radius: 6px; padding: 1em; text-decoration: none; color: inherit; transition: box-shadow 0.15s, transform 0.15s; }
+    .plug-card:hover { box-shadow: 0 2px 8px rgba(0,0,0,0.1); transform: translateY(-1px); }
     .plug-card.online { border-left: 4px solid #4c4; }
     .plug-card.offline { border-left: 4px solid #a33; opacity: 0.6; }
     .plug-card .status { font-weight: bold; }

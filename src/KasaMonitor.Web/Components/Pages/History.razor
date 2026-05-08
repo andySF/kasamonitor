@@ -1,6 +1,7 @@
 @page "/history"
 @rendermode InteractiveServer
 @inject IServiceScopeFactory ScopeFactory
+@inject NavigationManager Nav
 
 <PageTitle>KasaMonitor — History</PageTitle>
 <h1>History</h1>
@@ -13,7 +14,7 @@ else
 {
     <div class="history-controls">
         <label>Plug:
-            <select @bind="_selectedPlugId" @bind:after="ReloadDataAsync">
+            <select value="@_selectedPlugId" @onchange="OnPlugChanged">
                 @foreach (var p in _plugs.OrderBy(p => p.Alias))
                 {
                     <option value="@p.Id">@p.Alias</option>
@@ -21,7 +22,7 @@ else
             </select>
         </label>
         <label>Range:
-            <select @bind="_rangeDays" @bind:after="ReloadDataAsync">
+            <select value="@_rangeDays" @onchange="OnRangeChanged">
                 <option value="7">Last 7 days</option>
                 <option value="30">Last 30 days</option>
                 <option value="365">Last 12 months</option>
@@ -35,12 +36,12 @@ else
     }
     else if (_dailyData.Count == 0)
     {
-        <p><em>No daily history yet — wait for the HistorySync worker to run (every 6h, or on plug discovery).</em></p>
+        <p><em>No daily history yet for this plug — wait for the HistorySync worker (every 6h, or on plug discovery).</em></p>
     }
     else
     {
         <h3>Energy per day (kWh)</h3>
-        <ApexChart TItem="DailyKwhPoint" Title="kWh / day"
+        <ApexChart @key="_chartKey" TItem="DailyKwhPoint" Title="kWh / day"
                    Options="_chartOptions">
             <ApexPointSeries TItem="DailyKwhPoint"
                              Items="_dailyData"
@@ -59,10 +60,13 @@ else
 </style>
 
 @code {
+    [SupplyParameterFromQuery(Name = "plugId")] public Guid? QueryPlugId { get; set; }
+
     private List<Plug>? _plugs;
     private Guid _selectedPlugId;
     private int _rangeDays = 30;
     private List<DailyKwhPoint>? _dailyData;
+    private int _chartKey;
     private ApexChartOptions<DailyKwhPoint> _chartOptions = new()
     {
         Chart = new Chart { Toolbar = new Toolbar { Show = false } }
@@ -77,7 +81,27 @@ else
         _plugs = (await repo.ListAllAsync(CancellationToken.None)).Where(p => !p.IsArchived).ToList();
         if (_plugs.Count > 0)
         {
-            _selectedPlugId = _plugs.First().Id;
+            _selectedPlugId = QueryPlugId is { } qp && _plugs.Any(p => p.Id == qp)
+                ? qp
+                : _plugs.First().Id;
+            await ReloadDataAsync();
+        }
+    }
+
+    private async Task OnPlugChanged(ChangeEventArgs e)
+    {
+        if (Guid.TryParse(e.Value?.ToString(), out var id))
+        {
+            _selectedPlugId = id;
+            await ReloadDataAsync();
+        }
+    }
+
+    private async Task OnRangeChanged(ChangeEventArgs e)
+    {
+        if (int.TryParse(e.Value?.ToString(), out var days))
+        {
+            _rangeDays = days;
             await ReloadDataAsync();
         }
     }
@@ -92,6 +116,7 @@ else
         var entries = await historyRepo.GetDailyRangeAsync(_selectedPlugId, from, to, CancellationToken.None);
         _dailyData = entries.Select(d => new DailyKwhPoint(
             $"{d.Year:D4}-{d.Month:D2}-{d.Day:D2}", d.EnergyWh)).ToList();
+        _chartKey++;
         StateHasChanged();
     }
 }

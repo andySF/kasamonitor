@@ -57,8 +57,8 @@ namespace KasaMonitor.Data.Migrations
                     b.Property<Guid>("PlugId")
                         .HasColumnType("TEXT");
 
-                    b.Property<DateTimeOffset>("BucketStartUtc")
-                        .HasColumnType("TEXT");
+                    b.Property<long>("BucketStartUtc")
+                        .HasColumnType("INTEGER");
 
                     b.Property<long>("EnergyWh")
                         .HasColumnType("INTEGER");
@@ -82,8 +82,8 @@ namespace KasaMonitor.Data.Migrations
                     b.Property<Guid>("PlugId")
                         .HasColumnType("TEXT");
 
-                    b.Property<DateTimeOffset>("BucketStartUtc")
-                        .HasColumnType("TEXT");
+                    b.Property<long>("BucketStartUtc")
+                        .HasColumnType("INTEGER");
 
                     b.Property<int>("OnlineCount")
                         .HasColumnType("INTEGER");

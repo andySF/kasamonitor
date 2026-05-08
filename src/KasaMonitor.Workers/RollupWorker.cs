@@ -1,0 +1,89 @@
+using KasaMonitor.Core.Abstractions;
+using KasaMonitor.Data;
+using KasaMonitor.Data.Entities;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
+
+namespace KasaMonitor.Workers;
+
+public sealed class RollupWorker : BackgroundService
+{
+    private readonly Func<KasaDbContext> _ctxFactory;
+    private readonly ISampleRepository _samples;
+    private readonly ILogger<RollupWorker> _log;
+
+    public RollupWorker(Func<KasaDbContext> ctxFactory, ISampleRepository samples, ILogger<RollupWorker> log)
+    {
+        _ctxFactory = ctxFactory;
+        _samples = samples;
+        _log = log;
+    }
+
+    public async Task RollupSamplesToMinutesAsync(DateOnly day, CancellationToken ct)
+    {
+        var dayStart = new DateTimeOffset(day.ToDateTime(TimeOnly.MinValue), TimeSpan.Zero);
+        var dayEnd = dayStart.AddDays(1);
+        var ticksPerMinute = TimeSpan.TicksPerMinute;
+
+        using var ctx = _ctxFactory();
+        // Pull samples for the day; compare DateTimeOffset directly so the value converter
+        // handles the long-ticks column translation (s.TimestampUtc.UtcTicks is not EF-translatable).
+        var rows = await ctx.Samples.AsNoTracking()
+            .Where(s => s.PowerMw != null
+                        && s.TimestampUtc >= dayStart
+                        && s.TimestampUtc <  dayEnd)
+            .ToListAsync(ct);
+
+        var grouped = rows
+            .GroupBy(s => new { s.PlugId, BucketTicks = s.TimestampUtc.UtcTicks / ticksPerMinute * ticksPerMinute })
+            .Select(g => new OneMinuteAggregateEntity
+            {
+                PlugId = g.Key.PlugId,
+                BucketStartUtc = new DateTimeOffset(g.Key.BucketTicks, TimeSpan.Zero),
+                PAvgMw = (long)g.Average(s => s.PowerMw!.Value),
+                PMaxMw = g.Max(s => s.PowerMw!.Value),
+                PMinMw = g.Min(s => s.PowerMw!.Value),
+                SampleCount = g.Count(),
+                OnlineCount = g.Count(s => s.Online)
+            })
+            .ToList();
+
+        foreach (var agg in grouped)
+        {
+            var existing = await ctx.OneMinuteAggregates.FindAsync(new object?[] { agg.PlugId, agg.BucketStartUtc }, ct);
+            if (existing is null)
+            {
+                ctx.OneMinuteAggregates.Add(agg);
+            }
+            else
+            {
+                existing.PAvgMw = agg.PAvgMw;
+                existing.PMaxMw = agg.PMaxMw;
+                existing.PMinMw = agg.PMinMw;
+                existing.SampleCount = agg.SampleCount;
+                existing.OnlineCount = agg.OnlineCount;
+            }
+        }
+        await ctx.SaveChangesAsync(ct);
+    }
+
+    public Task<int> PruneOldSamplesAsync(int retentionDays, CancellationToken ct) =>
+        _samples.DeleteOlderThanAsync(DateTimeOffset.UtcNow.AddDays(-retentionDays), ct);
+
+    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+    {
+        while (!stoppingToken.IsCancellationRequested)
+        {
+            try
+            {
+                var yesterday = DateOnly.FromDateTime(DateTime.UtcNow.AddDays(-1));
+                await RollupSamplesToMinutesAsync(yesterday, stoppingToken);
+                await PruneOldSamplesAsync(30, stoppingToken);
+            }
+            catch (Exception ex) when (!stoppingToken.IsCancellationRequested) { _log.LogError(ex, "Rollup cycle failed"); }
+            try { await Task.Delay(TimeSpan.FromHours(24), stoppingToken); }
+            catch (TaskCanceledException) { return; }
+        }
+    }
+}

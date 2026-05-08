@@ -44,12 +44,14 @@ public sealed class KasaDbContext : DbContext
         {
             e.ToTable("OneMinuteAggregates");
             e.HasKey(a => new { a.PlugId, a.BucketStartUtc });
+            e.Property(a => a.BucketStartUtc).HasConversion(dateTimeOffsetConverter);
         });
 
         mb.Entity<OneHourAggregateEntity>(e =>
         {
             e.ToTable("OneHourAggregates");
             e.HasKey(a => new { a.PlugId, a.BucketStartUtc });
+            e.Property(a => a.BucketStartUtc).HasConversion(dateTimeOffsetConverter);
         });
 
         mb.Entity<DailyEnergyEntity>(e =>

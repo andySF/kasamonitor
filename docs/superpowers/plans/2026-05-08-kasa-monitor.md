@@ -1274,3 +1274,1049 @@ Expected (newest first):
 - `Add KasaMonitor design spec …` (pre-existing)
 
 ---
+
+## Chunk 2: Complete Core — real models, mapping, costing, abstractions, UDP discovery
+
+This chunk replaces every Chunk-1 stub and finishes the Core project. After this chunk, `KasaMonitor.Core` exposes the full domain surface (device models + persisted projections + abstractions) and the `KasaClient` can do TCP queries that return real domain objects plus UDP broadcast discovery. No `Data`, `Workers`, or `Web` project yet — those land in later chunks.
+
+**Expected commit count:** 6. **Expected test count after Chunk 2:** ~38 (22 from Chunk 1 + 6 new mapping tests + 4 TariffCalculator + 6 UDP discovery).
+
+### Task 2.1: Real Core models + KasaProtocolException
+
+**Files:**
+- Modify: `src/KasaMonitor.Core/Models/PlugInfo.cs` (replace stub with full record)
+- Modify: `src/KasaMonitor.Core/Models/EmeterReading.cs`
+- Modify: `src/KasaMonitor.Core/Models/DailyKwh.cs`
+- Modify: `src/KasaMonitor.Core/Models/MonthlyKwh.cs`
+- Modify: `src/KasaMonitor.Core/Models/DiscoveredPlug.cs`
+- Create: `src/KasaMonitor.Core/Models/PlugLiveState.cs`
+- Create: `src/KasaMonitor.Core/Protocol/KasaProtocolException.cs`
+
+These are pure data records; no behavior to test directly. Round-trip and mapping behavior is covered by Task 2.2's tests.
+
+- [ ] **Step 1: `PlugInfo.cs`** — overwrite with the device-shape projection used by `KasaClient.GetSysInfoAsync`. `Mac` is normalized (lowercase, no separators); `RelayOn` is a bool (the wire field is 0/1 int); `OnTime` is a `TimeSpan` (the wire field is seconds).
+
+```csharp
+namespace KasaMonitor.Core.Models;
+
+public sealed record PlugInfo(
+    string Mac,
+    string Alias,
+    string Model,
+    string HwVer,
+    string SwVer,
+    string OemId,
+    bool RelayOn,
+    int RssiDbm,
+    TimeSpan OnTime
+);
+```
+
+- [ ] **Step 2: `EmeterReading.cs`** — overwrite. Units stay in the device's native milli-units; conversion to V/A/W happens in the UI layer.
+
+```csharp
+namespace KasaMonitor.Core.Models;
+
+public sealed record EmeterReading(
+    long PowerMw,
+    long VoltageMv,
+    long CurrentMa,
+    long TotalWh
+);
+```
+
+- [ ] **Step 3: `DailyKwh.cs`** — overwrite.
+
+```csharp
+namespace KasaMonitor.Core.Models;
+
+public sealed record DailyKwh(int Year, int Month, int Day, long EnergyWh);
+```
+
+- [ ] **Step 4: `MonthlyKwh.cs`** — overwrite.
+
+```csharp
+namespace KasaMonitor.Core.Models;
+
+public sealed record MonthlyKwh(int Year, int Month, long EnergyWh);
+```
+
+- [ ] **Step 5: `DiscoveredPlug.cs`** — overwrite. Bundles the source IP (where the UDP response came from) with the device-side `PlugInfo`.
+
+```csharp
+using System.Net;
+
+namespace KasaMonitor.Core.Models;
+
+public sealed record DiscoveredPlug(IPAddress IpAddress, PlugInfo Info);
+```
+
+- [ ] **Step 6: `PlugLiveState.cs`** — new file. The dashboard-facing record that combines the persisted `PlugId` with the latest reading. `LastReading` is nullable so a plug whose discovery just happened (no sample yet) can still appear with `IsOnline=false`.
+
+```csharp
+namespace KasaMonitor.Core.Models;
+
+public sealed record PlugLiveState(
+    Guid PlugId,
+    string Mac,
+    string Alias,
+    bool IsOnline,
+    EmeterReading? LastReading,
+    DateTimeOffset LastSampleUtc
+);
+```
+
+- [ ] **Step 7: `KasaProtocolException.cs`** — new file. Thrown by `KasaClient` mapping when the device returns `err_code != 0` or a payload field is structurally missing.
+
+```csharp
+namespace KasaMonitor.Core.Protocol;
+
+public sealed class KasaProtocolException : Exception
+{
+    public int ErrCode { get; }
+    public string? Operation { get; }
+
+    public KasaProtocolException(string message, int errCode = 0, string? operation = null)
+        : base(message)
+    {
+        ErrCode = errCode;
+        Operation = operation;
+    }
+}
+```
+
+- [ ] **Step 8: Build and ensure existing tests still pass**
+
+```bash
+dotnet build
+dotnet test
+```
+
+Expected: 0 errors / 0 warnings. 22 tests still pass (mapping in Task 2.2 hasn't changed yet, so the Chunk-1 tests that returned `new PlugInfo()` etc. still pass — but wait: the `new PlugInfo()` call in `KasaClient.GetSysInfoAsync` no longer compiles because `PlugInfo` no longer has a parameterless constructor. **You must temporarily make `KasaClient` compile by replacing those calls with `new PlugInfo("","","","","","",false,0,TimeSpan.Zero)` etc., or by suppressing them as `null!` returns.** This is intentional — Task 2.2 immediately follows and replaces every one of those calls with real mappings, so the placeholder lives for at most one commit.
+
+The cleanest path is to keep this task tightly scoped to "data shapes only" and absorb the placeholder churn in one commit, then 2.2 wipes it.
+
+- [ ] **Step 9: Patch `KasaClient` placeholders so the solution compiles**
+
+Edit `src/KasaMonitor.Core/Protocol/KasaClient.cs` to replace each `return new XxxModel();` with a sentinel that compiles:
+
+```csharp
+public async Task<PlugInfo> GetSysInfoAsync(IPAddress ip, CancellationToken ct)
+{
+    _ = await TcpQueryAsync<SysInfoDto>(ip, "{\"system\":{\"get_sysinfo\":{}}}", "system", "get_sysinfo", ct);
+    // TODO(Task 2.2): map dto to PlugInfo. Sentinel keeps Chunk-2 Task 2.1 compilable.
+    return new PlugInfo(string.Empty, string.Empty, string.Empty, string.Empty, string.Empty, string.Empty, false, 0, TimeSpan.Zero);
+}
+
+public async Task<EmeterReading> GetRealtimeAsync(IPAddress ip, CancellationToken ct)
+{
+    _ = await TcpQueryAsync<EmeterRealtimeDto>(ip, "{\"emeter\":{\"get_realtime\":{}}}", "emeter", "get_realtime", ct);
+    return new EmeterReading(0, 0, 0, 0);
+}
+```
+
+The `GetDayStatAsync` and `GetMonthStatAsync` methods already return `Array.Empty<...>()`, which still compiles — no change needed.
+
+The two existing `KasaClient` tests assert only `result.Should().NotBeNull()` for sysinfo and a `TimeoutException` for the timeout case. Both still hold against the sentinel.
+
+- [ ] **Step 10: Run all tests**
+
+```bash
+dotnet test
+```
+
+Expected: 22 passed.
+
+- [ ] **Step 11: Commit**
+
+```bash
+git add src/KasaMonitor.Core/Models src/KasaMonitor.Core/Protocol/KasaProtocolException.cs src/KasaMonitor.Core/Protocol/KasaClient.cs
+git commit -m "feat(core): real domain models + KasaProtocolException (KasaClient mapping pending)"
+```
+
+### Task 2.2: DTO→Model mapping in KasaClient (TDD)
+
+**Files:**
+- Test: `tests/KasaMonitor.Core.Tests/Protocol/KasaClientMappingTests.cs` (new)
+- Modify: `tests/KasaMonitor.Core.Tests/Protocol/KasaClientTests.cs` (strengthen existing test's assertion)
+- Modify: `src/KasaMonitor.Core/Protocol/KasaClient.cs`
+
+This task ends the Task-2.1 placeholder by mapping every `*Dto` to its domain model inside `KasaClient`. MAC normalization happens here. `err_code != 0` from any DTO causes `KasaProtocolException`.
+
+- [ ] **Step 1: Write the new mapping tests** — file `tests/KasaMonitor.Core.Tests/Protocol/KasaClientMappingTests.cs`. Each test reuses the loopback `TcpListener` helper pattern from `KasaClientTests`. Extract the helper into a shared `LoopbackTestServer` class to keep the new file readable.
+
+First, refactor: create a small helper file `tests/KasaMonitor.Core.Tests/Protocol/LoopbackTestServer.cs`:
+
+```csharp
+using System.Net;
+using System.Net.Sockets;
+
+namespace KasaMonitor.Core.Tests.Protocol;
+
+internal static class LoopbackTestServer
+{
+    public static (TcpListener listener, IPEndPoint endpoint) Start()
+    {
+        var l = new TcpListener(IPAddress.Loopback, 0);
+        l.Start();
+        return (l, (IPEndPoint)l.LocalEndpoint);
+    }
+
+    public static async Task<string> ReceiveRequestAsync(TcpListener listener, string responseJson)
+    {
+        using var tcp = await listener.AcceptTcpClientAsync();
+        await using var stream = tcp.GetStream();
+
+        var hdr = new byte[4];
+        await stream.ReadExactlyAsync(hdr);
+        int len = (hdr[0] << 24) | (hdr[1] << 16) | (hdr[2] << 8) | hdr[3];
+        var body = new byte[len];
+        await stream.ReadExactlyAsync(body);
+
+        var requestJson = KasaWireProtocol.DecodeTcp(hdr.Concat(body).ToArray());
+
+        var resp = KasaWireProtocol.EncodeTcp(responseJson);
+        await stream.WriteAsync(resp);
+        return requestJson;
+    }
+}
+```
+
+Then write the mapping tests in `KasaClientMappingTests.cs`:
+
+```csharp
+using FluentAssertions;
+using KasaMonitor.Core.Protocol;
+using System.Net;
+using Xunit;
+
+namespace KasaMonitor.Core.Tests.Protocol;
+
+public class KasaClientMappingTests
+{
+    private static string WrapSysInfo(string innerJson) => $"{{\"system\":{{\"get_sysinfo\":{innerJson}}}}}";
+    private static string WrapEmeter(string method, string innerJson) => $"{{\"emeter\":{{\"{method}\":{innerJson}}}}}";
+
+    private static string LoadFixture(string name) =>
+        File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "fixtures", name));
+
+    [Fact]
+    public async Task GetSysInfoAsync_MapsDtoToDomainModel_NormalizingMac()
+    {
+        var (listener, endpoint) = LoopbackTestServer.Start();
+        try
+        {
+            var serverTask = LoopbackTestServer.ReceiveRequestAsync(
+                listener, WrapSysInfo(LoadFixture("sysinfo_kp115_birou.json")));
+
+            var client = new KasaClient(TimeSpan.FromSeconds(2), portOverride: endpoint.Port);
+            var info = await client.GetSysInfoAsync(IPAddress.Loopback, CancellationToken.None);
+            await serverTask;
+
+            info.Mac.Should().Be("c006c3702bfc"); // lowercase, separators stripped
+            info.Alias.Should().Be("Birou");
+            info.Model.Should().StartWith("KP115");
+            info.RelayOn.Should().BeTrue();        // wire was 1
+            info.RssiDbm.Should().BeNegative();
+            info.OnTime.Should().BeGreaterThan(TimeSpan.Zero);
+        }
+        finally { listener.Stop(); }
+    }
+
+    [Fact]
+    public async Task GetRealtimeAsync_MapsDtoToDomainModel()
+    {
+        var (listener, endpoint) = LoopbackTestServer.Start();
+        try
+        {
+            var serverTask = LoopbackTestServer.ReceiveRequestAsync(
+                listener, WrapEmeter("get_realtime", LoadFixture("emeter_kp115.json")));
+
+            var client = new KasaClient(TimeSpan.FromSeconds(2), portOverride: endpoint.Port);
+            var reading = await client.GetRealtimeAsync(IPAddress.Loopback, CancellationToken.None);
+            await serverTask;
+
+            reading.PowerMw.Should().BeGreaterThan(0);
+            reading.VoltageMv.Should().BeGreaterThan(200_000);
+            reading.CurrentMa.Should().BeGreaterThan(0);
+            reading.TotalWh.Should().BeGreaterOrEqualTo(0);
+        }
+        finally { listener.Stop(); }
+    }
+
+    [Fact]
+    public async Task GetRealtimeAsync_ThrowsKasaProtocolException_OnNonZeroErrCode()
+    {
+        var (listener, endpoint) = LoopbackTestServer.Start();
+        try
+        {
+            var serverTask = LoopbackTestServer.ReceiveRequestAsync(
+                listener, WrapEmeter("get_realtime", "{\"voltage_mv\":0,\"current_ma\":0,\"power_mw\":0,\"total_wh\":0,\"err_code\":-1}"));
+
+            var client = new KasaClient(TimeSpan.FromSeconds(2), portOverride: endpoint.Port);
+            var act = async () => await client.GetRealtimeAsync(IPAddress.Loopback, CancellationToken.None);
+
+            await act.Should().ThrowAsync<KasaProtocolException>().Where(e => e.ErrCode == -1);
+            await serverTask;
+        }
+        finally { listener.Stop(); }
+    }
+
+    [Fact]
+    public async Task GetDayStatAsync_MapsAllEntries()
+    {
+        var (listener, endpoint) = LoopbackTestServer.Start();
+        try
+        {
+            var serverTask = LoopbackTestServer.ReceiveRequestAsync(
+                listener, WrapEmeter("get_daystat", LoadFixture("daystat_kp115.json")));
+
+            var client = new KasaClient(TimeSpan.FromSeconds(2), portOverride: endpoint.Port);
+            var days = await client.GetDayStatAsync(IPAddress.Loopback, 2026, 5, CancellationToken.None);
+            await serverTask;
+
+            days.Should().NotBeEmpty();
+            days.Should().AllSatisfy(d =>
+            {
+                d.Year.Should().BeGreaterThan(2020);
+                d.Day.Should().BeInRange(1, 31);
+                d.EnergyWh.Should().BeGreaterOrEqualTo(0);
+            });
+        }
+        finally { listener.Stop(); }
+    }
+
+    [Fact]
+    public async Task GetMonthStatAsync_MapsAllEntries()
+    {
+        var (listener, endpoint) = LoopbackTestServer.Start();
+        try
+        {
+            var serverTask = LoopbackTestServer.ReceiveRequestAsync(
+                listener, WrapEmeter("get_monthstat", LoadFixture("monstat_kp115.json")));
+
+            var client = new KasaClient(TimeSpan.FromSeconds(2), portOverride: endpoint.Port);
+            var months = await client.GetMonthStatAsync(IPAddress.Loopback, 2026, CancellationToken.None);
+            await serverTask;
+
+            months.Should().NotBeEmpty();
+            months.Should().AllSatisfy(m => m.Month.Should().BeInRange(1, 12));
+        }
+        finally { listener.Stop(); }
+    }
+
+    [Fact]
+    public async Task GetSysInfoAsync_RequestPayloadAndMacNormalization_AreCorrect()
+    {
+        var (listener, endpoint) = LoopbackTestServer.Start();
+        try
+        {
+            string? capturedRequest = null;
+            var serverTask = Task.Run(async () =>
+            {
+                capturedRequest = await LoopbackTestServer.ReceiveRequestAsync(
+                    listener, WrapSysInfo(LoadFixture("sysinfo_kp115_birou.json")));
+            });
+
+            var client = new KasaClient(TimeSpan.FromSeconds(2), portOverride: endpoint.Port);
+            await client.GetSysInfoAsync(IPAddress.Loopback, CancellationToken.None);
+            await serverTask;
+
+            capturedRequest.Should().Contain("\"system\"").And.Contain("\"get_sysinfo\"");
+        }
+        finally { listener.Stop(); }
+    }
+}
+```
+
+That's 6 new tests.
+
+- [ ] **Step 2: Update the existing `KasaClientTests.GetSysInfoAsync_SendsCorrectRequestAndDecodesResponse` to use real assertions**
+
+Open `tests/KasaMonitor.Core.Tests/Protocol/KasaClientTests.cs` and replace the inner block of the first test so that `result.Should().NotBeNull()` becomes meaningful:
+
+Replace:
+```csharp
+            await Task.WhenAll(clientTask, serverTask);
+            var result = await clientTask;
+            result.Should().NotBeNull();   // proper model assertions land in Chunk 2
+```
+with:
+```csharp
+            await Task.WhenAll(clientTask, serverTask);
+            var result = await clientTask;
+            result.Mac.Should().Be("c006c3702bfc");
+            result.Alias.Should().Be("Birou");
+```
+
+- [ ] **Step 3: Run tests — expect failures**
+
+```bash
+dotnet test tests/KasaMonitor.Core.Tests --filter "FullyQualifiedName~KasaClient"
+```
+
+Expected: 8 cases run (2 existing + 6 new), at least 6 fail because mapping is still placeholder. Existing timeout test still passes.
+
+- [ ] **Step 4: Implement the mapping in `KasaClient.cs`**
+
+Add a private helper region to `src/KasaMonitor.Core/Protocol/KasaClient.cs`. After the existing `using` block, ensure these are present:
+
+```csharp
+using KasaMonitor.Core.Models;
+using KasaMonitor.Core.Protocol.Dtos;
+using System.Buffers.Binary;
+using System.Net;
+using System.Net.Sockets;
+using System.Runtime.CompilerServices;
+using System.Text;
+using System.Text.Json;
+```
+
+Replace the four query method bodies with real mapping. Add the `MapSysInfo`, `MapEmeter`, and `NormalizeMac` private static helpers below `TcpQueryAsync`:
+
+```csharp
+public async Task<PlugInfo> GetSysInfoAsync(IPAddress ip, CancellationToken ct)
+{
+    var dto = await TcpQueryAsync<SysInfoDto>(ip, "{\"system\":{\"get_sysinfo\":{}}}", "system", "get_sysinfo", ct);
+    return MapSysInfo(dto);
+}
+
+public async Task<EmeterReading> GetRealtimeAsync(IPAddress ip, CancellationToken ct)
+{
+    var dto = await TcpQueryAsync<EmeterRealtimeDto>(ip, "{\"emeter\":{\"get_realtime\":{}}}", "emeter", "get_realtime", ct);
+    if (dto.ErrCode != 0)
+        throw new KasaProtocolException($"Device returned err_code {dto.ErrCode} for get_realtime.", dto.ErrCode, "get_realtime");
+    return new EmeterReading(dto.PowerMw, dto.VoltageMv, dto.CurrentMa, dto.TotalWh);
+}
+
+public async Task<IReadOnlyList<DailyKwh>> GetDayStatAsync(IPAddress ip, int year, int month, CancellationToken ct)
+{
+    var dto = await TcpQueryAsync<DayStatDto>(
+        ip,
+        $"{{\"emeter\":{{\"get_daystat\":{{\"month\":{month},\"year\":{year}}}}}}}",
+        "emeter", "get_daystat", ct);
+    if (dto.ErrCode != 0)
+        throw new KasaProtocolException($"Device returned err_code {dto.ErrCode} for get_daystat.", dto.ErrCode, "get_daystat");
+    return dto.DayList.Select(d => new DailyKwh(d.Year, d.Month, d.Day, d.EnergyWh)).ToList();
+}
+
+public async Task<IReadOnlyList<MonthlyKwh>> GetMonthStatAsync(IPAddress ip, int year, CancellationToken ct)
+{
+    var dto = await TcpQueryAsync<MonthStatDto>(
+        ip,
+        $"{{\"emeter\":{{\"get_monthstat\":{{\"year\":{year}}}}}}}",
+        "emeter", "get_monthstat", ct);
+    if (dto.ErrCode != 0)
+        throw new KasaProtocolException($"Device returned err_code {dto.ErrCode} for get_monthstat.", dto.ErrCode, "get_monthstat");
+    return dto.MonthList.Select(m => new MonthlyKwh(m.Year, m.Month, m.EnergyWh)).ToList();
+}
+```
+
+Add private helpers (placement: after `TcpQueryAsync`, before the closing brace of the class):
+
+```csharp
+private static PlugInfo MapSysInfo(SysInfoDto dto)
+{
+    var alias = dto.Alias ?? throw new KasaProtocolException("sysinfo missing alias", operation: "get_sysinfo");
+    var mac   = NormalizeMac(dto.Mac ?? throw new KasaProtocolException("sysinfo missing mac", operation: "get_sysinfo"));
+    return new PlugInfo(
+        Mac:     mac,
+        Alias:   alias,
+        Model:   dto.Model ?? string.Empty,
+        HwVer:   dto.HwVer ?? string.Empty,
+        SwVer:   dto.SwVer ?? string.Empty,
+        OemId:   dto.OemId ?? string.Empty,
+        RelayOn: dto.RelayState != 0,
+        RssiDbm: dto.Rssi,
+        OnTime:  TimeSpan.FromSeconds(dto.OnTime));
+}
+
+private static string NormalizeMac(string raw) =>
+    new string(raw.Where(c => c != ':' && c != '-').ToArray()).ToLowerInvariant();
+```
+
+- [ ] **Step 5: Run tests**
+
+```bash
+dotnet test
+```
+
+Expected: 28 passed (22 + 6 new mapping tests).
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add src/KasaMonitor.Core/Protocol/KasaClient.cs tests/KasaMonitor.Core.Tests/Protocol/KasaClientMappingTests.cs tests/KasaMonitor.Core.Tests/Protocol/KasaClientTests.cs tests/KasaMonitor.Core.Tests/Protocol/LoopbackTestServer.cs
+git commit -m "feat(core): map Kasa DTOs to domain models in KasaClient with err_code handling"
+```
+
+### Task 2.3: TariffCalculator (Costing)
+
+**Files:**
+- Test: `tests/KasaMonitor.Core.Tests/Costing/TariffCalculatorTests.cs` (new)
+- Create: `src/KasaMonitor.Core/Costing/TariffCalculator.cs`
+
+Pure math. Cost = energy_kWh × rate_RON_per_kWh. Inputs validated.
+
+- [ ] **Step 1: Failing tests** — `tests/KasaMonitor.Core.Tests/Costing/TariffCalculatorTests.cs`:
+
+```csharp
+using FluentAssertions;
+using KasaMonitor.Core.Costing;
+using Xunit;
+
+namespace KasaMonitor.Core.Tests.Costing;
+
+public class TariffCalculatorTests
+{
+    [Fact]
+    public void CostFromWh_SimpleCase_ProducesRonAtTwoDecimals()
+    {
+        var calc = new TariffCalculator(ronPerKwh: 1.30m);
+        calc.CostFromWh(1000).Should().Be(1.30m);
+    }
+
+    [Fact]
+    public void CostFromWh_FractionalKwh_ProducesProportionalRon()
+    {
+        var calc = new TariffCalculator(ronPerKwh: 1.30m);
+        calc.CostFromWh(500).Should().Be(0.65m); // 0.5 kWh
+    }
+
+    [Fact]
+    public void CostFromWh_ZeroEnergy_IsZero()
+    {
+        new TariffCalculator(1.30m).CostFromWh(0).Should().Be(0m);
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-0.01)]
+    public void Constructor_RejectsNonPositiveRate(decimal rate)
+    {
+        var act = () => new TariffCalculator(rate);
+        act.Should().Throw<ArgumentOutOfRangeException>();
+    }
+}
+```
+
+- [ ] **Step 2: Run tests, expect failure**
+
+```bash
+dotnet test tests/KasaMonitor.Core.Tests --filter "FullyQualifiedName~Tariff"
+```
+
+Expected: build fails (no `TariffCalculator`).
+
+- [ ] **Step 3: Implement** — `src/KasaMonitor.Core/Costing/TariffCalculator.cs`:
+
+```csharp
+namespace KasaMonitor.Core.Costing;
+
+public sealed class TariffCalculator
+{
+    private readonly decimal _ronPerKwh;
+
+    public TariffCalculator(decimal ronPerKwh)
+    {
+        if (ronPerKwh <= 0)
+            throw new ArgumentOutOfRangeException(nameof(ronPerKwh), ronPerKwh, "Tariff rate must be > 0 RON/kWh.");
+        _ronPerKwh = ronPerKwh;
+    }
+
+    public decimal CostFromWh(long wh) => wh * _ronPerKwh / 1000m;
+}
+```
+
+- [ ] **Step 4: Run, expect 5 passed (1 fact + 1 fact + 1 fact + theory with 2 inline rows = 5)**
+
+```bash
+dotnet test tests/KasaMonitor.Core.Tests --filter "FullyQualifiedName~Tariff"
+```
+
+Expected: 5 passed.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add src/KasaMonitor.Core/Costing tests/KasaMonitor.Core.Tests/Costing
+git commit -m "feat(core): add TariffCalculator (RON per kWh)"
+```
+
+### Task 2.4: Persisted projections + Core abstractions
+
+**Files:**
+- Create: `src/KasaMonitor.Core/Models/Plug.cs`
+- Create: `src/KasaMonitor.Core/Models/Sample.cs`
+- Create: `src/KasaMonitor.Core/Abstractions/IPlugRepository.cs`
+- Create: `src/KasaMonitor.Core/Abstractions/ISampleRepository.cs`
+- Create: `src/KasaMonitor.Core/Abstractions/IHistoryRepository.cs`
+- Create: `src/KasaMonitor.Core/Abstractions/ISettingsRepository.cs`
+- Create: `src/KasaMonitor.Core/Abstractions/IPlugStateBroadcaster.cs`
+
+`Plug` and `Sample` are persistence projections that the `Data` project (Chunk 3) will materialize from EF entities. Keeping them in `Core` lets repositories implement Core-declared interfaces (DIP).
+
+No tests on these — they're shape-only. Compilation success + downstream usage in Chunk 3 covers them.
+
+- [ ] **Step 1: `Plug.cs`**
+
+```csharp
+using System.Net;
+
+namespace KasaMonitor.Core.Models;
+
+public sealed record Plug(
+    Guid Id,
+    string Mac,
+    IPAddress IpAddress,
+    string Alias,
+    bool AliasIsCustom,
+    string Model,
+    string HwVer,
+    string SwVer,
+    string OemId,
+    DateTimeOffset FirstSeenUtc,
+    DateTimeOffset LastSeenUtc,
+    bool IsArchived,
+    string? Notes
+);
+```
+
+- [ ] **Step 2: `Sample.cs`** — note `RelayOn` is nullable because old samples may have null when the device timed out.
+
+```csharp
+namespace KasaMonitor.Core.Models;
+
+public sealed record Sample(
+    long Id,
+    Guid PlugId,
+    DateTimeOffset TimestampUtc,
+    bool Online,
+    long? PowerMw,
+    long? VoltageMv,
+    long? CurrentMa,
+    long? TotalWh,
+    int? Rssi,
+    bool? RelayOn,
+    string? ErrorMessage
+);
+```
+
+- [ ] **Step 3: `IPlugRepository.cs`**
+
+```csharp
+using KasaMonitor.Core.Models;
+
+namespace KasaMonitor.Core.Abstractions;
+
+public interface IPlugRepository
+{
+    Task<Guid> UpsertFromDiscoveryAsync(DiscoveredPlug discovered, DateTimeOffset utcNow, CancellationToken ct);
+    Task UpdateLastSeenAsync(Guid plugId, DateTimeOffset utcNow, CancellationToken ct);
+    Task<IReadOnlyList<Plug>> ListAllAsync(CancellationToken ct);
+    Task<Plug?> GetByMacAsync(string mac, CancellationToken ct);
+    Task SetAliasAsync(Guid plugId, string alias, bool isCustom, CancellationToken ct);
+    Task SetArchivedAsync(Guid plugId, bool archived, CancellationToken ct);
+}
+```
+
+- [ ] **Step 4: `ISampleRepository.cs`**
+
+```csharp
+using KasaMonitor.Core.Models;
+
+namespace KasaMonitor.Core.Abstractions;
+
+public interface ISampleRepository
+{
+    Task InsertAsync(Sample sample, CancellationToken ct);
+    Task InsertManyAsync(IReadOnlyList<Sample> samples, CancellationToken ct);
+    Task<IReadOnlyList<Sample>> ListByPlugAsync(Guid plugId, DateTimeOffset fromUtc, DateTimeOffset toUtc, CancellationToken ct);
+    Task<int> DeleteOlderThanAsync(DateTimeOffset cutoffUtc, CancellationToken ct);
+}
+```
+
+- [ ] **Step 5: `IHistoryRepository.cs`**
+
+```csharp
+using KasaMonitor.Core.Models;
+
+namespace KasaMonitor.Core.Abstractions;
+
+public interface IHistoryRepository
+{
+    Task UpsertDailyAsync(Guid plugId, IReadOnlyList<DailyKwh> entries, CancellationToken ct);
+    Task UpsertMonthlyAsync(Guid plugId, IReadOnlyList<MonthlyKwh> entries, CancellationToken ct);
+    Task<IReadOnlyList<DailyKwh>> GetDailyRangeAsync(Guid plugId, DateOnly fromInclusive, DateOnly toInclusive, CancellationToken ct);
+    Task<IReadOnlyList<MonthlyKwh>> GetMonthlyRangeAsync(Guid plugId, int yearFromInclusive, int yearToInclusive, CancellationToken ct);
+}
+```
+
+- [ ] **Step 6: `ISettingsRepository.cs`**
+
+```csharp
+namespace KasaMonitor.Core.Abstractions;
+
+public interface ISettingsRepository
+{
+    Task<string?> GetAsync(string key, CancellationToken ct);
+    Task SetAsync(string key, string value, CancellationToken ct);
+    Task<IReadOnlyDictionary<string, string>> GetAllAsync(CancellationToken ct);
+}
+```
+
+- [ ] **Step 7: `IPlugStateBroadcaster.cs`**
+
+```csharp
+using KasaMonitor.Core.Models;
+
+namespace KasaMonitor.Core.Abstractions;
+
+public interface IPlugStateBroadcaster
+{
+    void Publish(PlugLiveState state);
+    IReadOnlyDictionary<Guid, PlugLiveState> Snapshot();
+    event Action<PlugLiveState> StateChanged;
+}
+```
+
+- [ ] **Step 8: Build + run tests (regression check)**
+
+```bash
+dotnet build
+dotnet test
+```
+
+Expected: 0 errors / 0 warnings, 28 passed.
+
+- [ ] **Step 9: Commit**
+
+```bash
+git add src/KasaMonitor.Core/Models/Plug.cs src/KasaMonitor.Core/Models/Sample.cs src/KasaMonitor.Core/Abstractions
+git commit -m "feat(core): add persisted projections (Plug/Sample) and 5 repository abstractions"
+```
+
+### Task 2.5: KasaClient UDP discovery (`KasaClient.Udp.cs` partial)
+
+**Files:**
+- Modify: `src/KasaMonitor.Core/Protocol/KasaClient.cs` (add `partial` modifier)
+- Create: `src/KasaMonitor.Core/Protocol/KasaClient.Udp.cs` (the discovery half)
+- Test: `tests/KasaMonitor.Core.Tests/Protocol/KasaClientDiscoveryTests.cs`
+
+The plan keeps each file ≤ 200 lines; splitting `KasaClient` into a TCP partial and a UDP partial avoids growth as discovery code lands.
+
+`DiscoverAsync` sends a `get_sysinfo` UDP broadcast to each requested address, then listens for responses for the requested timeout. Each unique `(SourceIP, Mac)` reply yields one `DiscoveredPlug`. Duplicate replies (devices on multi-segment LANs sometimes echo) are deduped by Mac.
+
+- [ ] **Step 1: Mark `KasaClient` as `partial`**
+
+In `src/KasaMonitor.Core/Protocol/KasaClient.cs`, change the class declaration:
+
+```csharp
+public sealed class KasaClient : IKasaClient
+```
+
+to:
+
+```csharp
+public sealed partial class KasaClient : IKasaClient
+```
+
+Delete the existing stub `DiscoverAsync` method body entirely (it lives in the new partial file now). Remove the `using System.Runtime.CompilerServices;` line from this file if it's no longer needed (`[EnumeratorCancellation]` moves to the UDP partial).
+
+- [ ] **Step 2: Write the failing tests** — `tests/KasaMonitor.Core.Tests/Protocol/KasaClientDiscoveryTests.cs`:
+
+The test binds a UDP socket on a chosen loopback port, runs `DiscoverAsync` against `IPAddress.Loopback` on that port, and replies with a sysinfo payload.
+
+```csharp
+using FluentAssertions;
+using KasaMonitor.Core.Protocol;
+using System.Net;
+using System.Net.Sockets;
+using Xunit;
+
+namespace KasaMonitor.Core.Tests.Protocol;
+
+public class KasaClientDiscoveryTests
+{
+    private static string LoadFixture(string name) =>
+        File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "fixtures", name));
+
+    private static (UdpClient server, int port) StartUdpServer()
+    {
+        var udp = new UdpClient(new IPEndPoint(IPAddress.Loopback, 0));
+        return (udp, ((IPEndPoint)udp.Client.LocalEndPoint!).Port);
+    }
+
+    private static async Task RespondOnce(UdpClient server, string responsePayloadJson, CancellationToken ct)
+    {
+        var received = await server.ReceiveAsync(ct);
+        var responseBytes = KasaWireProtocol.EncodeUdp(responsePayloadJson);
+        await server.SendAsync(responseBytes, received.RemoteEndPoint, ct);
+    }
+
+    [Fact]
+    public async Task DiscoverAsync_ReceivesAndMapsResponse()
+    {
+        var (server, port) = StartUdpServer();
+        try
+        {
+            using var serverCts = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+            var serverTask = RespondOnce(
+                server,
+                $"{{\"system\":{{\"get_sysinfo\":{LoadFixture("sysinfo_kp115_birou.json")}}}}}",
+                serverCts.Token);
+
+            var client = new KasaClient(TimeSpan.FromMilliseconds(500), portOverride: port);
+            var found = new List<KasaMonitor.Core.Models.DiscoveredPlug>();
+            await foreach (var p in client.DiscoverAsync(
+                new[] { IPAddress.Loopback }, TimeSpan.FromMilliseconds(800), CancellationToken.None))
+            {
+                found.Add(p);
+            }
+            await serverTask;
+
+            found.Should().HaveCount(1);
+            found[0].Info.Mac.Should().Be("c006c3702bfc");
+            found[0].Info.Alias.Should().Be("Birou");
+            found[0].IpAddress.Should().Be(IPAddress.Loopback);
+        }
+        finally { server.Dispose(); }
+    }
+
+    [Fact]
+    public async Task DiscoverAsync_NoResponse_YieldsNothing_AndCompletes()
+    {
+        var (server, port) = StartUdpServer(); // server bound but never replies
+        try
+        {
+            var client = new KasaClient(TimeSpan.FromMilliseconds(200), portOverride: port);
+            var found = new List<KasaMonitor.Core.Models.DiscoveredPlug>();
+            await foreach (var p in client.DiscoverAsync(
+                new[] { IPAddress.Loopback }, TimeSpan.FromMilliseconds(300), CancellationToken.None))
+            {
+                found.Add(p);
+            }
+            found.Should().BeEmpty();
+        }
+        finally { server.Dispose(); }
+    }
+
+    [Fact]
+    public async Task DiscoverAsync_DedupesByMac_WhenSamePlugRespondsTwice()
+    {
+        var (server, port) = StartUdpServer();
+        try
+        {
+            using var serverCts = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+            var payload = $"{{\"system\":{{\"get_sysinfo\":{LoadFixture("sysinfo_kp115_birou.json")}}}}}";
+            // Respond twice to the same caller endpoint.
+            var serverTask = Task.Run(async () =>
+            {
+                var r1 = await server.ReceiveAsync(serverCts.Token);
+                await server.SendAsync(KasaWireProtocol.EncodeUdp(payload), r1.RemoteEndPoint, serverCts.Token);
+                await server.SendAsync(KasaWireProtocol.EncodeUdp(payload), r1.RemoteEndPoint, serverCts.Token);
+            }, serverCts.Token);
+
+            var client = new KasaClient(TimeSpan.FromMilliseconds(500), portOverride: port);
+            var found = new List<KasaMonitor.Core.Models.DiscoveredPlug>();
+            await foreach (var p in client.DiscoverAsync(
+                new[] { IPAddress.Loopback }, TimeSpan.FromMilliseconds(800), CancellationToken.None))
+            {
+                found.Add(p);
+            }
+            await serverTask;
+
+            found.Should().HaveCount(1); // duplicate Mac was deduped
+        }
+        finally { server.Dispose(); }
+    }
+
+    [Fact]
+    public async Task DiscoverAsync_MultipleBroadcastAddresses_AllSent()
+    {
+        // Bind two servers on different loopback ports? Easier: bind one and verify
+        // it receives two requests when client is given two broadcast addresses
+        // both pointing at IPAddress.Loopback.
+        var (server, port) = StartUdpServer();
+        try
+        {
+            using var serverCts = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+            int requestCount = 0;
+            var serverTask = Task.Run(async () =>
+            {
+                while (!serverCts.IsCancellationRequested)
+                {
+                    try
+                    {
+                        var r = await server.ReceiveAsync(serverCts.Token);
+                        Interlocked.Increment(ref requestCount);
+                    }
+                    catch (OperationCanceledException) { return; }
+                }
+            }, serverCts.Token);
+
+            var client = new KasaClient(TimeSpan.FromMilliseconds(300), portOverride: port);
+            var addrs = new[] { IPAddress.Loopback, IPAddress.Loopback };
+            await foreach (var _ in client.DiscoverAsync(addrs, TimeSpan.FromMilliseconds(400), CancellationToken.None))
+            { /* drain */ }
+
+            // Give the receiver a beat to count any in-flight datagrams, then cancel.
+            await Task.Delay(50);
+            serverCts.Cancel();
+            try { await serverTask; } catch { /* swallow */ }
+
+            requestCount.Should().BeGreaterOrEqualTo(2);
+        }
+        finally { server.Dispose(); }
+    }
+}
+```
+
+- [ ] **Step 3: Run tests, expect failure**
+
+```bash
+dotnet test tests/KasaMonitor.Core.Tests --filter "FullyQualifiedName~KasaClientDiscovery"
+```
+
+Expected: build fails (no implementation of `DiscoverAsync` body, since Step 1 deleted the stub).
+
+- [ ] **Step 4: Implement `KasaClient.Udp.cs`** — `src/KasaMonitor.Core/Protocol/KasaClient.Udp.cs`:
+
+```csharp
+using KasaMonitor.Core.Models;
+using KasaMonitor.Core.Protocol.Dtos;
+using System.Net;
+using System.Net.Sockets;
+using System.Runtime.CompilerServices;
+using System.Text.Json;
+using System.Threading.Channels;
+
+namespace KasaMonitor.Core.Protocol;
+
+public sealed partial class KasaClient
+{
+    public async IAsyncEnumerable<DiscoveredPlug> DiscoverAsync(
+        IReadOnlyList<IPAddress> broadcastAddresses,
+        TimeSpan timeout,
+        [EnumeratorCancellation] CancellationToken ct)
+    {
+        if (broadcastAddresses.Count == 0) yield break;
+
+        using var udp = new UdpClient(AddressFamily.InterNetwork) { EnableBroadcast = true };
+        udp.Client.Bind(new IPEndPoint(IPAddress.Any, 0));
+
+        var request = KasaWireProtocol.EncodeUdp("{\"system\":{\"get_sysinfo\":{}}}");
+        foreach (var addr in broadcastAddresses)
+            await udp.SendAsync(request, new IPEndPoint(addr, _port), ct);
+
+        var seenMacs = new HashSet<string>(StringComparer.Ordinal);
+        using var deadlineCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        deadlineCts.CancelAfter(timeout);
+
+        while (!deadlineCts.IsCancellationRequested)
+        {
+            UdpReceiveResult result;
+            try
+            {
+                result = await udp.ReceiveAsync(deadlineCts.Token);
+            }
+            catch (OperationCanceledException) { yield break; }
+            catch (SocketException) { continue; }
+
+            DiscoveredPlug? mapped;
+            try
+            {
+                mapped = TryParseDiscoveryResponse(result);
+            }
+            catch (JsonException) { continue; }
+            catch (KasaProtocolException) { continue; }
+
+            if (mapped is null) continue;
+            if (!seenMacs.Add(mapped.Info.Mac)) continue;
+            yield return mapped;
+        }
+    }
+
+    private static DiscoveredPlug? TryParseDiscoveryResponse(UdpReceiveResult result)
+    {
+        var responseJson = KasaWireProtocol.DecodeUdp(result.Buffer);
+        using var doc = JsonDocument.Parse(responseJson);
+        if (!doc.RootElement.TryGetProperty("system", out var system) ||
+            !system.TryGetProperty("get_sysinfo", out var inner))
+            return null;
+        var dto = inner.Deserialize<SysInfoDto>();
+        if (dto is null) return null;
+        return new DiscoveredPlug(result.RemoteEndPoint.Address, MapSysInfo(dto));
+    }
+}
+```
+
+Note: `MapSysInfo` was defined as `private static` in the TCP partial in Task 2.2 — both partials are the same class, so `KasaClient.Udp.cs` can call it.
+
+- [ ] **Step 5: Run tests**
+
+```bash
+dotnet test tests/KasaMonitor.Core.Tests
+```
+
+Expected: 32 passed (28 from before + 4 discovery tests).
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add src/KasaMonitor.Core/Protocol/KasaClient.cs src/KasaMonitor.Core/Protocol/KasaClient.Udp.cs tests/KasaMonitor.Core.Tests/Protocol/KasaClientDiscoveryTests.cs
+git commit -m "feat(core): implement Kasa UDP discovery with mac-based dedupe"
+```
+
+### Task 2.6: Chunk-2 verification gate
+
+- [ ] **Step 1: Build whole solution clean**
+
+```bash
+dotnet build
+```
+
+Expected: 0 errors, 0 warnings.
+
+- [ ] **Step 2: Run all tests**
+
+```bash
+dotnet test
+```
+
+Expected: **32 passed, 0 failed.** Tally: KasaCodec 7 + KasaWireProtocol 8 + DtoMapping 5 + KasaClient (existing) 2 + KasaClientMapping 6 + Tariff 5 + KasaClientDiscovery 4 = 37? Recount:
+
+  - KasaCodec: 7
+  - KasaWireProtocol: 8
+  - DtoMapping: 5
+  - KasaClient (legacy): 2
+  - KasaClientMapping (new): 6
+  - TariffCalculator: 5
+  - KasaClientDiscovery: 4
+  - **Total: 37**
+
+If `dotnet test` reports 37 passed, proceed. If a different number, stop and audit.
+
+- [ ] **Step 3: Confirm clean working tree**
+
+```bash
+git status
+```
+
+Expected: "nothing to commit, working tree clean".
+
+- [ ] **Step 4: Review commit log**
+
+```bash
+git log --oneline
+```
+
+Expected (newest first, after Chunk 2):
+- `feat(core): implement Kasa UDP discovery with mac-based dedupe`
+- `feat(core): add persisted projections (Plug/Sample) and 5 repository abstractions`
+- `feat(core): add TariffCalculator (RON per kWh)`
+- `feat(core): map Kasa DTOs to domain models in KasaClient with err_code handling`
+- `feat(core): real domain models + KasaProtocolException (KasaClient mapping pending)`
+- … (Chunk 1 commits below)
+
+---

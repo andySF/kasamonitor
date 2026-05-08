@@ -3574,3 +3574,1028 @@ git commit -m "feat(data): implement SettingsRepository (key-value store)"
 - [ ] **Step 4: Review log** — Chunk 3 added 9 commits.
 
 ---
+
+## Chunk 4: Workers — `KasaMonitor.Workers` project, hosted services, in-memory broadcaster
+
+This chunk adds the four background services that drive data collection and scheduled work, plus the in-memory `PlugStateBroadcaster` and a `PlugDiscoveredChannel` for cross-worker signaling. Each worker exposes a `RunOnceAsync` method so unit tests don't need a `Host`. `BackgroundService` integration is via a shared base class.
+
+**Expected commit count:** 9. **Expected test count after Chunk 4:** ~80.
+
+### Task 4.1: Scaffold `KasaMonitor.Workers` + `KasaMonitor.Workers.Tests`
+
+**Files:**
+- Create: `src/KasaMonitor.Workers/KasaMonitor.Workers.csproj`
+- Create: `tests/KasaMonitor.Workers.Tests/KasaMonitor.Workers.Tests.csproj`
+
+- [ ] Step 1: `dotnet new classlib -n KasaMonitor.Workers -o src/KasaMonitor.Workers -f net10.0` then delete `Class1.cs`.
+
+- [ ] Step 2: Replace `src/KasaMonitor.Workers/KasaMonitor.Workers.csproj`:
+
+```xml
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <RootNamespace>KasaMonitor.Workers</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Extensions.Hosting" Version="10.*" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="10.*" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\KasaMonitor.Core\KasaMonitor.Core.csproj" />
+    <ProjectReference Include="..\KasaMonitor.Data\KasaMonitor.Data.csproj" />
+  </ItemGroup>
+</Project>
+```
+
+- [ ] Step 3: `dotnet new xunit -n KasaMonitor.Workers.Tests -o tests/KasaMonitor.Workers.Tests -f net10.0` then delete `UnitTest1.cs`.
+
+- [ ] Step 4: Replace `tests/KasaMonitor.Workers.Tests/KasaMonitor.Workers.Tests.csproj`:
+
+```xml
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <IsPackable>false</IsPackable>
+    <RootNamespace>KasaMonitor.Workers.Tests</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.*" />
+    <PackageReference Include="xunit" Version="2.*" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="2.*" />
+    <PackageReference Include="FluentAssertions" Version="6.*" />
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="10.*" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="10.*" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\KasaMonitor.Workers\KasaMonitor.Workers.csproj" />
+    <ProjectReference Include="..\..\src\KasaMonitor.Data\KasaMonitor.Data.csproj" />
+    <ProjectReference Include="..\..\src\KasaMonitor.Core\KasaMonitor.Core.csproj" />
+  </ItemGroup>
+</Project>
+```
+
+- [ ] Step 5: Add to solution + build + test (still 59 passed).
+
+```bash
+dotnet sln add src/KasaMonitor.Workers/KasaMonitor.Workers.csproj
+dotnet sln add tests/KasaMonitor.Workers.Tests/KasaMonitor.Workers.Tests.csproj
+dotnet build && dotnet test
+```
+
+- [ ] Step 6: Commit `chore: scaffold KasaMonitor.Workers + KasaMonitor.Workers.Tests projects`.
+
+### Task 4.2: `PlugStateBroadcaster` (in-memory implementation)
+
+**Files:**
+- Create: `src/KasaMonitor.Workers/PlugStateBroadcaster.cs`
+- Test: `tests/KasaMonitor.Workers.Tests/PlugStateBroadcasterTests.cs`
+
+Simple thread-safe pub/sub. `Snapshot()` returns the latest known state per plug.
+
+- [ ] Step 1: Tests:
+
+```csharp
+using FluentAssertions;
+using KasaMonitor.Core.Models;
+using Xunit;
+
+namespace KasaMonitor.Workers.Tests;
+
+public class PlugStateBroadcasterTests
+{
+    private static PlugLiveState State(Guid id, string mac = "aa", bool online = true) =>
+        new(PlugId: id, Mac: mac, Alias: "x", IsOnline: online,
+            LastReading: null, LastSampleUtc: DateTimeOffset.UtcNow);
+
+    [Fact]
+    public void Snapshot_AfterPublish_ReflectsLatest()
+    {
+        var b = new PlugStateBroadcaster();
+        var id = Guid.NewGuid();
+        b.Publish(State(id, online: false));
+        b.Publish(State(id, online: true));
+
+        b.Snapshot()[id].IsOnline.Should().BeTrue();
+    }
+
+    [Fact]
+    public void StateChanged_FiresOnPublish()
+    {
+        var b = new PlugStateBroadcaster();
+        var fired = new List<PlugLiveState>();
+        b.StateChanged += s => fired.Add(s);
+
+        var id = Guid.NewGuid();
+        b.Publish(State(id));
+
+        fired.Should().HaveCount(1).And.ContainSingle(s => s.PlugId == id);
+    }
+
+    [Fact]
+    public void Publish_FromMultipleThreads_DoesNotCorrupt()
+    {
+        var b = new PlugStateBroadcaster();
+        var ids = Enumerable.Range(0, 50).Select(_ => Guid.NewGuid()).ToList();
+
+        Parallel.ForEach(ids, id => b.Publish(State(id)));
+
+        b.Snapshot().Should().HaveCount(50);
+    }
+}
+```
+
+- [ ] Step 2: Implement `src/KasaMonitor.Workers/PlugStateBroadcaster.cs`:
+
+```csharp
+using KasaMonitor.Core.Abstractions;
+using KasaMonitor.Core.Models;
+using System.Collections.Concurrent;
+
+namespace KasaMonitor.Workers;
+
+public sealed class PlugStateBroadcaster : IPlugStateBroadcaster
+{
+    private readonly ConcurrentDictionary<Guid, PlugLiveState> _state = new();
+
+    public event Action<PlugLiveState>? StateChanged;
+
+    public void Publish(PlugLiveState state)
+    {
+        _state[state.PlugId] = state;
+        StateChanged?.Invoke(state);
+    }
+
+    public IReadOnlyDictionary<Guid, PlugLiveState> Snapshot() =>
+        new Dictionary<Guid, PlugLiveState>(_state);
+}
+```
+
+- [ ] Step 3: Tests pass (62 total).
+
+- [ ] Step 4: Commit `feat(workers): add in-memory PlugStateBroadcaster (concurrent snapshot + event)`.
+
+### Task 4.3: `PlugDiscoveredChannel` for cross-worker signaling
+
+**Files:**
+- Create: `src/KasaMonitor.Core/Abstractions/IPlugDiscoveredChannel.cs`
+- Create: `src/KasaMonitor.Workers/PlugDiscoveredChannel.cs`
+- Test: `tests/KasaMonitor.Workers.Tests/PlugDiscoveredChannelTests.cs`
+
+The interface lives in Core (DIP); the impl uses `System.Threading.Channels.Channel<Guid>` with unbounded capacity (writes never block, no backpressure for hobby load).
+
+- [ ] Step 1: `IPlugDiscoveredChannel.cs`:
+
+```csharp
+namespace KasaMonitor.Core.Abstractions;
+
+public interface IPlugDiscoveredChannel
+{
+    void Publish(Guid plugId);
+    IAsyncEnumerable<Guid> ReadAllAsync(CancellationToken ct);
+}
+```
+
+- [ ] Step 2: Test:
+
+```csharp
+using FluentAssertions;
+using Xunit;
+
+namespace KasaMonitor.Workers.Tests;
+
+public class PlugDiscoveredChannelTests
+{
+    [Fact]
+    public async Task Publish_ReadAll_ReceivesInOrder()
+    {
+        var ch = new PlugDiscoveredChannel();
+        var ids = new[] { Guid.NewGuid(), Guid.NewGuid() };
+        foreach (var id in ids) ch.Publish(id);
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(200));
+        var seen = new List<Guid>();
+        try
+        {
+            await foreach (var id in ch.ReadAllAsync(cts.Token))
+            {
+                seen.Add(id);
+                if (seen.Count == ids.Length) break;
+            }
+        }
+        catch (OperationCanceledException) { }
+
+        seen.Should().Equal(ids);
+    }
+}
+```
+
+- [ ] Step 3: Implement `src/KasaMonitor.Workers/PlugDiscoveredChannel.cs`:
+
+```csharp
+using KasaMonitor.Core.Abstractions;
+using System.Threading.Channels;
+
+namespace KasaMonitor.Workers;
+
+public sealed class PlugDiscoveredChannel : IPlugDiscoveredChannel
+{
+    private readonly Channel<Guid> _channel = Channel.CreateUnbounded<Guid>(
+        new UnboundedChannelOptions { SingleReader = true, SingleWriter = false });
+
+    public void Publish(Guid plugId) => _channel.Writer.TryWrite(plugId);
+
+    public IAsyncEnumerable<Guid> ReadAllAsync(CancellationToken ct) =>
+        _channel.Reader.ReadAllAsync(ct);
+}
+```
+
+- [ ] Step 4: Tests pass (63 total).
+
+- [ ] Step 5: Commit `feat(workers): add PlugDiscoveredChannel (unbounded in-memory queue)`.
+
+### Task 4.4: `DiscoveryWorker`
+
+**Files:**
+- Create: `src/KasaMonitor.Workers/DiscoveryWorker.cs`
+- Test: `tests/KasaMonitor.Workers.Tests/DiscoveryWorkerTests.cs`
+- Test helper: `tests/KasaMonitor.Workers.Tests/FakeKasaClient.cs`
+
+The worker has a public `RunOnceAsync(CancellationToken ct)` that does one discovery cycle (broadcast → upsert → publish events). The `BackgroundService.ExecuteAsync` override loops `RunOnceAsync` on a `_interval` cadence.
+
+- [ ] Step 1: `FakeKasaClient.cs` — minimal `IKasaClient` test double:
+
+```csharp
+using KasaMonitor.Core.Models;
+using KasaMonitor.Core.Protocol;
+using System.Net;
+using System.Runtime.CompilerServices;
+
+namespace KasaMonitor.Workers.Tests;
+
+internal sealed class FakeKasaClient : IKasaClient
+{
+    public Func<IPAddress, Task<PlugInfo>>? OnGetSysInfo;
+    public Func<IPAddress, Task<EmeterReading>>? OnGetRealtime;
+    public Func<IPAddress, int, int, Task<IReadOnlyList<DailyKwh>>>? OnGetDayStat;
+    public Func<IPAddress, int, Task<IReadOnlyList<MonthlyKwh>>>? OnGetMonthStat;
+    public List<DiscoveredPlug> DiscoveredPlugs { get; } = new();
+
+    public Task<PlugInfo> GetSysInfoAsync(IPAddress ip, CancellationToken ct) =>
+        OnGetSysInfo?.Invoke(ip) ?? throw new InvalidOperationException("OnGetSysInfo not set");
+
+    public Task<EmeterReading> GetRealtimeAsync(IPAddress ip, CancellationToken ct) =>
+        OnGetRealtime?.Invoke(ip) ?? throw new InvalidOperationException("OnGetRealtime not set");
+
+    public Task<IReadOnlyList<DailyKwh>> GetDayStatAsync(IPAddress ip, int year, int month, CancellationToken ct) =>
+        OnGetDayStat?.Invoke(ip, year, month) ?? throw new InvalidOperationException("OnGetDayStat not set");
+
+    public Task<IReadOnlyList<MonthlyKwh>> GetMonthStatAsync(IPAddress ip, int year, CancellationToken ct) =>
+        OnGetMonthStat?.Invoke(ip, year) ?? throw new InvalidOperationException("OnGetMonthStat not set");
+
+    public async IAsyncEnumerable<DiscoveredPlug> DiscoverAsync(
+        IReadOnlyList<IPAddress> broadcastAddresses, TimeSpan timeout,
+        [EnumeratorCancellation] CancellationToken ct)
+    {
+        foreach (var p in DiscoveredPlugs) yield return p;
+        await Task.CompletedTask;
+    }
+}
+```
+
+- [ ] Step 2: Tests — `DiscoveryWorkerTests.cs`:
+
+```csharp
+using FluentAssertions;
+using KasaMonitor.Core.Models;
+using KasaMonitor.Data.Repositories;
+using KasaMonitor.Data.Tests;
+using Microsoft.Extensions.Logging.Abstractions;
+using System.Net;
+using Xunit;
+
+namespace KasaMonitor.Workers.Tests;
+
+public class DiscoveryWorkerTests
+{
+    private static DiscoveredPlug Make(string mac, string alias = "X", string ip = "192.168.254.105") =>
+        new(IPAddress.Parse(ip), new PlugInfo(mac, alias, "KP115(EU)", "1.0", "1.0.20", "X", true, -50, TimeSpan.Zero));
+
+    [Fact]
+    public async Task RunOnceAsync_NewPlugs_AreUpserted_AndPublishedAsDiscovered()
+    {
+        using var f = new TestDbFactory();
+        using var ctx = f.CreateContext();
+        var plugRepo = new PlugRepository(ctx);
+        var fake = new FakeKasaClient();
+        fake.DiscoveredPlugs.Add(Make("aa", ip: "192.168.254.105"));
+        fake.DiscoveredPlugs.Add(Make("bb", ip: "192.168.254.106"));
+        var channel = new PlugDiscoveredChannel();
+
+        var worker = new DiscoveryWorker(
+            fake, plugRepo, channel,
+            new[] { IPAddress.Parse("192.168.254.255") },
+            TimeSpan.FromMilliseconds(500),
+            TimeSpan.FromMinutes(5),
+            NullLogger<DiscoveryWorker>.Instance);
+
+        await worker.RunOnceAsync(CancellationToken.None);
+
+        var plugs = await plugRepo.ListAllAsync(CancellationToken.None);
+        plugs.Should().HaveCount(2);
+    }
+
+    [Fact]
+    public async Task RunOnceAsync_AlreadyKnownPlug_NotPublishedAgain()
+    {
+        using var f = new TestDbFactory();
+        using var ctx = f.CreateContext();
+        var plugRepo = new PlugRepository(ctx);
+        await plugRepo.UpsertFromDiscoveryAsync(Make("aa"), DateTimeOffset.UtcNow, CancellationToken.None);
+
+        var fake = new FakeKasaClient();
+        fake.DiscoveredPlugs.Add(Make("aa"));
+        var channel = new PlugDiscoveredChannel();
+
+        var worker = new DiscoveryWorker(
+            fake, plugRepo, channel,
+            new[] { IPAddress.Parse("192.168.254.255") },
+            TimeSpan.FromMilliseconds(500),
+            TimeSpan.FromMinutes(5),
+            NullLogger<DiscoveryWorker>.Instance);
+
+        await worker.RunOnceAsync(CancellationToken.None);
+
+        // Channel should be empty (no new discovery published)
+        using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(100));
+        var got = new List<Guid>();
+        try { await foreach (var id in channel.ReadAllAsync(cts.Token)) got.Add(id); }
+        catch (OperationCanceledException) { }
+        got.Should().BeEmpty();
+    }
+}
+```
+
+- [ ] Step 3: Implement `src/KasaMonitor.Workers/DiscoveryWorker.cs`:
+
+```csharp
+using KasaMonitor.Core.Abstractions;
+using KasaMonitor.Core.Models;
+using KasaMonitor.Core.Protocol;
+using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
+using System.Net;
+
+namespace KasaMonitor.Workers;
+
+public sealed class DiscoveryWorker : BackgroundService
+{
+    private readonly IKasaClient _kasa;
+    private readonly IPlugRepository _plugRepo;
+    private readonly IPlugDiscoveredChannel _channel;
+    private readonly IReadOnlyList<IPAddress> _broadcastAddresses;
+    private readonly TimeSpan _scanTimeout;
+    private readonly TimeSpan _interval;
+    private readonly ILogger<DiscoveryWorker> _log;
+
+    public DiscoveryWorker(
+        IKasaClient kasa,
+        IPlugRepository plugRepo,
+        IPlugDiscoveredChannel channel,
+        IReadOnlyList<IPAddress> broadcastAddresses,
+        TimeSpan scanTimeout,
+        TimeSpan interval,
+        ILogger<DiscoveryWorker> log)
+    {
+        _kasa = kasa;
+        _plugRepo = plugRepo;
+        _channel = channel;
+        _broadcastAddresses = broadcastAddresses;
+        _scanTimeout = scanTimeout;
+        _interval = interval;
+        _log = log;
+    }
+
+    public async Task RunOnceAsync(CancellationToken ct)
+    {
+        var now = DateTimeOffset.UtcNow;
+        var existingMacs = (await _plugRepo.ListAllAsync(ct)).Select(p => p.Mac).ToHashSet(StringComparer.Ordinal);
+
+        await foreach (var dp in _kasa.DiscoverAsync(_broadcastAddresses, _scanTimeout, ct))
+        {
+            var wasNew = !existingMacs.Contains(dp.Info.Mac);
+            var id = await _plugRepo.UpsertFromDiscoveryAsync(dp, now, ct);
+            if (wasNew)
+            {
+                _channel.Publish(id);
+                _log.LogInformation("Discovered new plug {Mac} ({Alias}) -> Id {Id}", dp.Info.Mac, dp.Info.Alias, id);
+            }
+        }
+    }
+
+    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+    {
+        while (!stoppingToken.IsCancellationRequested)
+        {
+            try { await RunOnceAsync(stoppingToken); }
+            catch (Exception ex) when (!stoppingToken.IsCancellationRequested)
+            {
+                _log.LogError(ex, "Discovery cycle failed");
+            }
+            try { await Task.Delay(_interval, stoppingToken); }
+            catch (TaskCanceledException) { return; }
+        }
+    }
+}
+```
+
+- [ ] Step 4: Tests pass (65 total).
+
+- [ ] Step 5: Commit `feat(workers): implement DiscoveryWorker with new-plug event publication`.
+
+### Task 4.5: `PollingWorker`
+
+**Files:**
+- Create: `src/KasaMonitor.Workers/PollingWorker.cs`
+- Test: `tests/KasaMonitor.Workers.Tests/PollingWorkerTests.cs`
+
+Per cycle: list active (non-archived) plugs → parallel `GetRealtimeAsync` → insert sample → publish state.
+
+- [ ] Step 1: Tests — at least 2 cases:
+  - Successful poll: 2 plugs both reachable, 2 samples inserted with correct fields, both states broadcast.
+  - Failed poll: client throws → sample inserted with `Online=false, ErrorMessage=...`, state still broadcast.
+
+```csharp
+using FluentAssertions;
+using KasaMonitor.Core.Models;
+using KasaMonitor.Data.Repositories;
+using KasaMonitor.Data.Tests;
+using Microsoft.Extensions.Logging.Abstractions;
+using System.Net;
+using Xunit;
+
+namespace KasaMonitor.Workers.Tests;
+
+public class PollingWorkerTests
+{
+    private static async Task<(Guid id, PlugRepository repo, KasaMonitor.Data.KasaDbContext ctx, TestDbFactory f)> SeedPlug(string mac, string ip = "192.168.254.105")
+    {
+        var f = new TestDbFactory();
+        var ctx = f.CreateContext();
+        var repo = new PlugRepository(ctx);
+        var dp = new DiscoveredPlug(IPAddress.Parse(ip),
+            new PlugInfo(mac, "X", "KP115(EU)", "1.0", "1.0.20", "X", true, -50, TimeSpan.Zero));
+        var id = await repo.UpsertFromDiscoveryAsync(dp, DateTimeOffset.UtcNow, CancellationToken.None);
+        return (id, repo, ctx, f);
+    }
+
+    [Fact]
+    public async Task RunOnceAsync_SuccessfulPoll_InsertsOnlineSample_AndBroadcasts()
+    {
+        var (id, plugRepo, ctx, f) = await SeedPlug("aa");
+        using (f)
+        {
+            using var ctx2 = f.CreateContext();
+            var sampleRepo = new SampleRepository(ctx2);
+            var fake = new FakeKasaClient
+            {
+                OnGetRealtime = ip => Task.FromResult(new EmeterReading(50_000, 230_000, 200, 100))
+            };
+            var bc = new PlugStateBroadcaster();
+
+            var worker = new PollingWorker(
+                fake, () => f.CreateContext(),
+                async ct =>
+                {
+                    using var c = f.CreateContext();
+                    return await new PlugRepository(c).ListAllAsync(ct);
+                },
+                sampleRepo, bc,
+                TimeSpan.FromSeconds(10),
+                NullLogger<PollingWorker>.Instance);
+
+            await worker.RunOnceAsync(CancellationToken.None);
+
+            var samples = await sampleRepo.ListByPlugAsync(id,
+                DateTimeOffset.UtcNow.AddMinutes(-1), DateTimeOffset.UtcNow.AddMinutes(1),
+                CancellationToken.None);
+            samples.Should().HaveCount(1);
+            samples[0].Online.Should().BeTrue();
+            samples[0].PowerMw.Should().Be(50_000);
+
+            bc.Snapshot().Should().ContainKey(id);
+        }
+    }
+
+    [Fact]
+    public async Task RunOnceAsync_PollFails_InsertsOfflineSampleWithErrorMessage()
+    {
+        var (id, plugRepo, ctx, f) = await SeedPlug("bb");
+        using (f)
+        {
+            using var ctx2 = f.CreateContext();
+            var sampleRepo = new SampleRepository(ctx2);
+            var fake = new FakeKasaClient
+            {
+                OnGetRealtime = _ => Task.FromException<EmeterReading>(new TimeoutException("simulated"))
+            };
+            var bc = new PlugStateBroadcaster();
+
+            var worker = new PollingWorker(
+                fake, () => f.CreateContext(),
+                async ct =>
+                {
+                    using var c = f.CreateContext();
+                    return await new PlugRepository(c).ListAllAsync(ct);
+                },
+                sampleRepo, bc,
+                TimeSpan.FromSeconds(10),
+                NullLogger<PollingWorker>.Instance);
+
+            await worker.RunOnceAsync(CancellationToken.None);
+
+            var samples = await sampleRepo.ListByPlugAsync(id,
+                DateTimeOffset.UtcNow.AddMinutes(-1), DateTimeOffset.UtcNow.AddMinutes(1),
+                CancellationToken.None);
+            samples.Single().Online.Should().BeFalse();
+            samples.Single().ErrorMessage.Should().Contain("simulated");
+        }
+    }
+}
+```
+
+- [ ] Step 2: Implement `src/KasaMonitor.Workers/PollingWorker.cs`:
+
+```csharp
+using KasaMonitor.Core.Abstractions;
+using KasaMonitor.Core.Models;
+using KasaMonitor.Core.Protocol;
+using KasaMonitor.Data;
+using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
+
+namespace KasaMonitor.Workers;
+
+public sealed class PollingWorker : BackgroundService
+{
+    private readonly IKasaClient _kasa;
+    private readonly Func<KasaDbContext> _ctxFactory; // for IPlugRepository instantiation per cycle
+    private readonly Func<CancellationToken, Task<IReadOnlyList<Plug>>> _listPlugs;
+    private readonly ISampleRepository _samples;
+    private readonly IPlugStateBroadcaster _broadcaster;
+    private readonly TimeSpan _interval;
+    private readonly ILogger<PollingWorker> _log;
+
+    public PollingWorker(
+        IKasaClient kasa,
+        Func<KasaDbContext> ctxFactory,
+        Func<CancellationToken, Task<IReadOnlyList<Plug>>> listPlugs,
+        ISampleRepository samples,
+        IPlugStateBroadcaster broadcaster,
+        TimeSpan interval,
+        ILogger<PollingWorker> log)
+    {
+        _kasa = kasa;
+        _ctxFactory = ctxFactory;
+        _listPlugs = listPlugs;
+        _samples = samples;
+        _broadcaster = broadcaster;
+        _interval = interval;
+        _log = log;
+    }
+
+    public async Task RunOnceAsync(CancellationToken ct)
+    {
+        var plugs = (await _listPlugs(ct)).Where(p => !p.IsArchived).ToList();
+        var now = DateTimeOffset.UtcNow;
+        var samplesToInsert = new List<Sample>();
+
+        await Parallel.ForEachAsync(plugs, new ParallelOptions { MaxDegreeOfParallelism = 8, CancellationToken = ct },
+            async (plug, innerCt) =>
+            {
+                Sample s;
+                try
+                {
+                    var reading = await _kasa.GetRealtimeAsync(plug.IpAddress, innerCt);
+                    s = new Sample(0, plug.Id, now, true,
+                        reading.PowerMw, reading.VoltageMv, reading.CurrentMa, reading.TotalWh,
+                        Rssi: null, RelayOn: null, ErrorMessage: null);
+                    _broadcaster.Publish(new PlugLiveState(plug.Id, plug.Mac, plug.Alias, true, reading, now));
+                }
+                catch (Exception ex)
+                {
+                    s = new Sample(0, plug.Id, now, false,
+                        null, null, null, null, null, null, ex.Message);
+                    _broadcaster.Publish(new PlugLiveState(plug.Id, plug.Mac, plug.Alias, false, null, now));
+                }
+                lock (samplesToInsert) samplesToInsert.Add(s);
+            });
+
+        if (samplesToInsert.Count > 0)
+            await _samples.InsertManyAsync(samplesToInsert, ct);
+    }
+
+    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+    {
+        while (!stoppingToken.IsCancellationRequested)
+        {
+            try { await RunOnceAsync(stoppingToken); }
+            catch (Exception ex) when (!stoppingToken.IsCancellationRequested) { _log.LogError(ex, "Polling cycle failed"); }
+            try { await Task.Delay(_interval, stoppingToken); }
+            catch (TaskCanceledException) { return; }
+        }
+    }
+}
+```
+
+- [ ] Step 3: Tests pass (67 total).
+- [ ] Step 4: Commit `feat(workers): implement PollingWorker with parallel fan-out and offline-sample fallback`.
+
+### Task 4.6: `HistorySyncWorker`
+
+**Files:**
+- Create: `src/KasaMonitor.Workers/HistorySyncWorker.cs`
+- Test: `tests/KasaMonitor.Workers.Tests/HistorySyncWorkerTests.cs`
+
+Per cycle (per plug): fetch monstat for current year + previous, fetch daystat for current month + previous. Upsert. Listens to `PlugDiscoveredChannel` for first-time fetch trigger.
+
+For Chunk 4, scope this worker as a single `RunOnceAsync(plugs)` that does the fetch+upsert. Skip the channel-listening loop (kept in `ExecuteAsync` only).
+
+- [ ] Step 1: Tests:
+
+```csharp
+using FluentAssertions;
+using KasaMonitor.Core.Models;
+using KasaMonitor.Data.Repositories;
+using KasaMonitor.Data.Tests;
+using Microsoft.Extensions.Logging.Abstractions;
+using System.Net;
+using Xunit;
+
+namespace KasaMonitor.Workers.Tests;
+
+public class HistorySyncWorkerTests
+{
+    [Fact]
+    public async Task SyncOneAsync_FetchesAndUpsertsDailyAndMonthly()
+    {
+        using var f = new TestDbFactory();
+        using var ctx = f.CreateContext();
+        var plugRepo = new PlugRepository(ctx);
+        var historyRepo = new HistoryRepository(ctx);
+        var dp = new DiscoveredPlug(IPAddress.Parse("192.168.254.105"),
+            new PlugInfo("aa", "X", "KP115(EU)", "1.0", "1.0.20", "X", true, -50, TimeSpan.Zero));
+        var plugId = await plugRepo.UpsertFromDiscoveryAsync(dp, DateTimeOffset.UtcNow, CancellationToken.None);
+
+        var fake = new FakeKasaClient
+        {
+            OnGetMonthStat = (_, year) => Task.FromResult<IReadOnlyList<MonthlyKwh>>(new[]
+            {
+                new MonthlyKwh(year, 1, 100), new MonthlyKwh(year, 2, 200)
+            }),
+            OnGetDayStat = (_, year, month) => Task.FromResult<IReadOnlyList<DailyKwh>>(new[]
+            {
+                new DailyKwh(year, month, 1, 50), new DailyKwh(year, month, 2, 60)
+            })
+        };
+
+        var worker = new HistorySyncWorker(fake, plugRepo, historyRepo,
+            DateTime.UtcNow, // injectable "now"
+            NullLogger<HistorySyncWorker>.Instance);
+
+        await worker.SyncOneAsync(plugId, CancellationToken.None);
+
+        var thisYear = DateTime.UtcNow.Year;
+        var monthly = await historyRepo.GetMonthlyRangeAsync(plugId, thisYear - 1, thisYear, CancellationToken.None);
+        monthly.Should().NotBeEmpty();
+
+        var thisMonth = DateTime.UtcNow.Month;
+        var daily = await historyRepo.GetDailyRangeAsync(plugId,
+            new DateOnly(thisYear, 1, 1), new DateOnly(thisYear, 12, 31), CancellationToken.None);
+        daily.Should().NotBeEmpty();
+    }
+}
+```
+
+- [ ] Step 2: Implement `src/KasaMonitor.Workers/HistorySyncWorker.cs`:
+
+```csharp
+using KasaMonitor.Core.Abstractions;
+using KasaMonitor.Core.Protocol;
+using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
+
+namespace KasaMonitor.Workers;
+
+public sealed class HistorySyncWorker : BackgroundService
+{
+    private readonly IKasaClient _kasa;
+    private readonly IPlugRepository _plugRepo;
+    private readonly IHistoryRepository _historyRepo;
+    private readonly DateTime _now;
+    private readonly ILogger<HistorySyncWorker> _log;
+
+    public HistorySyncWorker(
+        IKasaClient kasa,
+        IPlugRepository plugRepo,
+        IHistoryRepository historyRepo,
+        DateTime now,
+        ILogger<HistorySyncWorker> log)
+    {
+        _kasa = kasa;
+        _plugRepo = plugRepo;
+        _historyRepo = historyRepo;
+        _now = now;
+        _log = log;
+    }
+
+    public async Task SyncOneAsync(Guid plugId, CancellationToken ct)
+    {
+        var plug = (await _plugRepo.ListAllAsync(ct)).FirstOrDefault(p => p.Id == plugId);
+        if (plug is null) return;
+
+        try
+        {
+            var monthsThis = await _kasa.GetMonthStatAsync(plug.IpAddress, _now.Year, ct);
+            var monthsPrev = await _kasa.GetMonthStatAsync(plug.IpAddress, _now.Year - 1, ct);
+            await _historyRepo.UpsertMonthlyAsync(plugId, monthsThis, ct);
+            await _historyRepo.UpsertMonthlyAsync(plugId, monthsPrev, ct);
+
+            var daysThis = await _kasa.GetDayStatAsync(plug.IpAddress, _now.Year, _now.Month, ct);
+            var prevMonth = _now.AddMonths(-1);
+            var daysPrev = await _kasa.GetDayStatAsync(plug.IpAddress, prevMonth.Year, prevMonth.Month, ct);
+            await _historyRepo.UpsertDailyAsync(plugId, daysThis, ct);
+            await _historyRepo.UpsertDailyAsync(plugId, daysPrev, ct);
+        }
+        catch (Exception ex)
+        {
+            _log.LogWarning(ex, "History sync failed for {PlugId}", plugId);
+        }
+    }
+
+    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+    {
+        while (!stoppingToken.IsCancellationRequested)
+        {
+            try
+            {
+                var plugs = await _plugRepo.ListAllAsync(stoppingToken);
+                foreach (var p in plugs.Where(p => !p.IsArchived))
+                    await SyncOneAsync(p.Id, stoppingToken);
+            }
+            catch (Exception ex) when (!stoppingToken.IsCancellationRequested) { _log.LogError(ex, "History sync cycle failed"); }
+            try { await Task.Delay(TimeSpan.FromHours(6), stoppingToken); }
+            catch (TaskCanceledException) { return; }
+        }
+    }
+}
+```
+
+- [ ] Step 3: Tests pass (68 total).
+- [ ] Step 4: Commit `feat(workers): implement HistorySyncWorker (per-plug daystat/monstat upsert)`.
+
+### Task 4.7: `RollupWorker` — sample → 1-minute aggregates (raw SQL)
+
+**Files:**
+- Create: `src/KasaMonitor.Workers/RollupWorker.cs`
+- Test: `tests/KasaMonitor.Workers.Tests/RollupWorkerTests.cs`
+
+Per the spec, Rollup is heavyweight (multi-stage aggregation). For Chunk 4, implement a minimum-viable version:
+- `RollupSamplesToMinutesAsync(DateOnly day, CancellationToken)` — aggregates Samples in the given day's UTC range into `OneMinuteAggregates`.
+- `PruneOldSamplesAsync(int retentionDays, CancellationToken)` — calls `ISampleRepository.DeleteOlderThanAsync`.
+
+Skip 1-minute → 1-hour aggregation and the VACUUM step for now; they can be added in a later chunk if time-pressured.
+
+- [ ] Step 1: Test:
+
+```csharp
+using FluentAssertions;
+using KasaMonitor.Core.Models;
+using KasaMonitor.Data;
+using KasaMonitor.Data.Entities;
+using KasaMonitor.Data.Repositories;
+using KasaMonitor.Data.Tests;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging.Abstractions;
+using Xunit;
+
+namespace KasaMonitor.Workers.Tests;
+
+public class RollupWorkerTests
+{
+    [Fact]
+    public async Task RollupSamplesToMinutesAsync_Aggregates_BySample_PerMinute()
+    {
+        using var f = new TestDbFactory();
+        using var ctx = f.CreateContext();
+        var sampleRepo = new SampleRepository(ctx);
+        var plugId = Guid.NewGuid();
+        var dayBase = DateTimeOffset.Parse("2026-05-08T00:00:00Z");
+
+        var samples = new[]
+        {
+            new Sample(0, plugId, dayBase, true, 1000, null, null, null, null, null, null),
+            new Sample(0, plugId, dayBase.AddSeconds(10), true, 2000, null, null, null, null, null, null),
+            new Sample(0, plugId, dayBase.AddSeconds(20), true, 3000, null, null, null, null, null, null),
+            // Different minute
+            new Sample(0, plugId, dayBase.AddMinutes(1), true, 4000, null, null, null, null, null, null),
+        };
+        await sampleRepo.InsertManyAsync(samples, CancellationToken.None);
+
+        var worker = new RollupWorker(() => f.CreateContext(), sampleRepo, NullLogger<RollupWorker>.Instance);
+        await worker.RollupSamplesToMinutesAsync(new DateOnly(2026, 5, 8), CancellationToken.None);
+
+        using var ctxRead = f.CreateContext();
+        var aggs = ctxRead.OneMinuteAggregates.Where(a => a.PlugId == plugId).OrderBy(a => a.BucketStartUtc).ToList();
+        aggs.Should().HaveCount(2);
+        aggs[0].PAvgMw.Should().Be(2000); // (1000+2000+3000)/3
+        aggs[0].PMaxMw.Should().Be(3000);
+        aggs[0].PMinMw.Should().Be(1000);
+        aggs[0].SampleCount.Should().Be(3);
+    }
+}
+```
+
+- [ ] Step 2: Implement `src/KasaMonitor.Workers/RollupWorker.cs`:
+
+```csharp
+using KasaMonitor.Core.Abstractions;
+using KasaMonitor.Data;
+using KasaMonitor.Data.Entities;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
+
+namespace KasaMonitor.Workers;
+
+public sealed class RollupWorker : BackgroundService
+{
+    private readonly Func<KasaDbContext> _ctxFactory;
+    private readonly ISampleRepository _samples;
+    private readonly ILogger<RollupWorker> _log;
+
+    public RollupWorker(Func<KasaDbContext> ctxFactory, ISampleRepository samples, ILogger<RollupWorker> log)
+    {
+        _ctxFactory = ctxFactory;
+        _samples = samples;
+        _log = log;
+    }
+
+    public async Task RollupSamplesToMinutesAsync(DateOnly day, CancellationToken ct)
+    {
+        var dayStart = new DateTimeOffset(day.ToDateTime(TimeOnly.MinValue), TimeSpan.Zero);
+        var dayEnd = dayStart.AddDays(1);
+        var dayStartTicks = dayStart.UtcTicks;
+        var dayEndTicks = dayEnd.UtcTicks;
+        var ticksPerMinute = TimeSpan.TicksPerMinute;
+
+        using var ctx = _ctxFactory();
+        // Group via raw query: bucket by floor(UtcTicks / ticksPerMinute)
+        var rows = await ctx.Samples.AsNoTracking()
+            .Where(s => s.PowerMw != null
+                        && s.TimestampUtc.UtcTicks >= dayStartTicks
+                        && s.TimestampUtc.UtcTicks <  dayEndTicks)
+            .ToListAsync(ct);
+
+        var grouped = rows
+            .GroupBy(s => new { s.PlugId, BucketTicks = s.TimestampUtc.UtcTicks / ticksPerMinute * ticksPerMinute })
+            .Select(g => new OneMinuteAggregateEntity
+            {
+                PlugId = g.Key.PlugId,
+                BucketStartUtc = new DateTimeOffset(g.Key.BucketTicks, TimeSpan.Zero),
+                PAvgMw = (long)g.Average(s => s.PowerMw!.Value),
+                PMaxMw = g.Max(s => s.PowerMw!.Value),
+                PMinMw = g.Min(s => s.PowerMw!.Value),
+                SampleCount = g.Count(),
+                OnlineCount = g.Count(s => s.Online)
+            })
+            .ToList();
+
+        foreach (var agg in grouped)
+        {
+            var existing = await ctx.OneMinuteAggregates.FindAsync(new object?[] { agg.PlugId, agg.BucketStartUtc }, ct);
+            if (existing is null)
+            {
+                ctx.OneMinuteAggregates.Add(agg);
+            }
+            else
+            {
+                existing.PAvgMw = agg.PAvgMw;
+                existing.PMaxMw = agg.PMaxMw;
+                existing.PMinMw = agg.PMinMw;
+                existing.SampleCount = agg.SampleCount;
+                existing.OnlineCount = agg.OnlineCount;
+            }
+        }
+        await ctx.SaveChangesAsync(ct);
+    }
+
+    public Task<int> PruneOldSamplesAsync(int retentionDays, CancellationToken ct) =>
+        _samples.DeleteOlderThanAsync(DateTimeOffset.UtcNow.AddDays(-retentionDays), ct);
+
+    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+    {
+        while (!stoppingToken.IsCancellationRequested)
+        {
+            try
+            {
+                var yesterday = DateOnly.FromDateTime(DateTime.UtcNow.AddDays(-1));
+                await RollupSamplesToMinutesAsync(yesterday, stoppingToken);
+                await PruneOldSamplesAsync(30, stoppingToken);
+            }
+            catch (Exception ex) when (!stoppingToken.IsCancellationRequested) { _log.LogError(ex, "Rollup cycle failed"); }
+            try { await Task.Delay(TimeSpan.FromHours(24), stoppingToken); }
+            catch (TaskCanceledException) { return; }
+        }
+    }
+}
+```
+
+- [ ] Step 3: Tests pass (69 total).
+- [ ] Step 4: Commit `feat(workers): implement RollupWorker minute aggregates + sample retention`.
+
+### Task 4.8: DI extension `AddKasaWorkers`
+
+**Files:**
+- Create: `src/KasaMonitor.Workers/DependencyInjectionExtensions.cs`
+- Test: `tests/KasaMonitor.Workers.Tests/DependencyInjectionExtensionsTests.cs`
+
+- [ ] Step 1: Test — verifies the DI container can resolve every interface and worker.
+
+```csharp
+using FluentAssertions;
+using KasaMonitor.Core.Abstractions;
+using KasaMonitor.Core.Protocol;
+using KasaMonitor.Data;
+using Microsoft.Data.Sqlite;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
+using Xunit;
+
+namespace KasaMonitor.Workers.Tests;
+
+public class DependencyInjectionExtensionsTests
+{
+    [Fact]
+    public void AddKasaWorkers_RegistersAllAbstractions()
+    {
+        var services = new ServiceCollection();
+        services.AddLogging();
+        var conn = new SqliteConnection("Filename=:memory:");
+        conn.Open();
+        services.AddDbContext<KasaDbContext>(o => o.UseSqlite(conn));
+        services.AddSingleton<IKasaClient, KasaClient>();
+        services.AddKasaWorkers();
+
+        var sp = services.BuildServiceProvider();
+
+        sp.GetService<IPlugStateBroadcaster>().Should().NotBeNull();
+        sp.GetService<IPlugDiscoveredChannel>().Should().NotBeNull();
+        sp.GetService<IPlugRepository>().Should().NotBeNull();
+        sp.GetService<ISampleRepository>().Should().NotBeNull();
+        sp.GetService<IHistoryRepository>().Should().NotBeNull();
+        sp.GetService<ISettingsRepository>().Should().NotBeNull();
+    }
+}
+```
+
+- [ ] Step 2: Implement:
+
+```csharp
+using KasaMonitor.Core.Abstractions;
+using KasaMonitor.Data.Repositories;
+using Microsoft.Extensions.DependencyInjection;
+
+namespace KasaMonitor.Workers;
+
+public static class DependencyInjectionExtensions
+{
+    public static IServiceCollection AddKasaWorkers(this IServiceCollection services)
+    {
+        services.AddScoped<IPlugRepository, PlugRepository>();
+        services.AddScoped<ISampleRepository, SampleRepository>();
+        services.AddScoped<IHistoryRepository, HistoryRepository>();
+        services.AddScoped<ISettingsRepository, SettingsRepository>();
+
+        services.AddSingleton<IPlugStateBroadcaster, PlugStateBroadcaster>();
+        services.AddSingleton<IPlugDiscoveredChannel, PlugDiscoveredChannel>();
+        return services;
+    }
+}
+```
+
+(Hosted services — DiscoveryWorker, PollingWorker, etc. — require non-trivial constructor args and will be registered at the Web project level in Chunk 5 with `appsettings`-driven config.)
+
+- [ ] Step 3: Tests pass (70 total).
+- [ ] Step 4: Commit `feat(workers): add AddKasaWorkers DI extension for repositories + broadcaster + channel`.
+
+### Task 4.9: Chunk-4 verification gate
+
+- [ ] Step 1: `dotnet build` → 0/0.
+- [ ] Step 2: `dotnet test` → ~70 passed.
+- [ ] Step 3: `git status` clean, `git log --oneline | head -12` shows the 9 chunk-4 commits.
+
+---

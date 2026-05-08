@@ -149,7 +149,7 @@ Periodic broadcast-based plug discovery.
 Real-time data collection, fan-out parallel.
 
 - **Cadence:** every `PollIntervalSeconds` (default 10).
-- **Concurrency:** `Parallel.ForEachAsync` with `MaxDegreeOfParallelism = 8`. Each plug call has its own 2.5s timeout, so a worst-case cycle = 2.5s regardless of plug count.
+- **Concurrency:** `Parallel.ForEachAsync` with `MaxDegreeOfParallelism = 8` (intentional headroom — currently 5 plugs, allows growth without re-tuning). Each plug call has its own 2.5s timeout, so a worst-case cycle = 2.5s regardless of plug count.
 - **Per plug:** `GetRealtimeAsync` → `SampleEntity` (online=true). On timeout/error → `SampleEntity` with `Online=false` and `ErrorMessage` populated.
 - **After insert:** publish `PlugLiveState` to `IPlugStateBroadcaster` (in-process channel) so the UI sees it within 100ms.
 - **No internal retry**: an offline sample is the signal. UI shows "offline 12s" countdown based on `LastSampleUtc`.
@@ -172,16 +172,16 @@ Nightly aggregation and retention.
 - **Cadence:** 03:00 local time daily.
 - **Step 1 — aggregate:** for each day not yet aggregated:
   ```sql
-  INSERT OR IGNORE INTO OneMinuteAggregates
+  INSERT OR IGNORE INTO OneMinuteAggregates (PlugId, BucketStartUtc, PAvgMw, PMaxMw, PMinMw, SampleCount, OnlineCount)
     SELECT PlugId,
-           datetime((strftime('%s', TimestampUtc) / 60) * 60, 'unixepoch'),
+           datetime((strftime('%s', TimestampUtc) / 60) * 60, 'unixepoch') AS Bucket,
            AVG(PowerMw), MAX(PowerMw), MIN(PowerMw),
            COUNT(*), SUM(CASE WHEN Online=1 THEN 1 ELSE 0 END)
     FROM Samples
     WHERE TimestampUtc BETWEEN @dayStart AND @dayEnd
-    GROUP BY PlugId, bucket;
+    GROUP BY PlugId, Bucket;
   ```
-  Then analogous rollup `OneMinuteAggregates → OneHourAggregates`. `OneHourAggregates.EnergyWh` computed as `PAvgMw * 3600 / 1e6`.
+  Then analogous rollup `OneMinuteAggregates → OneHourAggregates`. `OneHourAggregates.EnergyWh` computed as `PAvgMw * 3600 / 1_000_000` (mW × 3600s / 1e6 = Wh). Integer truncation loses < 1 Wh per hour — acceptable since `DailyEnergy` from device is the canonical source for any sum ≥ 1 day.
 - **Step 2 — retention:**
   - `DELETE FROM Samples WHERE TimestampUtc < now() - 30 days`
   - `DELETE FROM OneMinuteAggregates WHERE BucketStartUtc < now() - 365 days`
@@ -326,7 +326,7 @@ HistorySyncWorker (every 6h, independent)
 | Connection refused | Sample offline, log warn | Same |
 | Malformed JSON (firmware corruption) | Sample offline, log error with hex dump | Same + "protocol error" badge |
 | 3 consecutive offline polls | In-memory `IsStale=true` | Card with orange background |
-| 24h offline | DB `IsArchived=true` | Moved to "Archived" section |
+| 24h offline | UI shows in "Stale" section (no DB mutation) | Card visually de-emphasized; user decides if/when to archive |
 | UDP discovery fails (broadcast blocked) | Log error, retain known plugs | Banner "discovery offline — check host network" |
 | DB locked / IO error | Retry × 3 with exponential backoff (50ms, 200ms, 1s), then drop sample, increment `samples_dropped` counter | Counter visible at `/health` |
 | EF migration fails at startup | App refuses to start, exit 1, log clear reason | Container restart loop, Portainer shows logs |
@@ -335,9 +335,9 @@ HistorySyncWorker (every 6h, independent)
 **Key principles:**
 1. **Never lose known plugs.** Discovery only adds; deletion is manual via UI.
 2. **Polling is per-plug isolated.** One bad plug doesn't block others.
-3. **DB writes never stop polling.** When SQLite is busy (rollup/VACUUM), in-memory buffer up to 1000 samples for 60s, then flush. Buffer overflow drops oldest, increments counter.
+3. **DB writes never stop polling.** When SQLite is busy (rollup/VACUUM), in-memory buffer for up to 60 seconds with a soft cap of ~100 samples (covers 5 plugs × 10s × ~3 min margin). On every poll cycle the buffer drains to DB if writeable; if the cap is exceeded before drain, oldest samples drop and a `samples_dropped` counter increments.
 4. **All history operations idempotent.** `UPSERT` everywhere; partial run + crash = no corruption.
-5. **Health endpoint** `/health` returns 200 only if: DB responds, ≥1 plug discovered, last polling cycle < 30s ago. Used by Docker `HEALTHCHECK`.
+5. **Health endpoint** `/health` returns 200 only if: DB responds, ≥1 plug discovered, last polling cycle < 30s ago. The container `HEALTHCHECK` invokes the same binary with `--healthcheck` flag, which calls `http://localhost:8910/health` over HttpClient and exits 0/1 (no `curl` dependency in base image).
 6. **Graceful shutdown.** SIGTERM → stop polling → flush buffer → close DbContext → exit < 10s.
 7. **Settings input validation.** `TariffRonPerKwh ∈ (0, 100)`, `PollIntervalSeconds ∈ [5, 300]`, `RetentionRawDays ∈ [1, 365]`. Invalid values → log + fallback to default, never crash.
 
@@ -376,8 +376,9 @@ ENV ASPNETCORE_URLS=http://+:8910 \
     TZ=Europe/Bucharest
 EXPOSE 8910
 VOLUME ["/data"]
+# aspnet base image has no curl/wget — use a tiny .NET probe binary baked in.
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
-  CMD curl -fsS http://localhost:8910/health || exit 1
+  CMD ["dotnet", "KasaMonitor.Web.dll", "--healthcheck"]
 ENTRYPOINT ["dotnet", "KasaMonitor.Web.dll"]
 ```
 
@@ -449,7 +450,7 @@ All configuration is layered (later overrides earlier):
 
 ## 13. Open Questions / Future Work
 
-- **Chart library decision** (ApexCharts vs ChartJs.Blazor) deferred to plan stage. Will pick after a quick spike comparing bundle size and Blazor-Server WebSocket overhead.
+- **Chart library decision** (ApexCharts vs ChartJs.Blazor) deferred to plan stage. Time-boxed spike of ≤2h; default fallback if undecided is **ApexCharts.Blazor** (richer interactive features, better Blazor Server example coverage). Plan stage must produce a written decision before UI work starts.
 - **Tapo support** explicitly out of scope; if user later adds Tapo plugs, this becomes a separate spec.
 - **Multi-arch Docker image** (arm64 for future ARM-based QNAP) — not now, but Dockerfile structure supports it via `--platform`.
 - **Backup / restore UI** — currently SQLite file backup is "stop container, copy `/data/kasa.db`". Could add UI button for hot backup later.

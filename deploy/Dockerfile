@@ -11,7 +11,7 @@ RUN dotnet publish src/KasaMonitor.Web/KasaMonitor.Web.csproj \
 FROM mcr.microsoft.com/dotnet/aspnet:10.0 AS runtime
 WORKDIR /app
 COPY --from=build /app .
-ENV ASPNETCORE_URLS=http://+:8910 \
+ENV ASPNETCORE_URLS=http://0.0.0.0:8910 \
     KasaMonitor__DbPath=/data/kasa.db \
     TZ=Europe/Bucharest
 EXPOSE 8910

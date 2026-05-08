@@ -6,6 +6,20 @@ using KasaMonitor.Workers;
 using Microsoft.EntityFrameworkCore;
 using System.Net;
 
+if (args is ["--healthcheck"])
+{
+    using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(3) };
+    try
+    {
+        var resp = await http.GetAsync("http://localhost:8910/health");
+        Environment.Exit(resp.IsSuccessStatusCode ? 0 : 1);
+    }
+    catch
+    {
+        Environment.Exit(1);
+    }
+}
+
 var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddRazorComponents()

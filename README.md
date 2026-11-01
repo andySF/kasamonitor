@@ -75,7 +75,7 @@ docker compose -f deploy/docker-compose.monitoring.yml up -d  # Prometheus (9090
 
 - Grafana: `http://<host>:3000`, user `admin`, password from `GRAFANA_ADMIN_PASSWORD` (default `admin`; set it
   before the first start, e.g. `GRAFANA_ADMIN_PASSWORD=... docker compose -f deploy/docker-compose.monitoring.yml up -d`).
-  The **KasaMonitor** dashboard is provisioned (folder *KasaMonitor*, also the home dashboard), together with the
+  The **KasaMonitor** dashboard is provisioned (folder *KasaMonitor*), together with the
   Prometheus data source (uid `prometheus`) and two alert rules.
 - Prometheus: `http://<host>:9090`, retention 10 years (`--storage.tsdb.retention.time=10y`, volume
   `prometheus_data`). *Status → Targets* must show job `kasa` UP.

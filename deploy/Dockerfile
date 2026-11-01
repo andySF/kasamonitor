@@ -4,6 +4,10 @@ WORKDIR /src
 COPY KasaMonitor.sln Directory.Build.props ./
 COPY src/ src/
 COPY tests/ tests/
+# Monitoring files embedded in KasaMonitor.Web.dll for the /integration page.
+COPY deploy/docker-compose.monitoring.yml deploy/
+COPY deploy/prometheus/ deploy/prometheus/
+COPY deploy/grafana/ deploy/grafana/
 RUN dotnet restore
 RUN dotnet publish src/KasaMonitor.Web/KasaMonitor.Web.csproj \
     -c Release -o /app --no-self-contained -r linux-x64

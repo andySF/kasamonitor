@@ -10,6 +10,13 @@
     <PackageReference Include="prometheus-net.AspNetCore" Version="8.*" />
   </ItemGroup>
 
+  <!-- Monitoring files from deploy/ served by /integration (single source: the repository files). -->
+  <ItemGroup>
+    <EmbeddedResource Include="..\..\deploy\docker-compose.monitoring.yml" LogicalName="deploy/docker-compose.monitoring.yml" />
+    <EmbeddedResource Include="..\..\deploy\prometheus\prometheus.yml" LogicalName="deploy/prometheus/prometheus.yml" />
+    <EmbeddedResource Include="..\..\deploy\grafana\provisioning\**\*" LogicalName="deploy/grafana/provisioning/%(RecursiveDir)%(Filename)%(Extension)" />
+  </ItemGroup>
+
   <ItemGroup>
     <ProjectReference Include="..\KasaMonitor.Core\KasaMonitor.Core.csproj" />
     <ProjectReference Include="..\KasaMonitor.Data\KasaMonitor.Data.csproj" />

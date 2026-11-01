@@ -66,6 +66,23 @@ Do not commit credentials; prefer `/settings`.
 
 ## Monitoring with Prometheus & Grafana
 
+**Start with the `/integration` page** of the web UI ("Integrare" in the menu, `http://<host>:8910/integration`).
+It shows everything in one place, filled in with this server's real address:
+
+1. **What is exposed now** — the `/metrics` URL (with `network_mode: host` it is served on every IP of the
+   machine; all of them are listed), a live table of the `kasa_*` metrics (type, unit, description, number of
+   series, example value), the last scrapes (time, client IP, User-Agent; "no scrape yet" until Prometheus is
+   configured) and the plugs that are *not* exported (withdrawn or unsupported).
+2. **Prometheus** — a ready `scrape_configs` snippet and a downloadable `prometheus.yml` with the real
+   `host:port`, the `host.docker.internal` / `extra_hosts` explanation, a link to `/targets` and a **Check**
+   button that queries `<prometheus>/api/v1/targets` from the server (5 s timeout) and tells whether job `kasa` is up.
+3. **Grafana** — download the dashboard and the alert rules (optionally rewritten for your data source UID),
+   manual import and provisioning instructions, and a **complete bundle** (zip: `docker-compose.monitoring.yml`,
+   `prometheus/prometheus.yml` with the real target, `grafana/provisioning/`).
+
+The files offered there are the ones in `deploy/` (embedded in the application at build time), so the page,
+the bundle and this repository never disagree. The rest of this section describes the same setup by hand.
+
 ### Quick start
 
 ```bash

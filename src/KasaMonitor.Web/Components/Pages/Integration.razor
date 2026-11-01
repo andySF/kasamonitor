@@ -1,0 +1,349 @@
+@page "/integration"
+@rendermode InteractiveServer
+@using KasaMonitor.Web.Integration
+@using KasaMonitor.Workers
+@using KasaMonitor.Core.Protocol.Tapo
+@inject NavigationManager Nav
+@inject MetricsScrapeLog ScrapeLog
+@inject PrometheusTargetsChecker Checker
+@inject IServiceScopeFactory ScopeFactory
+@inject IJSRuntime JS
+@implements IDisposable
+
+<PageTitle>KasaMonitor — Integrare</PageTitle>
+<h1>Integrare: Prometheus și Grafana</h1>
+<p class="lead-note">KasaMonitor expune metricile prizelor pe <code>/metrics</code>. Lanțul complet: <b>KasaMonitor</b> → <b>Prometheus</b> (colectează și păstrează istoricul) → <b>Grafana</b> (dashboard și alerte). Pașii de mai jos sunt completați cu adresa acestui server; fișierele se descarcă gata de folosit.</p>
+
+<section>
+    <h2>1. Ce expune KasaMonitor acum</h2>
+    <p>
+        Endpoint: <code>@MetricsUrl</code>
+        <a class="btn-link" href="metrics" target="_blank">Deschide /metrics</a>
+        <button @onclick="() => CopyAsync(MetricsUrl)">Copiază</button>
+    </p>
+    <p class="note">
+        Cu <code>network_mode: host</code> aplicația ascultă pe portul @_port pe <b>toate</b> adresele mașinii:
+        @if (_localIps.Count > 0)
+        {
+            @string.Join(", ", _localIps.Select(ip => $"{ip}:{_port}"))
+        }
+        else
+        {
+            <span>(adresele locale nu au putut fi citite)</span>
+        }
+        . Prometheus trebuie să ajungă la una dintre ele.
+    </p>
+
+    <h3>Ultimul scrape</h3>
+    @if (_lastPrometheus is { } lp)
+    {
+        <p class="ok">Prometheus a citit /metrics la @lp.AtUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss") (acum @Ago(lp.AtUtc)), de la <code>@lp.RemoteIp</code>, User-Agent <code>@lp.UserAgent</code>.</p>
+    }
+    else
+    {
+        <p class="warn">Niciun scrape încă — Prometheus nu e configurat (sau nu ajunge la acest server). Vezi pasul 2.</p>
+    }
+    @if (_recent.Count > 0)
+    {
+        <details>
+            <summary>Ultimele @_recent.Count cereri GET /metrics (în memorie, de la pornire)</summary>
+            <table class="int-table">
+                <thead><tr><th>Ora</th><th>IP</th><th>User-Agent</th></tr></thead>
+                <tbody>
+                    @foreach (var e in _recent)
+                    {
+                        <tr><td>@e.AtUtc.ToLocalTime().ToString("HH:mm:ss")</td><td>@e.RemoteIp</td><td>@e.UserAgent</td></tr>
+                    }
+                </tbody>
+            </table>
+        </details>
+    }
+
+    <h3>Metrici <code>kasa_*</code></h3>
+    <p class="note">Etichete pe toate seriile: @foreach (var l in KasaMetrics.LabelNames) { <code>@l</code><span> </span> } (protocol: legacy, klap, aes). Valorile se actualizează la fiecare citire a prizelor (implicit 10 s).</p>
+    @if (_families is null)
+    {
+        <p><em>Se încarcă…</em></p>
+    }
+    else
+    {
+        <table class="int-table">
+            <thead><tr><th>Metrică</th><th>Tip</th><th>Unitate</th><th>Descriere</th><th>Serii</th><th>Exemplu (prima priză)</th></tr></thead>
+            <tbody>
+                @foreach (var f in _families)
+                {
+                    <tr>
+                        <td><code>@f.Info.Name</code></td>
+                        <td>@f.Info.Type</td>
+                        <td>@f.Info.Unit</td>
+                        <td>@f.Info.Help</td>
+                        <td>@f.SeriesCount</td>
+                        <td>
+                            @if (f.Example is { } ex)
+                            {
+                                <span>@(ex.Labels.GetValueOrDefault("alias")) = @ex.Value.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture) @f.Info.Unit</span>
+                            }
+                            else
+                            {
+                                <span class="muted">— (nicio serie)</span>
+                            }
+                        </td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+        <p class="note"><code>kasa_power_total</code> e în Wh cumulativ și poate scădea puțin la repornirea aplicației; energia se calculează ca sumă a creșterilor la 5 minute (așa face dashboard-ul), nu cu <code>increase()</code>. <code>kasa_voltage</code>/<code>kasa_current</code> există doar pentru prizele care le raportează; <code>kasa_rssi</code> nu e încă populată.</p>
+    }
+
+    <h3>Prize care NU apar în metrici</h3>
+    @if (_hidden is null) { <p><em>Se încarcă…</em></p> }
+    else if (_hidden.Count == 0) { <p class="muted">Niciuna: toate prizele din bază sunt active.</p> }
+    else
+    {
+        <table class="int-table">
+            <thead><tr><th>Alias</th><th>MAC</th><th>IP</th><th>Motiv</th></tr></thead>
+            <tbody>
+                @foreach (var p in _hidden)
+                {
+                    <tr>
+                        <td>@p.Alias</td><td><code>@p.Mac</code></td><td>@p.IpAddress</td>
+                        <td>@(p.IsArchived ? "retrasă (Prize → Readu)" : TapoSupport.Describe(p.Model, p.UnsupportedReason ?? ""))</td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    }
+</section>
+
+<section>
+    <h2>2. Prometheus</h2>
+    <p>
+        <label>Adresa KasaMonitor văzută de Prometheus (host:port):
+            <input value="@_target" @onchange="OnTargetChanged" class="addr" />
+        </label>
+        @if (_targetError is not null) { <span class="err">@_targetError</span> }
+    </p>
+    <p class="note">
+        Dacă Prometheus rulează în Docker pe <b>aceeași</b> mașină, IP-ul de mai sus poate să nu fie accesibil din container:
+        folosește <code>host.docker.internal:@_port</code> și adaugă la serviciul Prometheus
+        <code>extra_hosts: ["host.docker.internal:host-gateway"]</code> (pe Linux; Docker Desktop îl are deja).
+        Stack-ul din <code>deploy/docker-compose.monitoring.yml</code> are deja <code>extra_hosts</code>.
+    </p>
+
+    <h3>Snippet <code>scrape_configs</code> (pentru un Prometheus existent)</h3>
+    <textarea readonly rows="10" class="code">@_snippet</textarea>
+    <p>
+        <button @onclick="() => CopyAsync(_snippet)" disabled="@(_targetError is not null)">Copiază</button>
+        <a class="btn-link @(_targetError is null ? "" : "disabled")" href="@PrometheusYmlUrl" download="prometheus.yml">Descarcă prometheus.yml</a>
+        <span class="note">(fișierul complet din <code>deploy/prometheus/prometheus.yml</code>, cu ținta de mai sus)</span>
+    </p>
+    <p class="note">După modificare: repornește Prometheus sau <code>curl -X POST http://&lt;prometheus&gt;:9090/-/reload</code> (dacă e pornit cu <code>--web.enable-lifecycle</code>).</p>
+
+    <h3>Verificare</h3>
+    <p>
+        <label>Adresa Prometheus (văzută de acest server):
+            <input @bind="_prometheusAddress" class="addr" />
+        </label>
+        <button @onclick="CheckAsync" disabled="@_checking">@(_checking ? "Se verifică…" : "Verifică")</button>
+        <a class="btn-link" href="@PrometheusTargetsLink" target="_blank">Deschide /targets</a>
+    </p>
+    <p class="note"><code>localhost</code> înseamnă mașina pe care rulează KasaMonitor (cu host networking). Linkul /targets se deschide din browserul tău, deci acolo trebuie o adresă accesibilă de pe calculatorul tău.</p>
+    @if (_check is { } c)
+    {
+        <p class="@(c.KasaUp ? "ok" : "warn")">@c.Message</p>
+        @if (c.Targets.Count > 0)
+        {
+            <table class="int-table">
+                <thead><tr><th>Scrape URL</th><th>Stare</th><th>Ultimul scrape</th><th>Eroare</th></tr></thead>
+                <tbody>
+                    @foreach (var t in c.Targets)
+                    {
+                        <tr><td><code>@t.ScrapeUrl</code></td><td>@t.Health</td><td>@(t.LastScrape?.ToLocalTime().ToString("HH:mm:ss"))</td><td>@t.LastError</td></tr>
+                    }
+                </tbody>
+            </table>
+        }
+    }
+</section>
+
+<section>
+    <h2>3. Grafana</h2>
+    <h3>Varianta A: stack-ul gata făcut (Prometheus + Grafana în Docker)</h3>
+    <p>
+        <a class="btn-link @(_targetError is null ? "" : "disabled")" href="@BundleUrl" download="kasamonitor-monitoring.zip">Descarcă pachetul complet (.zip)</a>
+        <span class="note">= <code>docker-compose.monitoring.yml</code>, <code>prometheus/prometheus.yml</code> cu ținta <code>@_target</code>, <code>grafana/provisioning/</code> (sursa de date, dashboard-ul, regulile de alertă).</span>
+    </p>
+    <pre class="code">unzip kasamonitor-monitoring.zip -d kasamonitor-monitoring
+cd kasamonitor-monitoring
+GRAFANA_ADMIN_PASSWORD=schimba-ma docker compose -f docker-compose.monitoring.yml up -d</pre>
+    <p class="note">Grafana pe <code>http://&lt;host&gt;:3000</code> (admin / parola de mai sus), cu dashboard-ul <b>KasaMonitor</b> deja încărcat; Prometheus pe <code>:9090</code>, retenție 10 ani. Din repo e același lucru: <code>docker compose -f deploy/docker-compose.monitoring.yml up -d</code>.</p>
+
+    <h3>Varianta B: Grafana existentă</h3>
+    <ol>
+        <li><b>Sursa de date:</b> Connections → Data sources → Add data source → Prometheus → URL-ul Prometheus-ului tău (ex. <code>http://prometheus:9090</code>) → Save &amp; test. Notează UID-ul ei (în URL-ul paginii de editare: <code>/connections/datasources/edit/&lt;uid&gt;</code>).</li>
+        <li>
+            <label>UID-ul sursei de date Prometheus în Grafana:
+                <input value="@_dsUid" @onchange="OnUidChanged" class="uid" />
+            </label>
+            @if (_uidError is not null) { <span class="err">@_uidError</span> }
+            <span class="note">(implicit <code>prometheus</code>, cel din provisioning)</span>
+        </li>
+        <li>
+            <a class="btn-link @(_uidError is null ? "" : "disabled")" href="@DashboardUrl" download="kasamonitor.json">Descarcă dashboard-ul</a>
+            → Dashboards → New → <b>Import</b> → Upload JSON file → Import. Variabilele <code>tariff</code> (preț/kWh) și <code>currency</code> se schimbă din capul dashboard-ului.
+        </li>
+        <li>
+            <a class="btn-link @(_uidError is null ? "" : "disabled")" href="@RulesUrl" download="rules.yml">Descarcă regulile de alertă</a>
+            (priză offline 15 min, fără date 10 min) → pune fișierul în <code>/etc/grafana/provisioning/alerting/</code> și repornește Grafana; sau creează regulile din Alerting → Alert rules după exemplu.
+            Notificările (Telegram, e-mail, ...) se configurează în Alerting → Contact points + Notification policies.
+        </li>
+        <li><b>Provisioning în loc de import:</b> copiază <code>grafana/provisioning/</code> din pachet în <code>/etc/grafana/provisioning/</code> (datasources, dashboards, alerting) și repornește Grafana.</li>
+    </ol>
+</section>
+
+@if (_copyMessage is not null)
+{
+    <p class="toast">@_copyMessage</p>
+}
+
+<style>
+    section { margin-bottom: 2em; }
+    .lead-note { max-width: 60em; }
+    .note { color: #666; font-size: 0.9em; }
+    .muted { color: #999; }
+    .ok { color: #2a7a2a; }
+    .warn { color: #a65f00; }
+    .err { color: #a33; margin-left: 1em; }
+    .int-table { border-collapse: collapse; margin: 0.5em 0; }
+    .int-table th, .int-table td { padding: 0.3em 0.6em; border-bottom: 1px solid #eee; text-align: left; vertical-align: top; }
+    textarea.code, pre.code { width: 100%; max-width: 60em; font-family: Consolas, monospace; font-size: 0.9em; background: #f7f7f7; border: 1px solid #ddd; padding: 0.5em; }
+    input.addr { width: 18em; padding: 0.2em 0.4em; }
+    input.uid { width: 12em; padding: 0.2em 0.4em; }
+    a.btn-link { display: inline-block; padding: 0.25em 0.8em; border: 1px solid #4c4; border-radius: 4px; margin: 0 0.4em; text-decoration: none; color: #2a7a2a; }
+    a.btn-link.disabled { pointer-events: none; opacity: 0.4; }
+    button { margin: 0 0.3em; }
+    .toast { position: fixed; bottom: 1em; right: 1em; background: #333; color: #fff; padding: 0.5em 1em; border-radius: 4px; }
+</style>
+
+@code {
+    private IReadOnlyList<System.Net.IPAddress> _localIps = Array.Empty<System.Net.IPAddress>();
+    private int _port = 8910;
+    private string _target = "";
+    private string? _targetError;
+    private string _snippet = "";
+    private string _dsUid = IntegrationConfigGenerator.RepositoryDataSourceUid;
+    private string? _uidError;
+    private string _prometheusAddress = "localhost:9090";
+    private bool _checking;
+    private PrometheusCheckResult? _check;
+    private IReadOnlyList<MetricFamilySummary>? _families;
+    private List<Plug>? _hidden;
+    private ScrapeEntry? _lastPrometheus;
+    private IReadOnlyList<ScrapeEntry> _recent = Array.Empty<ScrapeEntry>();
+    private string? _copyMessage;
+    private System.Threading.Timer? _refresh;
+
+    private string MetricsUrl => $"{Nav.BaseUri.TrimEnd('/')}/metrics";
+    private string PrometheusYmlUrl => $"integration/files/prometheus.yml?target={Uri.EscapeDataString(_target)}";
+    private string BundleUrl => $"integration/files/kasamonitor-monitoring.zip?target={Uri.EscapeDataString(_target)}";
+    private string DashboardUrl => $"integration/files/kasamonitor.json?datasourceUid={Uri.EscapeDataString(_dsUid)}";
+    private string RulesUrl => $"integration/files/rules.yml?datasourceUid={Uri.EscapeDataString(_dsUid)}";
+
+    private string PrometheusTargetsLink
+    {
+        get
+        {
+            try { return new Uri(PrometheusTargetsChecker.BaseUri(_prometheusAddress), "/targets").ToString(); }
+            catch (FormatException) { return "#"; }
+        }
+    }
+
+    protected override async Task OnInitializedAsync()
+    {
+        var baseUri = new Uri(Nav.BaseUri);
+        _port = baseUri.IsDefaultPort ? 8910 : baseUri.Port;
+        _localIps = HostAddresses.LocalIPv4();
+        SetTarget(HostAddresses.DefaultTarget(baseUri, _localIps));
+        await RefreshAsync();
+        _refresh = new System.Threading.Timer(_ => InvokeAsync(RefreshAsync), null, 5000, 5000);
+    }
+
+    private async Task RefreshAsync()
+    {
+        _families = await MetricsSnapshot.KasaFamiliesAsync();
+        _lastPrometheus = ScrapeLog.LastPrometheus();
+        _recent = ScrapeLog.Recent();
+        using (var scope = ScopeFactory.CreateScope())
+        {
+            var repo = scope.ServiceProvider.GetRequiredService<IPlugRepository>();
+            _hidden = (await repo.ListAllAsync(CancellationToken.None)).Where(p => !PollingWorker.IsActive(p)).OrderBy(p => p.Alias).ToList();
+        }
+        StateHasChanged();
+    }
+
+    private void OnTargetChanged(ChangeEventArgs e) => SetTarget(e.Value?.ToString());
+
+    private void SetTarget(string? value)
+    {
+        _target = value ?? "";
+        try
+        {
+            _target = IntegrationConfigGenerator.NormalizeTarget(_target);
+            _snippet = IntegrationConfigGenerator.ScrapeConfigSnippet(_target);
+            _targetError = null;
+        }
+        catch (FormatException ex)
+        {
+            _targetError = ex.Message;
+        }
+    }
+
+    private void OnUidChanged(ChangeEventArgs e)
+    {
+        _dsUid = e.Value?.ToString() ?? "";
+        try
+        {
+            _dsUid = IntegrationConfigGenerator.NormalizeDataSourceUid(_dsUid);
+            _uidError = null;
+        }
+        catch (FormatException ex)
+        {
+            _uidError = ex.Message;
+        }
+    }
+
+    private async Task CheckAsync()
+    {
+        _checking = true;
+        _check = null;
+        StateHasChanged();
+        try { _check = await Checker.CheckAsync(_prometheusAddress, CancellationToken.None); }
+        finally { _checking = false; }
+    }
+
+    private async Task CopyAsync(string text)
+    {
+        try
+        {
+            await JS.InvokeVoidAsync("navigator.clipboard.writeText", text);
+            _copyMessage = "Copiat în clipboard.";
+        }
+        catch (JSException)
+        {
+            // The Clipboard API needs HTTPS or localhost; on plain http://<ip> the browser refuses it.
+            _copyMessage = "Browserul nu permite copierea pe http:// — selectează textul și apasă Ctrl+C.";
+        }
+        StateHasChanged();
+        await Task.Delay(3000);
+        _copyMessage = null;
+        StateHasChanged();
+    }
+
+    private static string Ago(DateTimeOffset t)
+    {
+        var s = (DateTimeOffset.UtcNow - t).TotalSeconds;
+        return s < 120 ? $"{s:0} s" : $"{s / 60:0} min";
+    }
+
+    public void Dispose() => _refresh?.Dispose();
+}

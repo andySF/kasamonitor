@@ -11,28 +11,29 @@ namespace KasaMonitor.Web;
 /// </summary>
 public sealed class KasaMetrics : IHostedService, IDisposable
 {
-    private static readonly string[] LabelNames = { "alias", "mac", "model", "protocol" };
+    public static readonly string[] LabelNames = { "alias", "mac", "model", "protocol" };
 
-    private static readonly Gauge PowerLoad = Metrics.CreateGauge(
-        "kasa_power_load", "Instantaneous active power (watts).", LabelNames);
+    /// <summary>One exported metric family: single owner of names, types, units and help texts (also shown on /integration).</summary>
+    public sealed record MetricInfo(string Name, string Type, string Unit, string Help);
 
-    private static readonly Gauge Voltage = Metrics.CreateGauge(
-        "kasa_voltage", "Voltage (volts).", LabelNames);
+    public static readonly MetricInfo PowerLoadInfo = new("kasa_power_load", "gauge", "W", "Instantaneous active power (watts).");
+    public static readonly MetricInfo VoltageInfo = new("kasa_voltage", "gauge", "V", "Voltage (volts).");
+    public static readonly MetricInfo CurrentInfo = new("kasa_current", "gauge", "A", "Current (amps).");
+    public static readonly MetricInfo RelayStateInfo = new("kasa_relay_state", "gauge", "0/1", "Relay state (1=on, 0=off).");
+    public static readonly MetricInfo OnlineInfo = new("kasa_online", "gauge", "0/1", "Reachability (1=online, 0=offline).");
+    public static readonly MetricInfo RssiInfo = new("kasa_rssi", "gauge", "dBm", "Wi-Fi signal strength (dBm).");
+    public static readonly MetricInfo PowerTotalInfo = new("kasa_power_total", "counter", "Wh", "Cumulative energy (watt-hours).");
 
-    private static readonly Gauge Current = Metrics.CreateGauge(
-        "kasa_current", "Current (amps).", LabelNames);
+    public static readonly IReadOnlyList<MetricInfo> Catalog =
+        new[] { PowerLoadInfo, VoltageInfo, CurrentInfo, RelayStateInfo, OnlineInfo, RssiInfo, PowerTotalInfo };
 
-    private static readonly Gauge RelayState = Metrics.CreateGauge(
-        "kasa_relay_state", "Relay state (1=on, 0=off).", LabelNames);
-
-    private static readonly Gauge OnlineState = Metrics.CreateGauge(
-        "kasa_online", "Reachability (1=online, 0=offline).", LabelNames);
-
-    private static readonly Gauge Rssi = Metrics.CreateGauge(
-        "kasa_rssi", "Wi-Fi signal strength (dBm).", LabelNames);
-
-    private static readonly Counter PowerTotal = Metrics.CreateCounter(
-        "kasa_power_total", "Cumulative energy (watt-hours).", LabelNames);
+    private static readonly Gauge PowerLoad = Metrics.CreateGauge(PowerLoadInfo.Name, PowerLoadInfo.Help, LabelNames);
+    private static readonly Gauge Voltage = Metrics.CreateGauge(VoltageInfo.Name, VoltageInfo.Help, LabelNames);
+    private static readonly Gauge Current = Metrics.CreateGauge(CurrentInfo.Name, CurrentInfo.Help, LabelNames);
+    private static readonly Gauge RelayState = Metrics.CreateGauge(RelayStateInfo.Name, RelayStateInfo.Help, LabelNames);
+    private static readonly Gauge OnlineState = Metrics.CreateGauge(OnlineInfo.Name, OnlineInfo.Help, LabelNames);
+    private static readonly Gauge Rssi = Metrics.CreateGauge(RssiInfo.Name, RssiInfo.Help, LabelNames);
+    private static readonly Counter PowerTotal = Metrics.CreateCounter(PowerTotalInfo.Name, PowerTotalInfo.Help, LabelNames);
 
     private static readonly Collector[] AllFamilies = { PowerLoad, Voltage, Current, RelayState, OnlineState, Rssi, PowerTotal };
 

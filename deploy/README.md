@@ -1,6 +1,11 @@
 # KasaMonitor — Deployment
 
-Main documentation (settings, Tapo, metrics, Prometheus & Grafana): `../README.md`.
+Main documentation (settings, Tapo, metrics, Prometheus & Grafana): `../README.md`. The web UI page
+`/integration` generates the Prometheus/Grafana configuration below with the real KasaMonitor address.
+
+The monitoring files (`docker-compose.monitoring.yml`, `prometheus/`, `grafana/provisioning/`) are embedded in
+`KasaMonitor.Web.dll` (`<EmbeddedResource>` in `src/KasaMonitor.Web/KasaMonitor.Web.csproj`; the `Dockerfile` copies
+them into the build stage) and served by `/integration`. Edit them here; the next build picks them up.
 
 ## Files
 

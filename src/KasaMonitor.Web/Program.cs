@@ -4,10 +4,12 @@ using KasaMonitor.Core.Protocol.Tapo;
 using KasaMonitor.Data;
 using KasaMonitor.Web;
 using KasaMonitor.Web.Components;
+using KasaMonitor.Web.Integration;
 using KasaMonitor.Workers;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.EntityFrameworkCore;
 using Prometheus;
+using System.Text;
 
 if (args is ["--healthcheck"])
 {
@@ -95,6 +97,9 @@ builder.Services.AddHostedService(sp => new RollupWorker(
 
 builder.Services.AddHostedService<KasaMetrics>();
 
+builder.Services.AddSingleton<MetricsScrapeLog>();
+builder.Services.AddSingleton<PrometheusTargetsChecker>();
+
 var app = builder.Build();
 
 using (var scope = app.Services.CreateScope())
@@ -105,6 +110,7 @@ using (var scope = app.Services.CreateScope())
     ctx.Database.ExecuteSqlRaw("PRAGMA busy_timeout=5000;");
 }
 
+app.UseMiddleware<MetricsScrapeLogMiddleware>();
 app.UseStaticFiles();
 app.UseRouting();
 app.UseAntiforgery();
@@ -118,4 +124,27 @@ app.MapGet("/health", async (KasaDbContext ctx) =>
 
 app.MapMetrics();
 
+// Downloads for /integration (generated from the embedded deploy/ files; no secrets involved).
+var integration = app.MapGroup("/integration/files");
+integration.MapGet("/prometheus.yml", (string? target) =>
+    WithTarget(target, t => Results.File(Encoding.UTF8.GetBytes(IntegrationConfigGenerator.PrometheusYml(t)), "text/yaml", "prometheus.yml")));
+integration.MapGet("/kasamonitor.json", (string? datasourceUid) =>
+    WithUid(datasourceUid, u => Results.File(Encoding.UTF8.GetBytes(IntegrationConfigGenerator.DashboardJson(u)), "application/json", "kasamonitor.json")));
+integration.MapGet("/rules.yml", (string? datasourceUid) =>
+    WithUid(datasourceUid, u => Results.File(Encoding.UTF8.GetBytes(IntegrationConfigGenerator.AlertRulesYml(u)), "text/yaml", "rules.yml")));
+integration.MapGet("/kasamonitor-monitoring.zip", (string? target) =>
+    WithTarget(target, t => Results.File(IntegrationConfigGenerator.MonitoringBundle(t), "application/zip", "kasamonitor-monitoring.zip")));
+
 app.Run();
+
+static IResult WithTarget(string? target, Func<string, IResult> make)
+{
+    try { return make(IntegrationConfigGenerator.NormalizeTarget(target)); }
+    catch (FormatException ex) { return Results.BadRequest(ex.Message); }
+}
+
+static IResult WithUid(string? uid, Func<string, IResult> make)
+{
+    try { return make(IntegrationConfigGenerator.NormalizeDataSourceUid(uid)); }
+    catch (FormatException ex) { return Results.BadRequest(ex.Message); }
+}

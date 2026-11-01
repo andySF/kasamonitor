@@ -3,7 +3,8 @@
 @using KasaMonitor.Workers
 @using KasaMonitor.Web.Ui
 @inject IPlugStateBroadcaster Broadcaster
-@inject KasaMonitor.Core.Costing.TariffCalculator Tariff
+@inject KasaMonitor.Core.Costing.TariffCalculator DefaultTariff
+@inject IKasaSettingsService KasaSettings
 @inject DeviceDetailsService Details
 @inject IServiceScopeFactory ScopeFactory
 @implements IDisposable
@@ -12,14 +13,21 @@
 
 <div class="d-flex flex-wrap align-items-center justify-content-between gap-3 mb-3">
     <h1 class="h3 mb-0"><i class="bi bi-speedometer2 me-2"></i>Dashboard</h1>
-    <div class="d-flex gap-2">
+    <div class="d-flex flex-wrap gap-2">
         <div class="card px-3 py-2 text-center">
-            <div class="small text-secondary">Total power</div>
+            <div class="small text-secondary">Putere acum</div>
             <div class="fs-5 fw-semibold"><i class="bi bi-lightning-charge text-warning"></i> @TotalPowerW.ToString("0") W</div>
+            <div class="small text-secondary">@EnergyFormat.Lei(HourlyCostRon)/h</div>
         </div>
         <div class="card px-3 py-2 text-center">
-            <div class="small text-secondary">Cost</div>
-            <div class="fs-5 fw-semibold">@(HourlyCostRon.ToString("0.000")) RON/h</div>
+            <div class="small text-secondary">Azi (toate prizele)</div>
+            <div class="fs-5 fw-semibold">@(TodayTotalWh is { } t ? EnergyFormat.Kwh(t) + " kWh" : "—")</div>
+            <div class="small text-secondary">@(TodayTotalWh is { } tc ? EnergyFormat.Lei(_tariff.CostFromWh(tc)) : "")</div>
+        </div>
+        <div class="card px-3 py-2 text-center">
+            <div class="small text-secondary">Luna (toate prizele)</div>
+            <div class="fs-5 fw-semibold">@(MonthTotalWh is { } m ? EnergyFormat.Kwh(m) + " kWh" : "—")</div>
+            <div class="small text-secondary">@(MonthTotalWh is { } mc ? EnergyFormat.Lei(_tariff.CostFromWh(mc)) : "")</div>
         </div>
     </div>
 </div>
@@ -57,8 +65,19 @@ else
                                 {
                                     <span class="me-2">@((ma / 1000.0).ToString("0.000")) A</span>
                                 }
-                                <span>Total @((s.LastReading.TotalWh / 1000.0).ToString("0.000")) kWh</span>
+                                @if (s.Protocol == PlugProtocols.Legacy)
+                                {
+                                    <span title="Contorul cumulativ al prizei">Total @((s.LastReading.TotalWh / 1000.0).ToString("0.000")) kWh</span>
+                                }
                             </div>
+                            @if (s.LastReading.TodayWh is { } todayWh)
+                            {
+                                <div class="small text-secondary">@EnergyFormat.Line("Azi", todayWh, _tariff)</div>
+                            }
+                            @if (s.LastReading.MonthWh is { } monthWh)
+                            {
+                                <div class="small text-secondary">@EnergyFormat.Line("Luna", monthWh, _tariff)</div>
+                            }
                         }
                     </div>
                     <div class="card-footer bg-transparent d-flex justify-content-between align-items-center small">
@@ -116,15 +135,35 @@ else
         .Where(s => s.IsOnline && s.LastReading is not null)
         .Sum(s => s.LastReading!.PowerMw / 1000.0);
 
-    private decimal HourlyCostRon => Tariff.CostFromWh((long)TotalPowerW);
+    private KasaMonitor.Core.Costing.TariffCalculator _tariff = null!;
+    private int _ticks;
 
-    protected override void OnInitialized()
+    private decimal HourlyCostRon => _tariff.CostFromWh((long)TotalPowerW);
+
+    private long? TodayTotalWh => EnergyFormat.Sum(_states.Values.Select(s => s.LastReading), r => r.TodayWh);
+    private long? MonthTotalWh => EnergyFormat.Sum(_states.Values.Select(s => s.LastReading), r => r.MonthWh);
+
+    /// <summary>Tariff saved in /settings (falls back to the startup value); re-read every 30 s.</summary>
+    private async Task LoadTariffAsync()
     {
+        try { _tariff = new KasaMonitor.Core.Costing.TariffCalculator((await KasaSettings.GetAsync(CancellationToken.None)).TariffRonPerKwh); }
+        catch (Exception) { _tariff ??= DefaultTariff; }
+    }
+
+    protected override async Task OnInitializedAsync()
+    {
+        _tariff = DefaultTariff;
+        await LoadTariffAsync();
         _states = Broadcaster.Snapshot().ToDictionary(kv => kv.Key, kv => kv.Value);
         Broadcaster.StateChanged += OnStateChanged;
         Broadcaster.StateRemoved += OnStateRemoved;
         _refreshTimer = new System.Threading.Timer(_ =>
-            InvokeAsync(() => { _now = DateTimeOffset.UtcNow; StateHasChanged(); }),
+            InvokeAsync(async () =>
+            {
+                _now = DateTimeOffset.UtcNow;
+                if (++_ticks % 30 == 0) await LoadTariffAsync();
+                StateHasChanged();
+            }),
             null, 1000, 1000);
     }
 

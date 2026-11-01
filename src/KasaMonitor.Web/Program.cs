@@ -59,7 +59,8 @@ builder.Services.AddSingleton(new KasaSettingsDefaults(
     AutoAddDiscoveredPlugs: builder.Configuration.GetValue("KasaMonitor:AutoAddDiscoveredPlugs", true),
     TapoUsername: builder.Configuration["KasaMonitor:TapoUsername"],
     TapoPassword: builder.Configuration["KasaMonitor:TapoPassword"],
-    ReadingsRetentionMonths: builder.Configuration.GetValue("KasaMonitor:ReadingsRetentionMonths", 0)));
+    ReadingsRetentionMonths: builder.Configuration.GetValue("KasaMonitor:ReadingsRetentionMonths", 0),
+    TariffRonPerKwh: tariff));
 
 var pollIntervalSec = builder.Configuration.GetValue("KasaMonitor:PollIntervalSeconds", 10);
 

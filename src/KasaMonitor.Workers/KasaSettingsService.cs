@@ -18,6 +18,8 @@ public static class SettingKeys
     public const string TapoPassword = "TapoPassword";
     /// <summary>Months of raw 10-second readings (Samples) to keep; 0 = unlimited. Daily history is never deleted.</summary>
     public const string ReadingsRetentionMonths = "ReadingsRetentionMonths";
+    /// <summary>Price per kWh saved from /settings (invariant decimal); used for every cost shown in the UI.</summary>
+    public const string TariffRonPerKwh = "TariffRonPerKwh";
 }
 
 /// <summary>Values from configuration (env <c>KasaMonitor__*</c>), used when the database has no value for a key.</summary>
@@ -28,7 +30,8 @@ public sealed record KasaSettingsDefaults(
     bool AutoAddDiscoveredPlugs = true,
     string? TapoUsername = null,
     string? TapoPassword = null,
-    int ReadingsRetentionMonths = 0);
+    int ReadingsRetentionMonths = 0,
+    decimal TariffRonPerKwh = 1.30m);
 
 /// <summary>Effective settings (database first, configuration as fallback).</summary>
 public sealed record KasaRuntimeSettings(
@@ -40,7 +43,8 @@ public sealed record KasaRuntimeSettings(
     string TapoUsername,
     bool HasTapoPassword,
     TapoCredentials? TapoCredentials,
-    int ReadingsRetentionMonths = 0);
+    int ReadingsRetentionMonths = 0,
+    decimal TariffRonPerKwh = 1.30m);
 
 /// <param name="NewTapoPassword">Null or empty keeps the stored password.</param>
 /// <param name="ReadingsRetentionMonths">Null keeps the stored value.</param>
@@ -108,8 +112,13 @@ public sealed class KasaSettingsService : IKasaSettingsService
 
         var retention = Math.Clamp(ParseInt(db, SettingKeys.ReadingsRetentionMonths) ?? _defaults.ReadingsRetentionMonths, 0, MaxRetentionMonths);
 
+        var tariff = db.TryGetValue(SettingKeys.TariffRonPerKwh, out var tv)
+                     && decimal.TryParse(tv, NumberStyles.Number, CultureInfo.InvariantCulture, out var parsedTariff) && parsedTariff > 0
+            ? parsedTariff
+            : _defaults.TariffRonPerKwh;
+
         return new KasaRuntimeSettings(enabled, interval, broadcastText, addrs, autoAdd,
-            user, !string.IsNullOrEmpty(password), creds, retention);
+            user, !string.IsNullOrEmpty(password), creds, retention, tariff);
     }
 
     public async Task SaveAsync(KasaSettingsUpdate update, CancellationToken ct)

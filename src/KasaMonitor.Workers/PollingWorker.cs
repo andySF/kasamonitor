@@ -18,6 +18,14 @@ public sealed class PollingWorker : BackgroundService
     private readonly TimeSpan _interval;
     private readonly ILogger<PollingWorker> _log;
     private readonly PollFailureTracker _failures = new();
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<Guid, LegacyCounters> _legacyCounters = new();
+    private readonly Func<DateTimeOffset> _clock;
+    private readonly TimeZoneInfo _tz;
+
+    /// <summary>How often a legacy plug's emeter.get_daystat is asked for today's / this month's Wh.</summary>
+    public static readonly TimeSpan LegacyCountersRefresh = TimeSpan.FromMinutes(5);
+
+    private sealed record LegacyCounters(DateTimeOffset ReadAtUtc, DateOnly Day, long? TodayWh, long? MonthWh);
 
     public PollingWorker(
         IKasaClient kasa,
@@ -26,8 +34,12 @@ public sealed class PollingWorker : BackgroundService
         IPlugStateBroadcaster broadcaster,
         IKasaSettingsService settings,
         TimeSpan interval,
-        ILogger<PollingWorker> log)
+        ILogger<PollingWorker> log,
+        Func<DateTimeOffset>? clock = null,
+        TimeZoneInfo? timeZone = null)
     {
+        _clock = clock ?? (() => DateTimeOffset.UtcNow);
+        _tz = timeZone ?? TimeZoneInfo.Local;
         _kasa = kasa;
         _tapo = tapo;
         _scopeFactory = scopeFactory;
@@ -91,15 +103,47 @@ public sealed class PollingWorker : BackgroundService
             await sampleRepo.InsertManyAsync(samplesToInsert, ct);
     }
 
-    private Task<EmeterReading> ReadAsync(Plug plug, TapoCredentials? creds, CancellationToken ct)
+    private async Task<EmeterReading> ReadAsync(Plug plug, TapoCredentials? creds, CancellationToken ct)
     {
         if (plug.Protocol == PlugProtocols.Legacy)
-            return _kasa.GetRealtimeAsync(plug.IpAddress, ct);
+        {
+            var reading = await _kasa.GetRealtimeAsync(plug.IpAddress, ct);
+            var counters = await LegacyCountersAsync(plug, ct);
+            return counters is null ? reading : reading with { TodayWh = counters.TodayWh, MonthWh = counters.MonthWh };
+        }
         if (!_tapo.SupportsProtocol(plug.Protocol))
             throw new KasaProtocolException($"Protocol '{plug.Protocol}' is not supported.");
         if (creds is null)
             throw new InvalidOperationException(TapoSupport.MissingCredentialsReason);
-        return _tapo.GetEnergyUsageAsync(plug.IpAddress, plug.Protocol, creds, ct);
+        return await _tapo.GetEnergyUsageAsync(plug.IpAddress, plug.Protocol, creds, ct);
+    }
+
+    /// <summary>
+    /// Today's and this month's Wh of a legacy plug from emeter.get_daystat (the device's own day counters),
+    /// refreshed every <see cref="LegacyCountersRefresh"/> or when the local day changes. A failed refresh keeps the
+    /// previous values for the same day (the live reading must not fail because of it).
+    /// </summary>
+    private async Task<LegacyCounters?> LegacyCountersAsync(Plug plug, CancellationToken ct)
+    {
+        var now = _clock();
+        var today = DateOnly.FromDateTime(TimeZoneInfo.ConvertTime(now, _tz).DateTime);
+        if (_legacyCounters.TryGetValue(plug.Id, out var cached) && cached.Day == today && now - cached.ReadAtUtc < LegacyCountersRefresh)
+            return cached;
+        try
+        {
+            var days = await _kasa.GetDayStatAsync(plug.IpAddress, today.Year, today.Month, ct);
+            var thisMonth = days.Where(d => d.Year == today.Year && d.Month == today.Month).ToList();
+            var fresh = new LegacyCounters(now, today,
+                thisMonth.Where(d => d.Day == today.Day).Sum(d => (long?)d.EnergyWh) ?? 0,
+                thisMonth.Sum(d => d.EnergyWh));
+            _legacyCounters[plug.Id] = fresh;
+            return fresh;
+        }
+        catch (Exception ex) when (!ct.IsCancellationRequested)
+        {
+            _log.LogDebug("get_daystat for {Alias} failed: {Reason}", plug.Alias, ex.Message);
+            return cached is not null && cached.Day == today ? cached : null;
+        }
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)

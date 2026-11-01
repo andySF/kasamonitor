@@ -123,7 +123,8 @@ public static class SmartMessages
         var month = Long(energyUsage, "month_energy") ?? 0;
         long? voltage = emeterData is { } e2 ? Long(e2, "voltage_mv") : null;
         long? current = emeterData is { } e3 ? Long(e3, "current_ma") : null;
-        return new EmeterReading(PowerMw: power.Value, VoltageMv: voltage, CurrentMa: current, TotalWh: month);
+        return new EmeterReading(PowerMw: power.Value, VoltageMv: voltage, CurrentMa: current, TotalWh: month,
+            TodayWh: Long(energyUsage, "today_energy"), MonthWh: Long(energyUsage, "month_energy"));
     }
 
     private static long? Long(JsonElement obj, string name) =>

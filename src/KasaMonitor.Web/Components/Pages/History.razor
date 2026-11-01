@@ -3,7 +3,7 @@
 @using KasaMonitor.Core.History
 @inject IServiceScopeFactory ScopeFactory
 @inject NavigationManager Nav
-@inject KasaMonitor.Core.Costing.TariffCalculator Tariff
+@inject KasaMonitor.Workers.IKasaSettingsService KasaSettings
 
 <PageTitle>KasaMonitor — History</PageTitle>
 <h1 class="h3 mb-3"><i class="bi bi-bar-chart me-2"></i>History</h1>
@@ -140,8 +140,12 @@ else
     private IEnumerable<DayPoint> Points(PlugDailySeries s) =>
         _all!.Days.Select((d, i) => new DayPoint(d.ToString("yyyy-MM-dd"), s.DailyWh[i] / 1000m)).ToList();
 
+    private KasaMonitor.Core.Costing.TariffCalculator Tariff = null!;
+
     protected override async Task OnInitializedAsync()
     {
+        // Same tariff as the Dashboard: the value saved in /settings, falling back to the startup value.
+        Tariff = new KasaMonitor.Core.Costing.TariffCalculator((await KasaSettings.GetAsync(CancellationToken.None)).TariffRonPerKwh);
         using var scope = ScopeFactory.CreateScope();
         var repo = scope.ServiceProvider.GetRequiredService<IPlugRepository>();
         _plugs = (await repo.ListAllAsync(CancellationToken.None)).Where(p => !p.IsArchived).ToList();

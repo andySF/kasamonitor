@@ -116,6 +116,8 @@ public class KlapTransportTests
         r.VoltageMv.Should().Be(231_150);
         r.CurrentMa.Should().Be(754);
         r.TotalWh.Should().Be(458);
+        r.TodayWh.Should().Be(458);    // get_energy_usage.today_energy
+        r.MonthWh.Should().Be(458);    // get_energy_usage.month_energy
         device.Methods.Should().Equal("get_energy_usage", "get_emeter_data");
         device.Handshake1Count.Should().Be(1); // session reused for the second request
     }

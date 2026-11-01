@@ -1,5 +1,6 @@
 using KasaMonitor.Core.Abstractions;
 using KasaMonitor.Core.Models;
+using KasaMonitor.Core.Reports;
 using KasaMonitor.Data.Entities;
 using Microsoft.EntityFrameworkCore;
 
@@ -73,6 +74,31 @@ public sealed class HistoryRepository : IHistoryRepository
             var dt = DateOnly.ParseExact(d.Date, "yyyy-MM-dd");
             return new PlugDailyKwh(d.PlugId, new DailyKwh(dt.Year, dt.Month, dt.Day, d.EnergyWh));
         }).ToList();
+    }
+
+    public async Task<IReadOnlyList<PlugMonthWh>> GetMonthlyRangeAllAsync(int yearFromInclusive, int yearToInclusive, CancellationToken ct) =>
+        await _db.MonthlyEnergies.AsNoTracking()
+            .Where(m => m.Year >= yearFromInclusive && m.Year <= yearToInclusive)
+            .Select(m => new PlugMonthWh(m.PlugId, m.Year, m.Month, m.EnergyWh))
+            .ToListAsync(ct);
+
+    public async Task<IReadOnlyList<PlugMonthWh>> SumDailyByMonthAllAsync(int yearFromInclusive, int yearToInclusive, CancellationToken ct)
+    {
+        var fromKey = new DateOnly(yearFromInclusive, 1, 1).ToString("yyyy-MM-dd");
+        var toKey = new DateOnly(yearToInclusive, 12, 31).ToString("yyyy-MM-dd");
+        var rows = await _db.DailyEnergies.AsNoTracking()
+            .Where(d => string.Compare(d.Date, fromKey) >= 0 && string.Compare(d.Date, toKey) <= 0)
+            .GroupBy(d => new { d.PlugId, Month = d.Date.Substring(0, 7) })
+            .Select(g => new { g.Key.PlugId, g.Key.Month, Wh = g.Sum(d => d.EnergyWh) })
+            .ToListAsync(ct);
+        return rows.Select(r => new PlugMonthWh(r.PlugId, int.Parse(r.Month[..4]), int.Parse(r.Month[5..7]), r.Wh)).ToList();
+    }
+
+    public async Task<DateOnly?> FirstDailyDayAsync(Guid plugId, CancellationToken ct)
+    {
+        var first = await _db.DailyEnergies.AsNoTracking().Where(d => d.PlugId == plugId)
+            .OrderBy(d => d.Date).Select(d => d.Date).FirstOrDefaultAsync(ct);
+        return first is null ? null : DateOnly.ParseExact(first, "yyyy-MM-dd");
     }
 
     public async Task<IReadOnlyList<MonthlyKwh>> GetMonthlyRangeAsync(Guid plugId, int yearFromInclusive, int yearToInclusive, CancellationToken ct) =>

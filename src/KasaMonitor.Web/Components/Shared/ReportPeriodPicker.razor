@@ -1,0 +1,37 @@
+@using KasaMonitor.Core.Reports
+@using KasaMonitor.Web.Ui
+
+@* ViCare-style period selector: Zi / Săptămână / Lună / An, ◀ ▶ between periods (never past the current one). *@
+<div class="d-flex flex-wrap align-items-center gap-2">
+    <div class="btn-group btn-group-sm" role="group" aria-label="Perioadă">
+        @foreach (var kind in Kinds)
+        {
+            <button type="button" class="btn @(Period.Kind == kind ? "btn-primary" : "btn-outline-primary")" @onclick="() => SelectKind(kind)">@ReportFormat.KindName(kind)</button>
+        }
+    </div>
+    <div class="btn-group btn-group-sm" role="group" aria-label="Navigare">
+        <button type="button" class="btn btn-outline-secondary" title="Perioada anterioară" @onclick="() => Go(Period.Previous())"><i class="bi bi-chevron-left"></i></button>
+        <button type="button" class="btn btn-outline-secondary" title="Perioada următoare" disabled="@IsCurrent" @onclick="() => Go(Period.Next())"><i class="bi bi-chevron-right"></i></button>
+    </div>
+    <span class="fw-semibold">@ReportFormat.Title(Period)</span>
+    @if (!IsCurrent)
+    {
+        <button type="button" class="btn btn-link btn-sm p-0" @onclick="() => Go(ReportPeriod.Containing(Period.Kind, Today))">înapoi la perioada curentă</button>
+    }
+</div>
+
+@code {
+    private static readonly ReportGranularity[] Kinds = { ReportGranularity.Day, ReportGranularity.Week, ReportGranularity.Month, ReportGranularity.Year };
+
+    [Parameter, EditorRequired] public ReportPeriod Period { get; set; }
+    [Parameter] public EventCallback<ReportPeriod> PeriodChanged { get; set; }
+    [Parameter, EditorRequired] public DateOnly Today { get; set; }
+
+    /// <summary>The period holds today (or lies after it): there is nothing after it to show.</summary>
+    private bool IsCurrent => Period.EndExclusive > Today;
+
+    private Task SelectKind(ReportGranularity kind) =>
+        Go(ReportPeriod.Containing(kind, Period.Contains(Today) ? Today : Period.Start));
+
+    private Task Go(ReportPeriod p) => p.Start > Today ? Task.CompletedTask : PeriodChanged.InvokeAsync(p);
+}

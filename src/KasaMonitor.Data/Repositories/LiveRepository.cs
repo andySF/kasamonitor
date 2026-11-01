@@ -1,5 +1,6 @@
 using KasaMonitor.Core.Abstractions;
 using KasaMonitor.Core.Models;
+using KasaMonitor.Core.Reports;
 using KasaMonitor.Data.Entities;
 using Microsoft.EntityFrameworkCore;
 
@@ -67,6 +68,19 @@ public sealed class LiveRepository : ILiveRepository
     {
         var first = await _db.LiveSamples.AsNoTracking().Where(s => s.PlugId == plugId).OrderBy(s => s.Ts).Select(s => (long?)s.Ts).FirstOrDefaultAsync(ct);
         return first is { } ts ? DateTimeOffset.FromUnixTimeSeconds(ts) : null;
+    }
+
+    public async Task<IReadOnlyList<PlugHourWh>> SumEnergyByHourAsync(IReadOnlyCollection<Guid> plugIds, DateTimeOffset fromUtc, DateTimeOffset toUtc, CancellationToken ct)
+    {
+        if (plugIds.Count == 0) return Array.Empty<PlugHourWh>();
+        long from = fromUtc.ToUnixTimeSeconds(), to = toUtc.ToUnixTimeSeconds();
+        var ids = plugIds.ToList();
+        var rows = await _db.LiveMinuteAggregates.AsNoTracking()
+            .Where(m => ids.Contains(m.PlugId) && m.MinuteTs >= from && m.MinuteTs < to)
+            .GroupBy(m => new { m.PlugId, Hour = m.MinuteTs / 3600 })
+            .Select(g => new { g.Key.PlugId, g.Key.Hour, Wh = g.Sum(m => m.EnergyWh), Minutes = g.Count() })
+            .ToListAsync(ct);
+        return rows.Select(r => new PlugHourWh(r.PlugId, DateTimeOffset.FromUnixTimeSeconds(r.Hour * 3600), r.Wh, r.Minutes)).ToList();
     }
 
     public async Task<IReadOnlyList<LiveMinuteAggregate>> ListMinutesAsync(Guid plugId, DateTimeOffset fromUtc, DateTimeOffset toUtc, CancellationToken ct)

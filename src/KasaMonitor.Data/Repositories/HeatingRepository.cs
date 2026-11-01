@@ -1,6 +1,7 @@
 using System.Globalization;
 using KasaMonitor.Core.Abstractions;
 using KasaMonitor.Core.Heating;
+using KasaMonitor.Core.Reports;
 using KasaMonitor.Data.Entities;
 using Microsoft.EntityFrameworkCore;
 
@@ -81,6 +82,10 @@ public sealed class HeatingRepository : IHeatingRepository
         row.DhwMode = r.DhwMode;
         row.ActiveError = r.ActiveError;
         row.StatusCode = r.StatusCode;
+        row.GasHeatingTodayM3 = r.GasHeatingTodayM3;
+        row.GasDhwTodayM3 = r.GasDhwTodayM3;
+        row.PowerTodayKwh = r.PowerTodayKwh;
+        row.HeatTodayKwh = r.HeatTodayKwh;
         await _db.SaveChangesAsync(ct);
         _db.ChangeTracker.Clear();
     }
@@ -95,7 +100,61 @@ public sealed class HeatingRepository : IHeatingRepository
         return rows.Select(r => new HeatingReading(r.DeviceId, DateTimeOffset.FromUnixTimeSeconds(r.Ts),
             r.BoilerTempC, r.BoilerTargetC, r.SupplyTempC, r.ReturnTempC, r.OutsideTempC, r.RoomTempC, r.DhwTempC, r.DhwTargetC,
             r.BurnerActive, r.ModulationPct, r.PumpPct, r.PressureBar, r.BurnerStarts, r.BurnerHours,
-            r.OperatingMode, r.ActiveProgram, r.DhwMode, r.ActiveError, r.StatusCode)).ToList();
+            r.OperatingMode, r.ActiveProgram, r.DhwMode, r.ActiveError, r.StatusCode,
+            r.GasHeatingTodayM3, r.GasDhwTodayM3, r.PowerTodayKwh, r.HeatTodayKwh)).ToList();
+    }
+
+    public async Task<IReadOnlyList<HeatingCounterReading>> ListCounterReadingsAsync(Guid deviceId, DateTimeOffset fromUtc, DateTimeOffset toUtc, CancellationToken ct)
+    {
+        long from = fromUtc.ToUnixTimeSeconds(), to = toUtc.ToUnixTimeSeconds();
+        var rows = await _db.HeatingReadings.AsNoTracking()
+            .Where(r => r.DeviceId == deviceId && r.Ts >= from && r.Ts <= to)
+            .OrderBy(r => r.Ts)
+            .Select(r => new { r.Ts, r.GasHeatingTodayM3, r.GasDhwTodayM3, r.PowerTodayKwh, r.HeatTodayKwh })
+            .ToListAsync(ct);
+        return rows.Select(r => new HeatingCounterReading(DateTimeOffset.FromUnixTimeSeconds(r.Ts),
+            r.GasHeatingTodayM3, r.GasDhwTodayM3, r.PowerTodayKwh, r.HeatTodayKwh)).ToList();
+    }
+
+    public async Task<IReadOnlyList<HeatingMonthSums>> SumDailyByMonthAsync(Guid deviceId, int yearFrom, int yearTo, DateOnly today, CancellationToken ct)
+    {
+        string f = DayKey(new DateOnly(yearFrom, 1, 1)), t = DayKey(new DateOnly(yearTo, 12, 31)), now = DayKey(today);
+        // One grouped query; gas counted as in HeatingEnergyDay.GasHeatingFor: the last value from today on, the highest before.
+        var rows = await _db.HeatingEnergyDaily.AsNoTracking()
+            .Where(d => d.DeviceId == deviceId && string.Compare(d.Day, f) >= 0 && string.Compare(d.Day, t) <= 0)
+            .GroupBy(d => d.Day.Substring(0, 7))
+            .Select(g => new
+            {
+                Month = g.Key,
+                GasHeating = g.Sum(d => string.Compare(d.Day, now) >= 0 ? (d.GasHeatingLastM3 ?? d.GasHeatingMaxM3) : d.GasHeatingMaxM3),
+                GasDhw = g.Sum(d => string.Compare(d.Day, now) >= 0 ? (d.GasDhwLastM3 ?? d.GasDhwMaxM3) : d.GasDhwMaxM3),
+                HeatHeating = g.Sum(d => d.HeatHeatingKwh),
+                HeatDhw = g.Sum(d => d.HeatDhwKwh),
+                PowerHeating = g.Sum(d => d.PowerHeatingKwh),
+                PowerDhw = g.Sum(d => d.PowerDhwKwh),
+                GasHeatingCount = g.Count(d => d.GasHeatingMaxM3 != null),
+                GasDhwCount = g.Count(d => d.GasDhwMaxM3 != null),
+                HeatHeatingCount = g.Count(d => d.HeatHeatingKwh != null),
+                HeatDhwCount = g.Count(d => d.HeatDhwKwh != null),
+                PowerHeatingCount = g.Count(d => d.PowerHeatingKwh != null),
+                PowerDhwCount = g.Count(d => d.PowerDhwKwh != null),
+            })
+            .ToListAsync(ct);
+        // A purpose without any stored value in the month stays null (not 0).
+        static double? V(double? sum, int count) => count == 0 ? null : sum ?? 0;
+        return rows.Select(r => new HeatingMonthSums(
+                int.Parse(r.Month[..4], CultureInfo.InvariantCulture), int.Parse(r.Month[5..7], CultureInfo.InvariantCulture),
+                V(r.GasHeating, r.GasHeatingCount), V(r.GasDhw, r.GasDhwCount), V(r.HeatHeating, r.HeatHeatingCount),
+                V(r.HeatDhw, r.HeatDhwCount), V(r.PowerHeating, r.PowerHeatingCount), V(r.PowerDhw, r.PowerDhwCount)))
+            .OrderBy(m => m.Year).ThenBy(m => m.Month)
+            .ToList();
+    }
+
+    public async Task<DateOnly?> FirstDailyDayAsync(Guid deviceId, CancellationToken ct)
+    {
+        var first = await _db.HeatingEnergyDaily.AsNoTracking().Where(d => d.DeviceId == deviceId)
+            .OrderBy(d => d.Day).Select(d => d.Day).FirstOrDefaultAsync(ct);
+        return first is null ? null : DateOnly.ParseExact(first, "yyyy-MM-dd", CultureInfo.InvariantCulture);
     }
 
     public async Task<IReadOnlyList<HeatingDayDecrease>> UpsertDailyAsync(IReadOnlyList<HeatingEnergyDay> days, CancellationToken ct)

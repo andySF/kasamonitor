@@ -24,6 +24,12 @@ public static class DependencyInjectionExtensions
         services.AddSingleton<ReadingsRetentionService>(sp => new ReadingsRetentionService(
             sp.GetRequiredService<IServiceScopeFactory>(),
             sp.GetRequiredService<Microsoft.Extensions.Logging.ILogger<ReadingsRetentionService>>()));
+        // Period reports of /history ("Casă") and /centrala ("Rapoarte"); the process time zone (TZ in the container).
+        services.AddSingleton(sp => new EnergyReportService(sp.GetRequiredService<IServiceScopeFactory>(),
+            log: sp.GetService<Microsoft.Extensions.Logging.ILogger<EnergyReportService>>()));
+        // "Restul casei" now: last whole minute, live stream or 10 s polls; computed once per minute for every page.
+        services.AddSingleton(sp => new HouseRestService(sp.GetRequiredService<IServiceScopeFactory>(),
+            sp.GetRequiredService<ILiveStreamBroadcaster>(), sp.GetRequiredService<IPlugStateBroadcaster>()));
         return services;
     }
 }

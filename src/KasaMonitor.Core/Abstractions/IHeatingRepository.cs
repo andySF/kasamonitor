@@ -1,4 +1,5 @@
 using KasaMonitor.Core.Heating;
+using KasaMonitor.Core.Reports;
 
 namespace KasaMonitor.Core.Abstractions;
 
@@ -15,6 +16,15 @@ public interface IHeatingRepository
     Task SaveReadingAsync(HeatingReading reading, CancellationToken ct);
 
     Task<IReadOnlyList<HeatingReading>> ListReadingsAsync(Guid deviceId, DateTimeOffset fromUtc, DateTimeOffset toUtc, CancellationToken ct);
+
+    /// <summary>Only the "today" counters of the readings in the range (hours of a day report), oldest first.</summary>
+    Task<IReadOnlyList<HeatingCounterReading>> ListCounterReadingsAsync(Guid deviceId, DateTimeOffset fromUtc, DateTimeOffset toUtc, CancellationToken ct);
+
+    /// <summary>Σ of the stored days per month of the years, in one grouped query (gas as in <see cref="HeatingEnergyDay.GasHeatingFor"/>).</summary>
+    Task<IReadOnlyList<HeatingMonthSums>> SumDailyByMonthAsync(Guid deviceId, int yearFrom, int yearTo, DateOnly today, CancellationToken ct);
+
+    /// <summary>The first stored day (null without any).</summary>
+    Task<DateOnly?> FirstDailyDayAsync(Guid deviceId, CancellationToken ct);
 
     /// <summary>
     /// Upsert of daily rows: the highest values of the day are kept (gas <c>…MaxM3</c>, heat, electricity) and the gas

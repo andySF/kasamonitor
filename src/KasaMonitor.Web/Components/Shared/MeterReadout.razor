@@ -2,6 +2,7 @@
 @using KasaMonitor.Web.Ui
 @inject ILiveStreamBroadcaster Stream
 @inject IPlugStateBroadcaster States
+@inject KasaMonitor.Workers.HouseRestService HouseRest
 @implements IDisposable
 
 @* Live values of the main meter: the 1-second stream when fresh, otherwise the 10 s poll. Re-renders only itself. *@
@@ -10,7 +11,8 @@
     var sample = _sample is { } s && DateTimeOffset.UtcNow - s.TsUtc <= LiveMaxAge ? s : null;
     var reading = live?.LastReading;
     var powerW = HouseBalance.MainW(live, sample, DateTimeOffset.UtcNow, LiveMaxAge);
-    var restW = HouseBalance.RestW(powerW, States.Snapshot().Values);
+    // Rest of the house from the last whole minute's averages (meter and plugs aligned), not the latest instantaneous values.
+    var rest = _rest;
     var voltage = sample?.VoltageV ?? reading?.VoltageMv / 1000.0;
     var current = sample?.CurrentA ?? reading?.CurrentMa / 1000.0;
     var pf = sample?.Pf ?? reading?.PowerFactor;
@@ -22,10 +24,14 @@
         <div class="fs-3 fw-semibold"><i class="bi bi-lightning-charge text-warning"></i> @(powerW is { } w ? w.ToString("0") + " W" : "—")</div>
         <div class="small text-secondary">@(sample is not null ? "flux 1 s" : live is not null ? "citire la 10 s" : "fără date")</div>
     </div>
-    <div class="card px-3 py-2" title="Puterea contorului general minus prizele online (starea prizelor se actualizează la 10 s)">
+    <div class="card px-3 py-2" title="@ReportFormat.RestTitle(rest)">
         <div class="small text-secondary">Restul casei</div>
-        <div class="fs-3 fw-semibold">@(restW is { } r ? r.ToString("0") + " W" : "—")</div>
-        <div class="small text-secondary">prize: @HouseBalance.PlugsW(States.Snapshot().Values).ToString("0") W</div>
+        <div class="fs-3 fw-semibold">@ReportFormat.RestW(rest)</div>
+        @if (rest is { Kind: RestKind.Negative })
+        {
+            <div class="small text-warning-emphasis"><i class="bi bi-exclamation-triangle me-1"></i>@ReportFormat.NegativeText</div>
+        }
+        <div class="small text-secondary">@ReportFormat.RestBasis(rest)@(rest is { } rb ? $": contor {rb.MainW:0} W, prize {rb.PlugsW:0} W" : "")</div>
     </div>
     <div class="card px-3 py-2">
         <div class="small text-secondary">Tensiune</div>
@@ -52,15 +58,28 @@
     private PlugLiveState? _live;
     private LiveSample? _sample;
     private System.Threading.Timer? _timer;
+    private RestBalance? _rest;
 
-    protected override void OnInitialized()
+    protected override async Task OnInitializedAsync()
+    {
+        try { _rest = await HouseRest.GetAsync(CancellationToken.None); } catch (Exception) { _rest = null; }
+        Subscribe();
+    }
+
+    private async Task RefreshRestAsync()
+    {
+        try { _rest = await HouseRest.GetAsync(CancellationToken.None); } catch (Exception) { _rest = null; }
+        StateHasChanged();
+    }
+
+    private void Subscribe()
     {
         _live = States.Snapshot().GetValueOrDefault(PlugId);
         _sample = Stream.Latest(PlugId);
         Stream.SampleReceived += OnSample;
         States.StateChanged += OnState;
         // Re-evaluates freshness when the stream stops (falls back to the 10 s poll).
-        _timer = new System.Threading.Timer(_ => InvokeAsync(StateHasChanged), null, 5000, 5000);
+        _timer = new System.Threading.Timer(_ => InvokeAsync(RefreshRestAsync), null, 5000, 5000);
     }
 
     private void OnSample(LiveSample s)

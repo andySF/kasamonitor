@@ -7,7 +7,7 @@ plugs and energy meters (e.g. Shelly EM Gen3, local JSON-RPC; the only write is 
 with SQLite, a web UI on port 8910 and a Prometheus `/metrics` endpoint. An optional Prometheus + Grafana stack
 with a ready-made dashboard and alert rules is included.
 
-Version: **0.7.0** (`Directory.Build.props`). Docker image: `duobit/kasamonitor`.
+Version: **0.8.0** (`Directory.Build.props`). Docker image: `duobit/kasamonitor`.
 
 ## Quick start
 
@@ -55,7 +55,11 @@ TP-Link (Tapo app) account in `/settings` and press **Scanează acum** on `/plug
   the main meter's 1-second power, grouped into signatures (one per appliance), labelled automatically from the plugs,
   by you, or by a nightly ML.NET classifier; runs, energy per day, „unidentified” energy; cards „Acum pornite” and
   „Azi” on the Dashboard and `/contor`. See [Appliance detection (NILM)](#appliance-detection-nilm).
-- **Version in the menu**: „v0.7.0” at the right of the navigation bar; the tooltip shows the commit and the build time.
+- **Reports** (ViCare-style): a „Casă” section on `/history` (main meter split into measured plugs and the rest of
+  the house) and „Rapoarte” on `/centrala` (gas, boiler electricity, heat produced), per day (hours), week, month
+  (days) or year (months), with ◀ ▶ navigation, the change against the previous period and the cost. See
+  [Reports](#reports-history-casă-and-centrala-rapoarte).
+- **Version in the menu**: „v0.8.0” at the right of the navigation bar; the tooltip shows the commit and the build time.
 - **Browser errors in the server log**: JavaScript errors and the Blazor error banner are reported to
   `POST /api/client-error` and logged at Warning (category `KasaMonitor.ClientErrors`), so `docker logs` shows them.
 
@@ -401,12 +405,25 @@ and every plug, off for sub-meters such as an unused clamp; changing the role re
 - To stop it: untick „flux 1 s” on a channel, or *Settings → Flux live* off (applies within 10 s).
 
 **Contor page** (`/contor`, menu „Contor”): alias of the main meter, power now (1 s; falls back to the 10 s poll when
-the stream is older than 5 s), rest of the house (main − online plugs), voltage (red outside 207–253 V), current, power
+the stream is older than 5 s), rest of the house (see below), voltage (red outside 207–253 V), current, power
 factor, frequency, relay; live chart of the last 10 minutes (main meter, plus an optional plug chosen in „Suprapune o
 priză”, from the same stream; only the new point is pushed to ApexCharts each time, the whole 10-minute window once a
 minute); today per minute (min/avg/max from the aggregates); energy per day for 30 days (from `DailyEnergy`) with
 cost; the sub-meters; the last 20 relay commands. Without a main meter it links to `/plugs`. The Dashboard shows a
 „Casă” card (house power, rest of the house, relay) above the plugs.
+
+**Rest of the house** (Dashboard „Casă” card, `/contor`) is computed from averages aligned on the **last whole
+minute**, not from the latest instantaneous values (the meter arrives every second, the plugs every 1–10 s, so their
+latest values are from different moments): the main meter's mean over that minute minus Σ the plugs' means over the
+same minute (from their live samples; an online plug without a live sample in that minute counts with its latest
+polled reading). Without a live sample of the main meter in that minute (stream off, channel not streamed, WebSocket
+down) the same minute is computed from the means of the 10 s polled samples (`Samples`), labelled „din citirile la
+10 s”. The value is computed once per minute for all pages (`HouseRestService`). With |main − plugs| ≤ max(15 W, 3 % of the main meter) it shows „≈ 0 W” (*în marja de eroare a
+măsurătorilor*); with the plugs above the meter beyond that margin it shows „0 W” and the warning *prizele depășesc
+contorul: verifică poziția clemei*. Energy (the „Casă” report on `/history`) uses the same rule with a margin of
+max(15 W × the interval's hours, 3 %): rest = max(0, house − plugs), marked „≈” within the margin; when the plugs
+exceed the meter on an interval whose live coverage of the main meter is under 90 % of its (elapsed) minutes, it is
+marked „date parțiale” instead of the clamp warning.
 
 **Relay**: on channel 0 of a Shelly meter with `switch:N` (EM Gen3: `switch:0`, a contactor) and on Shelly
 `switch` plugs (Plus Plug S, …) a Pornit/Oprit switch appears on `/contor`, in the „Casă” card and in the *Detalii*
@@ -521,6 +538,52 @@ sum(heating_heat_production_kwh{period="lastmonth"}) / (sum(heating_gas_consumpt
 
 The Grafana dashboard `kasamonitor` has a row **Centrală**: burner, modulation, gas today (hot water vs heating),
 online/API calls, temperatures, modulation over time and gas per day for 30 days (stacked bars).
+
+## Reports (`/history` „Casă” and `/centrala` „Rapoarte”)
+
+Both use one period selector, as in the ViCare app: **Zi** (bars per hour), **Săptămână** (Monday–Sunday, per day),
+**Lună** (per day) or **An** (per month), ◀ ▶ to move between periods (never past the current one), the period total,
+the change against the previous period (▲/▼ %, only when both periods have data; no percentage when the previous one is
+0) and the estimated cost. The periods are local calendar periods (`TZ`); a day has 23 or 25 hourly bars on the DST
+days. The queries live in `EnergyReportService` (a fixed number of grouped queries per report, never one per plug, day
+or month); the arithmetic is in `HouseReportBuilder` / `HeatingReportBuilder` (Core, unit tested).
+
+**History „Casă”** (shown when a channel has the main-meter role; otherwise a hint links to `/plugs`): stacked bars
+„Prize măsurate” (Σ of the plugs with role *plug*) and „Restul casei” (main meter − plugs, never below 0, see *Rest of
+the house* above). Sources:
+- days: the larger of `DailyEnergy` (Shelly meters: `EM1Data` from the device's memory, read every 6 h for up to 60
+  days back; Kasa/Tapo: their own day counters) and the Σ of KasaMonitor's live minute aggregates of that day (the
+  device's memory can be shorter than the stream, and its sync lags by up to 6 h). A day neither remembers shows
+  „fără date”; nothing is estimated;
+- hours („Zi”): only the live stream (`LiveMinuteAggregates`, grouped per channel and UTC hour in SQL, filtered on
+  `PlugId IN (...)` and the range, i.e. the primary key). Plugs without a live stream count as 0 in the hourly split; a
+  day without any stream shows its total with „fără defalcare pe ore”;
+- year: per month the larger of the device month total (`MonthlyEnergy`, legacy Kasa) and Σ of the stored days.
+Under the chart a table per hour/day/month: house kWh, plugs kWh, rest kWh, lei (tariff from *Settings*), the total,
+and one line per sub-meter (kWh, never added to the house). The „Toate” chart below is unchanged (plugs stacked, the
+„Casă” line apart, not added to the plug totals).
+
+**Centrală „Rapoarte”** (below the current state): tabs **Gaz** (m³, heating orange-red vs hot water blue),
+**Curent centrală** (kWh, `heating.power.consumption.summary.*`) and **Căldură produsă** (kWh). Under each: total, Δ %
+against the previous period, cost (gas: m³ × kWh/m³ × RON/kWh from the boiler settings; electricity: the plug tariff)
+and the apparent efficiency of the period (heat / (gas × kWh/m³)). The gas price is per kWh only (no per-m³ price
+setting). The Δ of the period in progress compares it with the whole previous period and is labelled „perioadă în
+curs”. Sources (also in the „ⓘ” tooltip):
+- days: `HeatingEnergyDaily`, built by KasaMonitor from the boiler's „currentDay” (it starts with the first reading;
+  earlier days are empty, with the note „fără date înainte de …”);
+- hours („Zi”): the increases of the boiler's „today” counters between consecutive readings (~2 min). Since 0.8.0 every
+  row of `HeatingReadings` stores them (`GasHeatingTodayM3`, `GasDhwTodayM3`, `PowerTodayKwh`, `HeatTodayKwh`; migration
+  `AddHeatingReadingCounters`). A drop is the daily reset only when the new value is under 20 % of the previous one and
+  the reading is between 23:50 and 00:30 local (the new value is then the use since the reset); any other drop is
+  ignored (the higher value stays the reference) and logged once at Warning.
+  Electricity and heat per hour are totals (heating + hot water);
+- month: the stored days, with the boiler's own `currentMonth` as a check (both shown when they differ by more than 5 %);
+  the previous month falls back to the boiler's `lastMonth` total when its days are missing;
+- year: the months from stored days, plus one bar „restul anului” = the boiler's `currentYear` minus those months;
+- the boiler's relative values are mapped to calendar periods by the local day they were read on (`last7days` is a
+  rolling window and is never used as a week).
+The Dashboard „Centrală” card shows today's gas with the change against yesterday **up to the same time** (from the
+stored „today” counters); without counters for yesterday it shows only yesterday's total.
 
 ## Appliance detection (NILM)
 
@@ -656,15 +719,15 @@ dotnet test KasaMonitor.sln
 From the repository root, with Docker running and `docker login` done once:
 
 ```powershell
-.\deploy\build-and-push.ps1 -Version 0.7.0          # build :0.7.0 + :latest and push both
-.\deploy\build-and-push.ps1 -Version 0.7.0 -NoPush  # local build only
+.\deploy\build-and-push.ps1 -Version 0.8.0          # build :0.8.0 + :latest and push both
+.\deploy\build-and-push.ps1 -Version 0.8.0 -NoPush  # local build only
 ```
 
 or manually:
 
 ```bash
-docker build -t duobit/kasamonitor:0.7.0 -t duobit/kasamonitor:latest -f deploy/Dockerfile .
-docker push duobit/kasamonitor:0.7.0
+docker build -t duobit/kasamonitor:0.8.0 -t duobit/kasamonitor:latest -f deploy/Dockerfile .
+docker push duobit/kasamonitor:0.8.0
 docker push duobit/kasamonitor:latest
 ```
 
@@ -687,7 +750,9 @@ To publish under your own Docker Hub account, change the image name (`-Repo` par
    `{role="plug"}` does not see them: for the 30-day panels use `{role!~"main|sub", model!~"S3EM.*|SPEM.*"}` until
    30 days have passed after the upgrade, then `{role="plug"}`. Upgrading to 0.7.0 runs `AddNilm`: it adds `Plugs.NilmIgnored`
    (0) and creates the empty tables `MeterEvents`, `ApplianceSignatures`, `ApplianceRuns`; at the first start the
-   detector processes the stored `LiveSamples` of the main meter (backfill), then re-clusters them.
+   detector processes the stored `LiveSamples` of the main meter (backfill), then re-clusters them. Upgrading to 0.8.0
+   runs `AddHeatingReadingCounters`: four nullable columns on `HeatingReadings` (older rows keep NULL, so hourly boiler
+   bars start with the first reading after the upgrade).
 2. `docker compose -f deploy/docker-compose.yml pull && docker compose -f deploy/docker-compose.yml up -d`
    (Portainer: *Update the stack* with *Re-pull image and redeploy*).
 3. Check `http://<host>:8910/health`, `/plugs` (Scan now) and `curl -s http://<host>:8910/metrics | grep kasa_online`.

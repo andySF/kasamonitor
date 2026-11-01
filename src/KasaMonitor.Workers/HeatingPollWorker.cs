@@ -191,7 +191,7 @@ public sealed class HeatingPollWorker : BackgroundService
             {
                 var repo = scope.ServiceProvider.GetRequiredService<IHeatingRepository>();
                 await repo.SaveRawAsync(device.Id, now, json, ct);
-                await repo.SaveReadingAsync(HeatingReading.From(device.Id, snapshot), ct);
+                await repo.SaveReadingAsync(HeatingReading.From(device.Id, snapshot, s.GasKwhPerM3, s.GasUnit), ct);
                 var decreases = await repo.UpsertDailyAsync(HeatingEnergyBuilder.Days(device.Id, snapshot, _tz, s.GasKwhPerM3, s.GasUnit), ct);
                 foreach (var d in decreases)
                     _log.LogInformation(

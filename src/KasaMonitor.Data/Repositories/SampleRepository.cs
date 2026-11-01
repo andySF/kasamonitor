@@ -33,6 +33,20 @@ public sealed class SampleRepository : ISampleRepository
     public async Task<int> CountOlderThanAsync(DateTimeOffset cutoffUtc, CancellationToken ct) =>
         await _db.Samples.AsNoTracking().CountAsync(s => s.TimestampUtc < cutoffUtc, ct);
 
+    public async Task<IReadOnlyDictionary<Guid, double>> AveragePowerByPlugAsync(IReadOnlyCollection<Guid> plugIds, DateTimeOffset fromUtc,
+        DateTimeOffset toUtc, CancellationToken ct)
+    {
+        if (plugIds.Count == 0) return new Dictionary<Guid, double>();
+        var ids = plugIds.ToList();
+        // PlugId IN (...) + time range: served by idx_samples_plug_time (PlugId, TimestampUtc).
+        var rows = await _db.Samples.AsNoTracking()
+            .Where(s => ids.Contains(s.PlugId) && s.TimestampUtc >= fromUtc && s.TimestampUtc < toUtc && s.Online && s.PowerMw != null)
+            .GroupBy(s => s.PlugId)
+            .Select(g => new { PlugId = g.Key, AvgMw = g.Average(s => (double)s.PowerMw!.Value) })
+            .ToListAsync(ct);
+        return rows.ToDictionary(r => r.PlugId, r => r.AvgMw / 1000.0);
+    }
+
     public async Task<int> DeleteOlderThanAsync(DateTimeOffset cutoffUtc, CancellationToken ct, int batchSize = 5000)
     {
         var total = 0;

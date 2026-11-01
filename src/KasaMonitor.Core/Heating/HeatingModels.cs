@@ -35,12 +35,33 @@ public sealed record HeatingReading(
     string? ActiveProgram,
     string? DhwMode,
     string? ActiveError,
-    string? StatusCode)
+    string? StatusCode,
+    double? GasHeatingTodayM3 = null,
+    double? GasDhwTodayM3 = null,
+    double? PowerTodayKwh = null,
+    double? HeatTodayKwh = null)
 {
-    public static HeatingReading From(Guid deviceId, HeatingSnapshot s) => new(deviceId, s.ReadUtc,
+    /// <summary>
+    /// The reading of a snapshot, with the boiler's "today" counters (gas per purpose in m³, electricity and heat summed
+    /// over both purposes) so the hours of a day can be rebuilt from the increases between readings.
+    /// </summary>
+    public static HeatingReading From(Guid deviceId, HeatingSnapshot s, double kwhPerM3 = ViessmannApi.DefaultKwhPerM3,
+        EnergyUnit assumedGasUnit = EnergyUnit.CubicMeter) => new(deviceId, s.ReadUtc,
         s.BoilerTempC, s.BoilerTargetC, s.SupplyTempC, s.ReturnTempC, s.OutsideTempC, s.RoomTempC, s.DhwTempC, s.DhwTargetC,
         s.BurnerActive, s.ModulationPct, s.PumpPct, s.PressureBar, s.BurnerStarts, s.BurnerHours,
-        s.OperatingMode, s.ActiveProgram, s.DhwMode, s.ActiveError, s.StatusCode);
+        s.OperatingMode, s.ActiveProgram, s.DhwMode, s.ActiveError, s.StatusCode,
+        GasToday(s.GasHeating, kwhPerM3, assumedGasUnit), GasToday(s.GasDhw, kwhPerM3, assumedGasUnit),
+        SumToday(s.PowerHeating, s.PowerDhw), SumToday(s.HeatHeating, s.HeatDhw));
+
+    /// <summary>"Today" of a summary: currentDay, or day[0] of a series.</summary>
+    public static double? Today(EnergySummary? summary) =>
+        summary?.CurrentDay ?? (summary?.Days is { Count: > 0 } days ? days[0] : null);
+
+    private static double? GasToday(EnergySummary? summary, double kwhPerM3, EnergyUnit assumed) =>
+        Today(summary) is { } v ? HeatingEnergy.ToM3(v, summary!.Unit, kwhPerM3, assumed) : null;
+
+    private static double? SumToday(EnergySummary? heating, EnergySummary? dhw) =>
+        Today(heating) is null && Today(dhw) is null ? null : (Today(heating) ?? 0) + (Today(dhw) ?? 0);
 }
 
 /// <summary>

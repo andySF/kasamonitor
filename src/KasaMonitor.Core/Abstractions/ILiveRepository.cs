@@ -1,4 +1,5 @@
 using KasaMonitor.Core.Models;
+using KasaMonitor.Core.Reports;
 
 namespace KasaMonitor.Core.Abstractions;
 
@@ -16,6 +17,12 @@ public interface ILiveRepository
     Task<DateTimeOffset?> FirstSampleTsAsync(Guid plugId, CancellationToken ct);
 
     Task<IReadOnlyList<LiveMinuteAggregate>> ListMinutesAsync(Guid plugId, DateTimeOffset fromUtc, DateTimeOffset toUtc, CancellationToken ct);
+
+    /// <summary>
+    /// Σ energy and count of the minute aggregates per plug and UTC hour, for the given plugs, in one grouped query
+    /// (minutes in [from, to); <c>PlugId IN (...)</c> + range on the primary key (PlugId, MinuteTs)).
+    /// </summary>
+    Task<IReadOnlyList<PlugHourWh>> SumEnergyByHourAsync(IReadOnlyCollection<Guid> plugIds, DateTimeOffset fromUtc, DateTimeOffset toUtc, CancellationToken ct);
 
     Task<int> CountSamplesOlderThanAsync(DateTimeOffset cutoffUtc, CancellationToken ct);
 

@@ -3,6 +3,7 @@
 @using KasaMonitor.Web.Ui
 @inject HeatingState State
 @inject IHeatingSettingsService HeatingSettings
+@inject EnergyReportService Reports
 @implements IDisposable
 
 @if (State.Current is { } live)
@@ -10,6 +11,7 @@
     var s = live.Snapshot;
     var online = State.IsOnline(DateTimeOffset.UtcNow);
     var gasToday = HeatingFormat.GasRows(live.Periods ?? Array.Empty<HeatingEnergyPeriod>()).FirstOrDefault(r => r.Period == "day");
+    var gasDay = _gasDay is { } gd && gd.DeviceId == live.Device.Id ? gd.Gas : null;
     <div class="card mb-3 border-start border-4 @(online ? (s?.BurnerActive == true ? "border-danger" : "border-warning") : "border-secondary")">
         <div class="card-body d-flex flex-wrap align-items-center gap-4">
             <div>
@@ -31,6 +33,14 @@
                 {
                     <div class="small text-secondary">@EnergyFormat.Lei(HeatingFormat.GasCost(gasToday.TotalM3, _settings.GasKwhPerM3, _settings.GasPricePerKwh))</div>
                 }
+                @if (gasDay is { } g && KasaMonitor.Web.Ui.ReportFormat.Delta(g.DeltaPct) is { } delta)
+                {
+                    <div class="small @KasaMonitor.Web.Ui.ReportFormat.DeltaClass(g.DeltaPct)" title="Ieri până la aceeași oră: @HeatingFormat.M3(g.YesterdaySameTimeM3) · ieri toată ziua: @HeatingFormat.M3(g.YesterdayM3)">@delta față de ieri la aceeași oră</div>
+                }
+                else if (gasDay is { YesterdayM3: { } y })
+                {
+                    <div class="small text-secondary" title="Ieri nu are contoare salvate pe ore, deci nu se poate compara la aceeași oră">ieri: @HeatingFormat.M3(y)</div>
+                }
             </div>
             @if (s?.ActiveError is { } err)
             {
@@ -42,14 +52,30 @@
 
 @code {
     private HeatingRuntimeSettings? _settings;
+    private (Guid DeviceId, GasDayComparison Gas)? _gasDay;
 
     protected override async Task OnInitializedAsync()
     {
         _settings = await HeatingSettings.GetAsync(CancellationToken.None);
+        await LoadGasDayAsync();
         State.Changed += OnChanged;
     }
 
-    private void OnChanged() => InvokeAsync(StateHasChanged);
+    private void OnChanged() => InvokeAsync(async () => { await LoadGasDayAsync(); StateHasChanged(); });
+
+    /// <summary>Gas today vs yesterday up to the same time (same rules as the "Zi" report of /centrala); never throws.</summary>
+    private async Task LoadGasDayAsync()
+    {
+        if (State.Current is not { } live) return;
+        try
+        {
+            _gasDay = (live.Device.Id, await Reports.GetGasTodayVsYesterdayAsync(live.Device.Id, CancellationToken.None));
+        }
+        catch (Exception)
+        {
+            _gasDay = null;
+        }
+    }
 
     public void Dispose() => State.Changed -= OnChanged;
 }

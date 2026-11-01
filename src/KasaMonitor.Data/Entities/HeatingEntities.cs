@@ -39,6 +39,11 @@ public sealed class HeatingReadingEntity
     public string? DhwMode { get; set; }
     public string? ActiveError { get; set; }
     public string? StatusCode { get; set; }
+    /// <summary>The boiler's "today" counters at this reading (gas m³ per purpose; electricity and heat kWh, both purposes).</summary>
+    public double? GasHeatingTodayM3 { get; set; }
+    public double? GasDhwTodayM3 { get; set; }
+    public double? PowerTodayKwh { get; set; }
+    public double? HeatTodayKwh { get; set; }
 }
 
 /// <summary>

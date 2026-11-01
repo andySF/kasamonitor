@@ -1,0 +1,276 @@
+@using KasaMonitor.Core.Heating
+@using KasaMonitor.Core.Reports
+@using KasaMonitor.Web.Ui
+@using KasaMonitor.Workers
+@inject EnergyReportService Reports
+@inject IHeatingSettingsService HeatingSettings
+@inject IKasaSettingsService KasaSettings
+
+@* /centrala "Rapoarte": gas, boiler electricity and heat produced per period, ViCare-style. *@
+<div class="card mt-3">
+    <div class="card-header d-flex flex-wrap align-items-center gap-2">
+        <span class="fw-semibold"><i class="bi bi-bar-chart me-2"></i>Rapoarte</span>
+        <span class="text-secondary" style="cursor: help" title="@SourcesNote">ⓘ</span>
+        <ul class="nav nav-pills nav-sm ms-auto">
+            @foreach (var (kind, name) in Tabs)
+            {
+                <li class="nav-item"><button type="button" class="nav-link py-1 px-2 @(_tab == kind ? "active" : "")" @onclick="() => SelectTab(kind)">@name</button></li>
+            }
+        </ul>
+    </div>
+    <div class="card-body">
+        <ReportPeriodPicker Period="_period" PeriodChanged="OnPeriodChanged" Today="_today" />
+
+        @if (_error is { } err)
+        {
+            <div class="alert alert-warning mt-2 mb-0">Raportul nu a putut fi încărcat: @err</div>
+        }
+        else if (_report is null)
+        {
+            <p class="text-secondary mt-2 mb-0"><span class="spinner-border spinner-border-sm me-2"></span>Se încarcă…</p>
+        }
+        else
+        {
+            var r = _report;
+            var k = Selected(r);
+            <div class="d-flex flex-wrap gap-4 mt-3">
+                <div>
+                    <div class="small text-secondary">@TabName(_tab) — total</div>
+                    <div class="fs-4 fw-semibold">@(k.Total is { } t ? ReportFormat.Value(t, k.Unit) : "fără date")</div>
+                    @if (k.ApiDiffers)
+                    {
+                        <div class="small text-warning-emphasis" title="Diferă cu peste 5 %: zilele salvate de KasaMonitor nu acoperă toată perioada sau centrala a corectat valorile">
+                            zile salvate: @ReportFormat.Value(k.OwnTotal, k.Unit) · centrala: @ReportFormat.Value(k.ApiTotal, k.Unit)</div>
+                    }
+                    else if (k.OwnTotal is null && k.ApiTotal is not null)
+                    {
+                        <div class="small text-secondary">doar totalul raportat de centrală (fără zile salvate)</div>
+                    }
+                </div>
+                @if (CostText(r, k) is { } cost)
+                {
+                    <div>
+                        <div class="small text-secondary">Cost estimat</div>
+                        <div class="fs-5 fw-semibold">@cost</div>
+                    </div>
+                }
+                <div title="@($"Perioada precedentă: {ReportFormat.Title(r.Period.Previous())}")">
+                    <div class="small text-secondary">@ReportFormat.VersusPrevious(r.Period.Kind)@(r.Period.Contains(_today) ? " (perioadă în curs)" : "")</div>
+                    @if (ReportFormat.Delta(k.DeltaPct) is { } d)
+                    {
+                        <div class="fs-5 fw-semibold @ReportFormat.DeltaClass(k.DeltaPct)">@d</div>
+                        <div class="small text-secondary">înainte: @ReportFormat.Value(k.PreviousTotal, k.Unit)</div>
+                    }
+                    else
+                    {
+                        <div class="small text-secondary">@ReportFormat.NoDelta(k.PreviousTotal)</div>
+                    }
+                </div>
+                @if (Efficiency(r) is { } eff)
+                {
+                    <div title="Căldură produsă / (gaz × @HeatingFormat.Number(KwhPerM3, 2) kWh/m³), pe perioadă; estimat de centrală">
+                        <div class="small text-secondary">Randament aparent</div>
+                        <div class="fs-5 fw-semibold">@HeatingFormat.Number(eff * 100, 0) %</div>
+                    </div>
+                }
+            </div>
+
+            @if (_bars.Count == 0 || _bars.All(b => b.Items.All(v => v.Value is null)))
+            {
+                <div class="alert alert-secondary mt-3 mb-0">Fără date pe @ReportFormat.BucketsName(r.Period.Kind) pentru această perioadă@(FirstDayNote(r)).</div>
+            }
+            else
+            {
+                <ApexChart @key="_chartKey" TItem="Bar" Options="_options" Height="280">
+                    @foreach (var s in _bars)
+                    {
+                        <ApexPointSeries TItem="Bar" Items="s.Items" Name="@SeriesName(s.Key)" Color="@SeriesColor(s.Key)"
+                                         SeriesType="SeriesType.Bar" XValue="@(b => b.Label)" YValue="@(b => b.Value)" />
+                    }
+                </ApexChart>
+                @if (FirstDayNote(r) is { Length: > 0 } fd)
+                {
+                    <div class="small text-secondary">Bare goale: fără date@(fd).</div>
+                }
+            }
+            @if (k.Remainder is not null)
+            {
+                <div class="small text-secondary">„Restul anului” = totalul anual raportat de centrală minus lunile salvate de KasaMonitor (nu se poate împărți pe luni).</div>
+            }
+            @if (r.Period.Kind == ReportGranularity.Day && _tab != HeatingKinds.Gas)
+            {
+                <div class="small text-secondary">Pe ore: doar totalul (încălzire + apă caldă), din contorul „azi” al centralei salvat la fiecare citire.</div>
+            }
+        }
+    </div>
+</div>
+
+@code {
+    public record Bar(string Label, decimal? Value);
+    private sealed record BarSeries(string Key, List<Bar> Items);
+
+    [Parameter, EditorRequired] public Guid DeviceId { get; set; }
+
+    /// <summary>Changes when the boiler was read again (the parent passes the poll time): the report reloads.</summary>
+    [Parameter] public DateTimeOffset? LastReadUtc { get; set; }
+
+    private static readonly (string Kind, string Name)[] Tabs =
+        { (HeatingKinds.Gas, "Gaz"), (HeatingKinds.Power, "Curent centrală"), (HeatingKinds.Heat, "Căldură produsă") };
+
+    private const string SourcesNote =
+        "Zile: istoricul construit de KasaMonitor din valoarea „azi” a centralei (începe la prima citire, 1 nov 2026; zilele dinainte nu există). " +
+        "Ore (Zi): diferențele contorului „azi” între citirile la ~2 min. Lună: zilele salvate, cu totalul lunii din centrală ca verificare (ambele afișate când diferă > 5 %); " +
+        "luna trecută: doar totalul centralei dacă lipsesc zilele. An: lunile din zile, restul anului din totalul anual al centralei. " +
+        "Comparația cu perioada precedentă apare doar când ambele au date. Valorile sunt estimate de centrală, nu de un contor de gaz.";
+
+    private ReportPeriod _period;
+    private DateOnly _today;
+    private string _tab = HeatingKinds.Gas;
+    private HeatingReport? _report;
+    private HeatingRuntimeSettings? _settings;
+    private decimal _tariff;
+    private string? _error;
+    private int _chartKey;
+    private DateTimeOffset? _loadedFor;
+    private List<BarSeries> _bars = new();
+    private ApexChartOptions<Bar> _options = new();
+
+    protected override async Task OnInitializedAsync()
+    {
+        _today = Reports.Today();
+        _period = ReportPeriod.Containing(ReportGranularity.Month, _today);
+        // Settings that cannot be read fall back to the defaults (factor 10.55, no prices) instead of a permanent spinner.
+        try { _settings = await HeatingSettings.GetAsync(CancellationToken.None); }
+        catch (Exception) { _settings = null; }
+        try { _tariff = (await KasaSettings.GetAsync(CancellationToken.None)).TariffRonPerKwh; }
+        catch (Exception) { _tariff = 0; }
+        _loadedFor = LastReadUtc;
+        await LoadAsync();
+    }
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (_report is not null && LastReadUtc != _loadedFor)
+        {
+            _loadedFor = LastReadUtc;
+            // A new reading changes only the period that holds today; a past period keeps its chart (no flicker).
+            if (_period.Contains(Reports.Today())) await LoadAsync();
+        }
+    }
+
+    private async Task OnPeriodChanged(ReportPeriod p)
+    {
+        _period = p;
+        await LoadAsync();
+    }
+
+    private void SelectTab(string kind)
+    {
+        _tab = kind;
+        Rebuild();
+    }
+
+    private async Task LoadAsync()
+    {
+        try
+        {
+            _today = Reports.Today();
+            var requested = _period;
+            var report = await Reports.GetHeatingReportAsync(DeviceId, requested, CancellationToken.None);
+            // A slower earlier request must not overwrite the period chosen since.
+            if (requested != _period) return;
+            _report = report;
+            _error = null;
+            Rebuild();
+        }
+        catch (Exception ex)
+        {
+            _error = ex.Message;
+        }
+    }
+
+    private void Rebuild()
+    {
+        if (_report is not { } r) return;
+        var k = Selected(r);
+        var labels = r.Buckets.Select(b => ReportFormat.BucketLabel(b, r.Period.Kind)).ToList();
+        var series = k.Series.Select(s => (s.Key, Values: s.Values.Select(Dec).ToList())).ToList();
+        if (k.Remainder is { } rem)
+        {
+            // One extra bar before January: the part of the boiler's year total not covered by stored days.
+            labels.Insert(0, "restul anului");
+            for (var i = 0; i < series.Count; i++) series[i].Values.Insert(0, i < rem.Count ? Dec(rem[i]) : null);
+        }
+        _bars = series.Select(s => new BarSeries(s.Key, s.Values.Select((v, i) => new Bar(labels[i], v)).ToList())).ToList();
+        _options = ChartOptions(k.Unit);
+        _chartKey++;
+    }
+
+    private HeatingKindReport Selected(HeatingReport r) => _tab switch
+    {
+        HeatingKinds.Power => r.Power,
+        HeatingKinds.Heat => r.Heat,
+        _ => r.Gas,
+    };
+
+    private static string TabName(string kind) => Tabs.First(t => t.Kind == kind).Name;
+
+    private static string SeriesName(string key) => key switch
+    {
+        HeatingReportBuilder.SeriesHeating => "Încălzire",
+        HeatingReportBuilder.SeriesDhw => "Apă caldă",
+        _ => "Total",
+    };
+
+    // As in ViCare: heating orange/red, hot water blue.
+    private static string SeriesColor(string key) => key switch
+    {
+        HeatingReportBuilder.SeriesHeating => "#D55E00",
+        HeatingReportBuilder.SeriesDhw => "#0072B2",
+        _ => "#CC79A7",
+    };
+
+    private string? CostText(HeatingReport r, HeatingKindReport k)
+    {
+        if (k.Total is not { } t || _settings is null) return null;
+        return k.Kind switch
+        {
+            HeatingKinds.Gas => EnergyFormat.Lei(HeatingFormat.GasCost(t, _settings.GasKwhPerM3, _settings.GasPricePerKwh)),
+            HeatingKinds.Power => EnergyFormat.Lei((decimal)t * _tariff),
+            _ => null,
+        };
+    }
+
+    /// <summary>Heat produced / gas energy over the period (both totals needed).</summary>
+    private double? Efficiency(HeatingReport r) =>
+        HeatingEnergy.Efficiency(r.Heat.Total, r.Gas.Total is { } g ? g * KwhPerM3 : null);
+
+    private double KwhPerM3 => _settings?.GasKwhPerM3 ?? ViessmannApi.DefaultKwhPerM3;
+
+    private static string FirstDayNote(HeatingReport r) => r.FirstDay switch
+    {
+        null => " (încă nu există zile salvate)",
+        { } f when r.Period.Start < f => $" înainte de {ReportFormat.Date(f)}",
+        _ => "",
+    };
+
+    private static decimal? Dec(double? v) => v is { } x ? Math.Round((decimal)x, 3) : null;
+
+    private static ApexChartOptions<Bar> ChartOptions(string unit)
+    {
+        var u = unit == HeatingKinds.UnitM3 ? "m³" : "kWh";
+        return new ApexChartOptions<Bar>
+        {
+            Chart = new Chart { Stacked = true, Toolbar = new Toolbar { Show = false }, Animations = new Animations { Enabled = false } },
+            PlotOptions = new PlotOptions { Bar = new PlotOptionsBar { Horizontal = false } },
+            DataLabels = new DataLabels { Enabled = false },
+            Legend = new Legend { Show = true },
+            Tooltip = new Tooltip
+            {
+                Shared = true,
+                Intersect = false,
+                Y = new TooltipY { Formatter = "function(v) { return v == null ? '—' : v.toFixed(2) + ' " + u + "'; }" },
+            },
+        };
+    }
+}

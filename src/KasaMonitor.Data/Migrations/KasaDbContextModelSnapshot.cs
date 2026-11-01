@@ -300,6 +300,15 @@ namespace KasaMonitor.Data.Migrations
                     b.Property<double?>("DhwTempC")
                         .HasColumnType("REAL");
 
+                    b.Property<double?>("GasDhwTodayM3")
+                        .HasColumnType("REAL");
+
+                    b.Property<double?>("GasHeatingTodayM3")
+                        .HasColumnType("REAL");
+
+                    b.Property<double?>("HeatTodayKwh")
+                        .HasColumnType("REAL");
+
                     b.Property<double?>("ModulationPct")
                         .HasColumnType("REAL");
 
@@ -307,6 +316,9 @@ namespace KasaMonitor.Data.Migrations
                         .HasColumnType("TEXT");
 
                     b.Property<double?>("OutsideTempC")
+                        .HasColumnType("REAL");
+
+                    b.Property<double?>("PowerTodayKwh")
                         .HasColumnType("REAL");
 
                     b.Property<double?>("PressureBar")

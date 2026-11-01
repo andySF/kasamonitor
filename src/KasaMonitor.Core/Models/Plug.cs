@@ -21,4 +21,7 @@ public sealed record Plug(
 )
 {
     public bool IsSupported => UnsupportedReason is null;
+
+    /// <summary>Polled, exported to /metrics and shown in history: not withdrawn (archived) and on a supported protocol.</summary>
+    public bool IsPolled => !IsArchived && IsSupported;
 }

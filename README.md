@@ -55,6 +55,7 @@ not been saved from `/settings`.
 | TP-Link password | `KasaMonitor__TapoPassword` | — | stored encrypted (ASP.NET DataProtection), shown masked; used for KLAP and AES |
 | Tariff per kWh | `KasaMonitor__TariffRonPerKwh` | `1.30` | web UI cost; read at startup |
 | Poll interval (s) | `KasaMonitor__PollIntervalSeconds` | `10` | read at startup |
+| Keep raw readings (months) | `KasaMonitor__ReadingsRetentionMonths` | `0` = unlimited | raw 10-second readings only; daily history and minute aggregates are never deleted. Saving a value that would delete existing readings asks for confirmation with the exact row count |
 | — | `KasaMonitor__DbPath` | `/data/kasa.db` (image) | |
 
 The DataProtection keys are kept next to the database, in `<db dir>/dp-keys` (`/data/dp-keys` in the container,
@@ -191,8 +192,20 @@ Implemented natively (no NuGet package), following python-kasa (`transports/klap
 - **Methods** — `get_device_info` (alias = base64 `nickname`, model, firmware), `get_energy_usage` (`current_power`
   mW, `month_energy` Wh), `get_emeter_data` (`voltage_mv`, `current_ma`).
 
-Transports implement `ISmartTransport`; TPAP (SPAKE2+) can be added as another implementation. Daily/monthly
-history (`HistorySyncWorker`) exists only for legacy plugs.
+Transports implement `ISmartTransport`; TPAP (SPAKE2+) can be added as another implementation. Daily history (`HistorySyncWorker`, every 6 h): legacy plugs via `emeter.get_daystat`/`get_monthstat`; Tapo plugs
+via `get_energy_data` (interval 1440 = daily Wh, last 60 days, one request per month with a fallback to the quarter
+start some firmware require), upserted per plug and day.
+
+## Data retention
+
+| Data | Table | Written | Deleted |
+|---|---|---|---|
+| Raw readings (every poll, default 10 s) | `Samples` | ≈ 128 bytes per reading ≈ 1.1 MB per plug per day ≈ 400 MB per plug per year | never by default; only if `ReadingsRetentionMonths` > 0 (daily purge, in batches) |
+| Minute aggregates | `OneMinuteAggregates` | ≈ 120 bytes per plug-minute ≈ 65 MB per plug per year | never |
+| Daily / monthly energy | `DailyEnergy`, `MonthlyEnergy` | one row per plug per day / month | never |
+
+Up to and including 0.2.1, raw readings older than 30 days were deleted automatically; from the next version nothing is deleted unless you set
+a retention. SQLite does not shrink the file after deletions (the space is reused); run `VACUUM` manually if needed.
 
 ## Logs
 

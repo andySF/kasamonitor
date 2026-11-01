@@ -12,11 +12,17 @@ public sealed class RollupWorker : BackgroundService
 {
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly ILogger<RollupWorker> _log;
+    private readonly ReadingsRetentionService? _retention;
+    private readonly IKasaSettingsService? _settings;
 
-    public RollupWorker(IServiceScopeFactory scopeFactory, ILogger<RollupWorker> log)
+    /// <param name="retention">Optional daily purge of raw readings by the ReadingsRetentionMonths setting (0 = keep all).</param>
+    public RollupWorker(IServiceScopeFactory scopeFactory, ILogger<RollupWorker> log,
+        ReadingsRetentionService? retention = null, IKasaSettingsService? settings = null)
     {
         _scopeFactory = scopeFactory;
         _log = log;
+        _retention = retention;
+        _settings = settings;
     }
 
     public async Task RollupSamplesToMinutesAsync(DateOnly day, CancellationToken ct)
@@ -68,11 +74,12 @@ public sealed class RollupWorker : BackgroundService
         await ctx.SaveChangesAsync(ct);
     }
 
-    public async Task<int> PruneOldSamplesAsync(int retentionDays, CancellationToken ct)
+    /// <summary>Raw readings are kept forever unless ReadingsRetentionMonths &gt; 0 (up to and including 0.2.1 they were cut at 30 days).</summary>
+    public async Task<int> ApplyRetentionAsync(CancellationToken ct)
     {
-        using var scope = _scopeFactory.CreateScope();
-        var samples = scope.ServiceProvider.GetRequiredService<ISampleRepository>();
-        return await samples.DeleteOlderThanAsync(DateTimeOffset.UtcNow.AddDays(-retentionDays), ct);
+        if (_retention is null || _settings is null) return 0;
+        var months = (await _settings.GetAsync(ct)).ReadingsRetentionMonths;
+        return await _retention.ApplyAsync(months, ct);
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -83,7 +90,7 @@ public sealed class RollupWorker : BackgroundService
             {
                 var yesterday = DateOnly.FromDateTime(DateTime.UtcNow.AddDays(-1));
                 await RollupSamplesToMinutesAsync(yesterday, stoppingToken);
-                await PruneOldSamplesAsync(30, stoppingToken);
+                await ApplyRetentionAsync(stoppingToken);
             }
             catch (Exception ex) when (!stoppingToken.IsCancellationRequested) { _log.LogError(ex, "Rollup cycle failed"); }
             try { await Task.Delay(TimeSpan.FromHours(24), stoppingToken); }

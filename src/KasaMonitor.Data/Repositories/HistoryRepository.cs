@@ -60,6 +60,21 @@ public sealed class HistoryRepository : IHistoryRepository
         }).ToList();
     }
 
+    public async Task<IReadOnlyList<PlugDailyKwh>> GetDailyRangeAllAsync(DateOnly fromInclusive, DateOnly toInclusive, CancellationToken ct)
+    {
+        var fromKey = fromInclusive.ToString("yyyy-MM-dd");
+        var toKey   = toInclusive.ToString("yyyy-MM-dd");
+        var rows = await _db.DailyEnergies.AsNoTracking()
+            .Where(d => string.Compare(d.Date, fromKey) >= 0 && string.Compare(d.Date, toKey) <= 0)
+            .OrderBy(d => d.Date)
+            .ToListAsync(ct);
+        return rows.Select(d =>
+        {
+            var dt = DateOnly.ParseExact(d.Date, "yyyy-MM-dd");
+            return new PlugDailyKwh(d.PlugId, new DailyKwh(dt.Year, dt.Month, dt.Day, d.EnergyWh));
+        }).ToList();
+    }
+
     public async Task<IReadOnlyList<MonthlyKwh>> GetMonthlyRangeAsync(Guid plugId, int yearFromInclusive, int yearToInclusive, CancellationToken ct) =>
         await _db.MonthlyEnergies.AsNoTracking()
             .Where(m => m.PlugId == plugId && m.Year >= yearFromInclusive && m.Year <= yearToInclusive)

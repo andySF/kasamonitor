@@ -83,12 +83,21 @@ public sealed class TapoClient : ITapoClient
 
     private readonly System.Collections.Concurrent.ConcurrentDictionary<string, bool> _noEmeterData = new();
 
+    public async Task<IReadOnlyList<DailyKwh>> GetDailyEnergyAsync(IPAddress ip, string protocol, TapoCredentials credentials,
+        DateOnly firstDay, DateOnly lastDay, DateOnly today, TimeZoneInfo tz, CancellationToken ct)
+    {
+        var result = await CallAsync(ip, protocol, credentials, "get_energy_data", ct,
+            SmartMessages.EnergyDataParams(firstDay, lastDay, tz));
+        return SmartMessages.MapDailyEnergyData(result, firstDay, today, tz);
+    }
+
     private async Task<System.Text.Json.JsonElement> CallAsync(
-        IPAddress ip, string protocol, TapoCredentials credentials, string method, CancellationToken ct)
+        IPAddress ip, string protocol, TapoCredentials credentials, string method, CancellationToken ct,
+        System.Text.Json.Nodes.JsonObject? parameters = null)
     {
         if (!_transports.TryGetValue(protocol, out var transport))
             throw new KasaProtocolException($"No transport for protocol '{protocol}'.", operation: method);
-        var answer = await transport.SendAsync(ip, credentials, SmartMessages.BuildRequest(method, DateTimeOffset.UtcNow), ct);
+        var answer = await transport.SendAsync(ip, credentials, SmartMessages.BuildRequest(method, DateTimeOffset.UtcNow, parameters), ct);
         return SmartMessages.ParseResult(answer, method);
     }
 }

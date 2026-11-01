@@ -58,7 +58,8 @@ builder.Services.AddSingleton(new KasaSettingsDefaults(
     BroadcastNetworks: builder.Configuration["KasaMonitor:BroadcastNetworks"] ?? "",
     AutoAddDiscoveredPlugs: builder.Configuration.GetValue("KasaMonitor:AutoAddDiscoveredPlugs", true),
     TapoUsername: builder.Configuration["KasaMonitor:TapoUsername"],
-    TapoPassword: builder.Configuration["KasaMonitor:TapoPassword"]));
+    TapoPassword: builder.Configuration["KasaMonitor:TapoPassword"],
+    ReadingsRetentionMonths: builder.Configuration.GetValue("KasaMonitor:ReadingsRetentionMonths", 0)));
 
 var pollIntervalSec = builder.Configuration.GetValue("KasaMonitor:PollIntervalSeconds", 10);
 
@@ -89,11 +90,16 @@ builder.Services.AddHostedService(sp => new HistorySyncWorker(
     sp.GetRequiredService<IKasaClient>(),
     sp.GetRequiredService<IServiceScopeFactory>(),
     () => DateTime.UtcNow,
-    sp.GetRequiredService<ILogger<HistorySyncWorker>>()));
+    sp.GetRequiredService<ILogger<HistorySyncWorker>>(),
+    sp.GetRequiredService<ITapoClient>(),
+    sp.GetRequiredService<IKasaSettingsService>(),
+    discovered: sp.GetRequiredService<IPlugDiscoveredChannel>()));
 
 builder.Services.AddHostedService(sp => new RollupWorker(
     sp.GetRequiredService<IServiceScopeFactory>(),
-    sp.GetRequiredService<ILogger<RollupWorker>>()));
+    sp.GetRequiredService<ILogger<RollupWorker>>(),
+    sp.GetRequiredService<ReadingsRetentionService>(),
+    sp.GetRequiredService<IKasaSettingsService>()));
 
 builder.Services.AddHostedService<KasaMetrics>();
 

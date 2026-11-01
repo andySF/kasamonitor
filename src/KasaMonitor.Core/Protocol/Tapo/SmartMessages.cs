@@ -16,7 +16,7 @@ public static class SmartMessages
     private static readonly string TerminalUuid =
         Convert.ToBase64String(MD5.HashData(Guid.NewGuid().ToByteArray()));
 
-    public static string BuildRequest(string method, DateTimeOffset now)
+    public static string BuildRequest(string method, DateTimeOffset now, JsonObject? parameters = null)
     {
         var obj = new JsonObject
         {
@@ -24,7 +24,60 @@ public static class SmartMessages
             ["request_time_milis"] = now.ToUnixTimeMilliseconds(),
             ["terminal_uuid"] = TerminalUuid,
         };
+        if (parameters is not null) obj["params"] = parameters;
         return obj.ToJsonString();
+    }
+
+    public const int DailyIntervalMinutes = 1440;
+
+    /// <summary>
+    /// Params of <c>get_energy_data</c> for daily values: <c>start_timestamp</c> = local midnight of
+    /// <paramref name="firstDay"/> (epoch seconds), <c>end_timestamp</c> = local midnight of <paramref name="lastDay"/>,
+    /// <c>interval</c> = 1440 minutes.
+    /// </summary>
+    public static JsonObject EnergyDataParams(DateOnly firstDay, DateOnly lastDay, TimeZoneInfo tz) => new()
+    {
+        ["start_timestamp"] = LocalMidnight(firstDay, tz).ToUnixTimeSeconds(),
+        ["end_timestamp"] = LocalMidnight(lastDay, tz).ToUnixTimeSeconds(),
+        ["interval"] = DailyIntervalMinutes,
+    };
+
+    public static DateTimeOffset LocalMidnight(DateOnly day, TimeZoneInfo tz)
+    {
+        var local = day.ToDateTime(TimeOnly.MinValue, DateTimeKind.Unspecified);
+        return new DateTimeOffset(local, tz.GetUtcOffset(local));
+    }
+
+    /// <summary>
+    /// Maps a daily <c>get_energy_data</c> result: <c>data[i]</c> is the energy (Wh) of day <c>start + i</c>, where start is
+    /// the answer's <c>start_timestamp</c> (or the requested first day when absent). The day of a timestamp is taken in
+    /// <paramref name="tz"/> after adding 12 h, so a device whose midnight differs from ours by a few hours still maps to
+    /// the intended day. Days after <paramref name="today"/> (always 0) are dropped.
+    /// </summary>
+    public static IReadOnlyList<DailyKwh> MapDailyEnergyData(JsonElement r, DateOnly requestedFirstDay, DateOnly today, TimeZoneInfo tz)
+    {
+        if (r.TryGetProperty("interval", out var iv) && iv.ValueKind == JsonValueKind.Number && iv.GetInt32() != DailyIntervalMinutes)
+            throw new KasaProtocolException($"get_energy_data answered interval {iv.GetInt32()}, expected {DailyIntervalMinutes}.", operation: "get_energy_data");
+        if (!r.TryGetProperty("data", out var data) || data.ValueKind != JsonValueKind.Array)
+            throw new KasaProtocolException("get_energy_data missing data", operation: "get_energy_data");
+
+        var first = requestedFirstDay;
+        if (r.TryGetProperty("start_timestamp", out var st) && st.ValueKind == JsonValueKind.Number)
+        {
+            var local = TimeZoneInfo.ConvertTime(DateTimeOffset.FromUnixTimeSeconds(st.GetInt64()).AddHours(12), tz);
+            first = DateOnly.FromDateTime(local.DateTime);
+        }
+
+        var result = new List<DailyKwh>();
+        var i = 0;
+        foreach (var v in data.EnumerateArray())
+        {
+            var day = first.AddDays(i++);
+            if (day > today) break;
+            if (v.ValueKind != JsonValueKind.Number) continue;
+            result.Add(new DailyKwh(day.Year, day.Month, day.Day, (long)v.GetDouble()));
+        }
+        return result;
     }
 
     /// <summary>Returns a detached copy of <c>result</c>; throws <see cref="KasaProtocolException"/> on error_code != 0.</summary>

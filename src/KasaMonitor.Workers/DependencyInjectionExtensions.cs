@@ -16,6 +16,9 @@ public static class DependencyInjectionExtensions
         services.AddSingleton<IPlugStateBroadcaster, PlugStateBroadcaster>();
         services.AddSingleton<IPlugDiscoveredChannel, PlugDiscoveredChannel>();
         services.AddSingleton<IKasaSettingsService, KasaSettingsService>();
+        services.AddSingleton<ReadingsRetentionService>(sp => new ReadingsRetentionService(
+            sp.GetRequiredService<IServiceScopeFactory>(),
+            sp.GetRequiredService<Microsoft.Extensions.Logging.ILogger<ReadingsRetentionService>>()));
         return services;
     }
 }

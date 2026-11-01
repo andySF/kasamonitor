@@ -87,6 +87,8 @@ public sealed class PlugDiscoveryService
                 if (known is not null)
                 {
                     var id = await repo.UpsertFromDiscoveryAsync(dp, now, ct);
+                    if (!known.IsSupported && dp.IsSupported)
+                        _channel.Publish(id);   // just became pollable (e.g. credentials added): history sync now
                     var stillUnsupported = !dp.IsSupported && !known.IsSupported;
                     items.Add(new DiscoveryResultItem(dp, stillUnsupported ? DiscoveryStatus.Unsupported : DiscoveryStatus.Known, id));
                 }
@@ -127,8 +129,11 @@ public sealed class PlugDiscoveryService
         {
             using var scope = _scopeFactory.CreateScope();
             var repo = scope.ServiceProvider.GetRequiredService<IPlugRepository>();
-            var wasKnown = await repo.GetByMacAsync(plug.Info.Mac, ct) is not null;
+            var before = await repo.GetByMacAsync(plug.Info.Mac, ct);
+            var wasKnown = before is not null;
             var id = await repo.UpsertFromDiscoveryAsync(plug, DateTimeOffset.UtcNow, ct);
+            if (wasKnown && !before!.IsSupported && plug.IsSupported)
+                _channel.Publish(id);
             if (!wasKnown)
             {
                 _channel.Publish(id);

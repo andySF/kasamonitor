@@ -7,5 +7,7 @@ public interface IHistoryRepository
     Task UpsertDailyAsync(Guid plugId, IReadOnlyList<DailyKwh> entries, CancellationToken ct);
     Task UpsertMonthlyAsync(Guid plugId, IReadOnlyList<MonthlyKwh> entries, CancellationToken ct);
     Task<IReadOnlyList<DailyKwh>> GetDailyRangeAsync(Guid plugId, DateOnly fromInclusive, DateOnly toInclusive, CancellationToken ct);
+    /// <summary>Daily energy of every plug in the range, in one query.</summary>
+    Task<IReadOnlyList<PlugDailyKwh>> GetDailyRangeAllAsync(DateOnly fromInclusive, DateOnly toInclusive, CancellationToken ct);
     Task<IReadOnlyList<MonthlyKwh>> GetMonthlyRangeAsync(Guid plugId, int yearFromInclusive, int yearToInclusive, CancellationToken ct);
 }

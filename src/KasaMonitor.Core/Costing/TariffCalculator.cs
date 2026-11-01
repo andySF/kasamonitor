@@ -11,5 +11,7 @@ public sealed class TariffCalculator
         _ronPerKwh = ronPerKwh;
     }
 
+    public decimal RonPerKwh => _ronPerKwh;
+
     public decimal CostFromWh(long wh) => wh * _ronPerKwh / 1000m;
 }

@@ -38,7 +38,7 @@ public sealed class PollingWorker : BackgroundService
     }
 
     /// <summary>Plugs that are polled and exported: not withdrawn (archived) and speaking a supported protocol.</summary>
-    public static bool IsActive(Plug p) => !p.IsArchived && p.IsSupported;
+    public static bool IsActive(Plug p) => p.IsPolled;
 
     public async Task RunOnceAsync(CancellationToken ct)
     {

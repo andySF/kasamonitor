@@ -3,6 +3,7 @@
 @using KasaMonitor.Workers
 @inject IServiceScopeFactory ScopeFactory
 @inject IKasaSettingsService KasaSettings
+@inject ReadingsRetentionService Retention
 
 <PageTitle>KasaMonitor — Setări</PageTitle>
 <h1>Setări</h1>
@@ -51,9 +52,29 @@ else
         <label>Interval interogare (secunde)</label>
         <input @bind="_pollSec" type="number" min="5" max="300" />
 
+        <h3>Date</h3>
+
+        <label>Păstrează citirile brute (luni, 0 = nelimitat)</label>
+        <input @bind="_retentionMonths" type="number" min="0" max="@KasaSettingsService.MaxRetentionMonths" />
+        <p class="note">
+            Citirile brute sunt valorile la fiecare interogare (implicit 10 s): ≈ 128 octeți/citire în SQLite, adică ≈ 1,1 MB pe priză pe zi,
+            ≈ 400 MB pe priză pe an (6 prize ≈ 2,4 GB/an). Istoricul zilnic (kWh/zi) și agregatele pe minut (≈ 65 MB pe priză pe an)
+            nu se șterg niciodată, indiferent de această setare. La o valoare &gt; 0, citirile mai vechi se șterg o dată pe zi.
+        </p>
+
+        @if (_pendingPlan is { } plan)
+        {
+            <div class="confirm">
+                <p>Se vor șterge <b>@plan.RowsToDelete.ToString("N0")</b> citiri mai vechi de <b>@plan.CutoffUtc!.Value.ToLocalTime().ToString("yyyy-MM-dd HH:mm")</b>. Confirmi?</p>
+                <button @onclick="ConfirmAsync" disabled="@_deleting">@(_deleting ? "Se șterge…" : "Da, salvează și șterge")</button>
+                <button @onclick="CancelConfirm" disabled="@_deleting">Renunță</button>
+                <span class="note">Fără confirmare nu se salvează nimic și nu se șterge nimic.</span>
+            </div>
+        }
+
         <div class="actions">
-            <button @onclick="SaveAsync">Salvează</button>
-            @if (_saved) { <span class="saved-msg">Salvat.</span> }
+            <button @onclick="SaveAsync" disabled="@(_pendingPlan is not null)">Salvează</button>
+            @if (_saved) { <span class="saved-msg">Salvat.@(_deletedMessage is null ? "" : " " + _deletedMessage)</span> }
             @if (_error is not null) { <span class="error-msg">@_error</span> }
         </div>
         <p class="note"><em>Setările de descoperire și contul TP-Link se aplică fără repornire (la următorul ciclu). Tariful și intervalul de interogare se citesc la pornire din variabilele de mediu.</em></p>
@@ -70,6 +91,8 @@ else
     .settings-form .saved-msg { margin-left: 1em; color: #4a4; }
     .settings-form .error-msg { margin-left: 1em; color: #a33; }
     .settings-form .note { grid-column: 1 / -1; color: #888; font-size: 0.85em; }
+    .settings-form .confirm { grid-column: 1 / -1; border: 1px solid #e0b000; background: #fff8e0; padding: 0.6em 1em; border-radius: 4px; }
+    .settings-form .confirm button { margin-right: 0.5em; padding: 0.3em 0.9em; }
 </style>
 
 @code {
@@ -86,6 +109,10 @@ else
     private string _tapoPassword = "";
     private bool _hasTapoPassword;
     private bool _clearTapoPassword;
+    private int _retentionMonths;
+    private RetentionPlan? _pendingPlan;
+    private bool _deleting;
+    private string? _deletedMessage;
 
     protected override async Task OnInitializedAsync()
     {
@@ -113,21 +140,71 @@ else
         _hasTapoPassword = s.HasTapoPassword;
         _tapoPassword = "";
         _clearTapoPassword = false;
+        _retentionMonths = s.ReadingsRetentionMonths;
     }
 
     private async Task SaveAsync()
     {
         _error = null;
+        _deletedMessage = null;
+        var (_, invalid) = KasaSettingsService.ParseBroadcastNetworks(_broadcast);
+        if (invalid.Count > 0)
+        {
+            _error = $"Adrese broadcast invalide: {string.Join(", ", invalid)}";
+            return;
+        }
+        _retentionMonths = Math.Clamp(_retentionMonths, 0, KasaSettingsService.MaxRetentionMonths);
+
+        // Ask before anything is saved when the new retention would delete existing readings.
+        var plan = await Retention.PlanAsync(_retentionMonths, CancellationToken.None);
+        if (plan.NeedsConfirmation)
+        {
+            _pendingPlan = plan;
+            return;
+        }
+        await SaveCoreAsync();
+    }
+
+    private void CancelConfirm() => _pendingPlan = null;
+
+    private async Task ConfirmAsync()
+    {
+        if (_pendingPlan is not { } plan) return;
+        _retentionMonths = plan.Months;
+        _deleting = true;
+        StateHasChanged();
+        try
+        {
+            if (!await SaveSettingsAsync()) return;
+            var deleted = await Retention.ApplyAsync(plan.Months, CancellationToken.None);
+            _deletedMessage = $"Au fost șterse {deleted:N0} citiri.";
+        }
+        finally
+        {
+            _deleting = false;
+            _pendingPlan = null;
+        }
+        await AfterSaveAsync();
+    }
+
+    private async Task SaveCoreAsync()
+    {
+        if (await SaveSettingsAsync()) await AfterSaveAsync();
+    }
+
+    private async Task<bool> SaveSettingsAsync()
+    {
         try
         {
             await KasaSettings.SaveAsync(new KasaSettingsUpdate(
                 _autoDiscovery, _intervalMin, _broadcast, _autoAdd, _tapoUser,
-                NewTapoPassword: _tapoPassword, ClearTapoPassword: _clearTapoPassword), CancellationToken.None);
+                NewTapoPassword: _tapoPassword, ClearTapoPassword: _clearTapoPassword,
+                ReadingsRetentionMonths: _retentionMonths), CancellationToken.None);
         }
         catch (FormatException ex)
         {
             _error = ex.Message;
-            return;
+            return false;
         }
 
         using (var scope = ScopeFactory.CreateScope())
@@ -136,7 +213,11 @@ else
             await repo.SetAsync("TariffRonPerKwh", _tariff.ToString(System.Globalization.CultureInfo.InvariantCulture), CancellationToken.None);
             await repo.SetAsync("PollIntervalSeconds", _pollSec.ToString(), CancellationToken.None);
         }
+        return true;
+    }
 
+    private async Task AfterSaveAsync()
+    {
         await LoadAsync();
         _saved = true;
         StateHasChanged();

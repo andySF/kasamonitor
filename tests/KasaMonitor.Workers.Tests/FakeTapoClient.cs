@@ -28,5 +28,15 @@ internal sealed class FakeTapoClient : ITapoClient
         return OnGetEnergyUsage?.Invoke(ip, credentials) ?? throw new InvalidOperationException("OnGetEnergyUsage not set");
     }
 
+    public Func<DateOnly, DateOnly, Task<IReadOnlyList<DailyKwh>>>? OnGetDailyEnergy = null;
+    public List<(DateOnly First, DateOnly Last)> DailyEnergyRequests { get; } = new();
+
+    public Task<IReadOnlyList<DailyKwh>> GetDailyEnergyAsync(IPAddress ip, string protocol, TapoCredentials credentials,
+        DateOnly firstDay, DateOnly lastDay, DateOnly today, TimeZoneInfo tz, CancellationToken ct)
+    {
+        lock (DailyEnergyRequests) DailyEnergyRequests.Add((firstDay, lastDay));
+        return OnGetDailyEnergy?.Invoke(firstDay, lastDay) ?? throw new InvalidOperationException("OnGetDailyEnergy not set");
+    }
+
     public bool SupportsProtocol(string protocol) => protocol is PlugProtocols.Klap or PlugProtocols.Aes;
 }

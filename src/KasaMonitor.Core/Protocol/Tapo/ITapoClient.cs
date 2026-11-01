@@ -13,5 +13,12 @@ public interface ITapoClient
 
     Task<EmeterReading> GetEnergyUsageAsync(IPAddress ip, string protocol, TapoCredentials credentials, CancellationToken ct);
 
+    /// <summary>
+    /// Daily energy (Wh per local day) from <c>get_energy_data</c> (interval 1440) for the days from
+    /// <paramref name="firstDay"/> up to <paramref name="lastDay"/>; the device may answer fewer or more days.
+    /// </summary>
+    Task<IReadOnlyList<DailyKwh>> GetDailyEnergyAsync(IPAddress ip, string protocol, TapoCredentials credentials,
+        DateOnly firstDay, DateOnly lastDay, DateOnly today, TimeZoneInfo tz, CancellationToken ct);
+
     bool SupportsProtocol(string protocol);
 }

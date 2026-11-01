@@ -16,6 +16,8 @@ public static class SettingKeys
     public const string TapoUsername = "TapoUsername";
     /// <summary>Stored encrypted with <see cref="ISecretProtector"/>; an empty value means "cleared" (no env fallback).</summary>
     public const string TapoPassword = "TapoPassword";
+    /// <summary>Months of raw 10-second readings (Samples) to keep; 0 = unlimited. Daily history is never deleted.</summary>
+    public const string ReadingsRetentionMonths = "ReadingsRetentionMonths";
 }
 
 /// <summary>Values from configuration (env <c>KasaMonitor__*</c>), used when the database has no value for a key.</summary>
@@ -25,7 +27,8 @@ public sealed record KasaSettingsDefaults(
     string BroadcastNetworks = "",
     bool AutoAddDiscoveredPlugs = true,
     string? TapoUsername = null,
-    string? TapoPassword = null);
+    string? TapoPassword = null,
+    int ReadingsRetentionMonths = 0);
 
 /// <summary>Effective settings (database first, configuration as fallback).</summary>
 public sealed record KasaRuntimeSettings(
@@ -36,9 +39,11 @@ public sealed record KasaRuntimeSettings(
     bool AutoAddDiscoveredPlugs,
     string TapoUsername,
     bool HasTapoPassword,
-    TapoCredentials? TapoCredentials);
+    TapoCredentials? TapoCredentials,
+    int ReadingsRetentionMonths = 0);
 
 /// <param name="NewTapoPassword">Null or empty keeps the stored password.</param>
+/// <param name="ReadingsRetentionMonths">Null keeps the stored value.</param>
 public sealed record KasaSettingsUpdate(
     bool AutoDiscoveryEnabled,
     int AutoDiscoveryIntervalMinutes,
@@ -46,7 +51,8 @@ public sealed record KasaSettingsUpdate(
     bool AutoAddDiscoveredPlugs,
     string TapoUsername,
     string? NewTapoPassword,
-    bool ClearTapoPassword);
+    bool ClearTapoPassword,
+    int? ReadingsRetentionMonths = null);
 
 public interface IKasaSettingsService
 {
@@ -58,6 +64,7 @@ public sealed class KasaSettingsService : IKasaSettingsService
 {
     public const int MinIntervalMinutes = 1;
     public const int MaxIntervalMinutes = 1440;
+    public const int MaxRetentionMonths = 1200;
 
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly KasaSettingsDefaults _defaults;
@@ -99,8 +106,10 @@ public sealed class KasaSettingsService : IKasaSettingsService
             ? new TapoCredentials(user.Trim(), password)
             : null;
 
+        var retention = Math.Clamp(ParseInt(db, SettingKeys.ReadingsRetentionMonths) ?? _defaults.ReadingsRetentionMonths, 0, MaxRetentionMonths);
+
         return new KasaRuntimeSettings(enabled, interval, broadcastText, addrs, autoAdd,
-            user, !string.IsNullOrEmpty(password), creds);
+            user, !string.IsNullOrEmpty(password), creds, retention);
     }
 
     public async Task SaveAsync(KasaSettingsUpdate update, CancellationToken ct)
@@ -117,6 +126,9 @@ public sealed class KasaSettingsService : IKasaSettingsService
         await repo.SetAsync(SettingKeys.BroadcastNetworks, update.BroadcastNetworks.Trim(), ct);
         await repo.SetAsync(SettingKeys.AutoAddDiscoveredPlugs, update.AutoAddDiscoveredPlugs ? "true" : "false", ct);
         await repo.SetAsync(SettingKeys.TapoUsername, update.TapoUsername.Trim(), ct);
+        if (update.ReadingsRetentionMonths is { } months)
+            await repo.SetAsync(SettingKeys.ReadingsRetentionMonths,
+                Math.Clamp(months, 0, MaxRetentionMonths).ToString(CultureInfo.InvariantCulture), ct);
         if (update.ClearTapoPassword)
             await repo.SetAsync(SettingKeys.TapoPassword, "", ct);
         else if (!string.IsNullOrEmpty(update.NewTapoPassword))

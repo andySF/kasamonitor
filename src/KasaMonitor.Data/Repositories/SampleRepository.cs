@@ -30,10 +30,25 @@ public sealed class SampleRepository : ISampleRepository
             .Select(s => Map(s))
             .ToListAsync(ct);
 
-    public async Task<int> DeleteOlderThanAsync(DateTimeOffset cutoffUtc, CancellationToken ct) =>
-        await _db.Samples
-            .Where(s => s.TimestampUtc < cutoffUtc)
-            .ExecuteDeleteAsync(ct);
+    public async Task<int> CountOlderThanAsync(DateTimeOffset cutoffUtc, CancellationToken ct) =>
+        await _db.Samples.AsNoTracking().CountAsync(s => s.TimestampUtc < cutoffUtc, ct);
+
+    public async Task<int> DeleteOlderThanAsync(DateTimeOffset cutoffUtc, CancellationToken ct, int batchSize = 5000)
+    {
+        var total = 0;
+        while (true)
+        {
+            // DELETE ... WHERE Id IN (SELECT Id ... LIMIT n): each batch is its own short transaction.
+            var deleted = await _db.Samples
+                .Where(s => s.TimestampUtc < cutoffUtc)
+                .OrderBy(s => s.Id)
+                .Take(batchSize)
+                .ExecuteDeleteAsync(ct);
+            total += deleted;
+            if (deleted < batchSize) return total;
+            await Task.Yield();
+        }
+    }
 
     private static SampleEntity MapToEntity(Sample s) => new()
     {

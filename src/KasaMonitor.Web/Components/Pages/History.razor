@@ -1,7 +1,9 @@
 @page "/history"
 @rendermode InteractiveServer
+@using KasaMonitor.Core.History
 @inject IServiceScopeFactory ScopeFactory
 @inject NavigationManager Nav
+@inject KasaMonitor.Core.Costing.TariffCalculator Tariff
 
 <PageTitle>KasaMonitor — History</PageTitle>
 <h1>History</h1>
@@ -14,7 +16,8 @@ else
 {
     <div class="history-controls">
         <label>Plug:
-            <select value="@_selectedPlugId" @onchange="OnPlugChanged">
+            <select value="@(_allSelected ? AllValue : _selectedPlugId.ToString())" @onchange="OnPlugChanged">
+                <option value="@AllValue">Toate</option>
                 @foreach (var p in _plugs.OrderBy(p => p.Alias))
                 {
                     <option value="@p.Id">@p.Alias</option>
@@ -30,7 +33,56 @@ else
         </label>
     </div>
 
-    @if (_dailyData is null)
+    @if (_allSelected)
+    {
+        @if (_all is null)
+        {
+            <p><em>Loading data…</em></p>
+        }
+        else if (_all.Days.Count == 0)
+        {
+            <p><em>No daily history yet — wait for the HistorySync worker (every 6h, or on plug discovery).</em></p>
+        }
+        else
+        {
+            <h3>Energy per day, all plugs (kWh)</h3>
+            <ApexChart @key="_chartKey" TItem="DayPoint" Title="kWh / day" Options="_allChartOptions">
+                @foreach (var s in _all.Series)
+                {
+                    <ApexPointSeries TItem="DayPoint"
+                                     Items="@Points(s)"
+                                     Name="@s.Alias"
+                                     Color="@s.Color"
+                                     SeriesType="SeriesType.Bar"
+                                     XValue="@(d => d.Date)"
+                                     YValue="@(d => d.Kwh)" />
+                }
+            </ApexChart>
+
+            <table class="totals-table">
+                <thead><tr><th>Plug</th><th>kWh</th><th>Cost (RON)</th></tr></thead>
+                <tbody>
+                    @foreach (var s in _all.Series)
+                    {
+                        <tr>
+                            <td><span class="swatch" style="background:@s.Color"></span>@s.Alias</td>
+                            <td>@((s.TotalWh / 1000.0).ToString("0.000"))</td>
+                            <td>@Tariff.CostFromWh(s.TotalWh).ToString("0.00")</td>
+                        </tr>
+                    }
+                </tbody>
+                <tfoot>
+                    <tr>
+                        <th>Total</th>
+                        <th>@((_all.TotalWh / 1000.0).ToString("0.000"))</th>
+                        <th>@Tariff.CostFromWh(_all.TotalWh).ToString("0.00")</th>
+                    </tr>
+                </tfoot>
+            </table>
+            <p class="note">@_all.Days.First().ToString("yyyy-MM-dd") – @_all.Days.Last().ToString("yyyy-MM-dd"), tariff @Tariff.RonPerKwh.ToString("0.00") RON/kWh. Withdrawn and unsupported plugs are not included.</p>
+        }
+    }
+    else if (_dailyData is null)
     {
         <p><em>Loading data…</em></p>
     }
@@ -57,22 +109,36 @@ else
     .history-controls { display: flex; gap: 1em; margin-bottom: 1em; }
     .history-controls label { display: flex; gap: 0.4em; align-items: center; }
     .history-controls select { padding: 0.3em; }
+    .totals-table { border-collapse: collapse; margin-top: 1em; }
+    .totals-table th, .totals-table td { padding: 0.3em 0.8em; border-bottom: 1px solid #eee; text-align: left; }
+    .totals-table td:nth-child(n+2), .totals-table th:nth-child(n+2) { text-align: right; }
+    .totals-table .swatch { display: inline-block; width: 0.9em; height: 0.9em; margin-right: 0.5em; vertical-align: -0.1em; border-radius: 2px; }
+    .note { color: #888; font-size: 0.85em; }
 </style>
 
 @code {
+    private const string AllValue = "all";
+
     [SupplyParameterFromQuery(Name = "plugId")] public Guid? QueryPlugId { get; set; }
 
     private List<Plug>? _plugs;
     private Guid _selectedPlugId;
+    private bool _allSelected = true;
     private int _rangeDays = 30;
     private List<DailyKwhPoint>? _dailyData;
+    private AllPlugsDailyEnergy? _all;
     private int _chartKey;
     private ApexChartOptions<DailyKwhPoint> _chartOptions = new()
     {
         Chart = new Chart { Toolbar = new Toolbar { Show = false } }
     };
+    private ApexChartOptions<DayPoint> _allChartOptions = new();
 
     public record DailyKwhPoint(string Date, long EnergyWh);
+    public record DayPoint(string Date, decimal Kwh);
+
+    private IEnumerable<DayPoint> Points(PlugDailySeries s) =>
+        _all!.Days.Select((d, i) => new DayPoint(d.ToString("yyyy-MM-dd"), s.DailyWh[i] / 1000m)).ToList();
 
     protected override async Task OnInitializedAsync()
     {
@@ -81,17 +147,26 @@ else
         _plugs = (await repo.ListAllAsync(CancellationToken.None)).Where(p => !p.IsArchived).ToList();
         if (_plugs.Count > 0)
         {
-            _selectedPlugId = QueryPlugId is { } qp && _plugs.Any(p => p.Id == qp)
-                ? qp
-                : _plugs.First().Id;
+            if (QueryPlugId is { } qp && _plugs.Any(p => p.Id == qp))
+            {
+                _allSelected = false;
+                _selectedPlugId = qp;
+            }
             await ReloadDataAsync();
         }
     }
 
     private async Task OnPlugChanged(ChangeEventArgs e)
     {
-        if (Guid.TryParse(e.Value?.ToString(), out var id))
+        var value = e.Value?.ToString();
+        if (value == AllValue)
         {
+            _allSelected = true;
+            await ReloadDataAsync();
+        }
+        else if (Guid.TryParse(value, out var id))
+        {
+            _allSelected = false;
             _selectedPlugId = id;
             await ReloadDataAsync();
         }
@@ -108,15 +183,49 @@ else
 
     private async Task ReloadDataAsync()
     {
-        if (_selectedPlugId == Guid.Empty) return;
         using var scope = ScopeFactory.CreateScope();
         var historyRepo = scope.ServiceProvider.GetRequiredService<IHistoryRepository>();
         var to = DateOnly.FromDateTime(DateTime.UtcNow);
         var from = to.AddDays(-_rangeDays);
-        var entries = await historyRepo.GetDailyRangeAsync(_selectedPlugId, from, to, CancellationToken.None);
-        _dailyData = entries.Select(d => new DailyKwhPoint(
-            $"{d.Year:D4}-{d.Month:D2}-{d.Day:D2}", d.EnergyWh)).ToList();
+
+        if (_allSelected)
+        {
+            var rows = await historyRepo.GetDailyRangeAllAsync(from, to, CancellationToken.None);
+            _all = AllPlugsDailyEnergy.Build(_plugs!, rows);
+            _allChartOptions = BuildAllChartOptions(_all);
+        }
+        else
+        {
+            if (_selectedPlugId == Guid.Empty) return;
+            var entries = await historyRepo.GetDailyRangeAsync(_selectedPlugId, from, to, CancellationToken.None);
+            _dailyData = entries.Select(d => new DailyKwhPoint(
+                $"{d.Year:D4}-{d.Month:D2}-{d.Day:D2}", d.EnergyWh)).ToList();
+        }
         _chartKey++;
         StateHasChanged();
+    }
+
+    private static ApexChartOptions<DayPoint> BuildAllChartOptions(AllPlugsDailyEnergy all)
+    {
+        var inv = System.Globalization.CultureInfo.InvariantCulture;
+        var totals = string.Join(",", all.DayTotalsWh.Select(wh => (wh / 1000.0).ToString("0.000", inv)));
+        return new ApexChartOptions<DayPoint>
+        {
+            Chart = new Chart { Stacked = true, Toolbar = new Toolbar { Show = false } },
+            PlotOptions = new PlotOptions { Bar = new PlotOptionsBar { Horizontal = false } },
+            Legend = new Legend { Show = true, OnItemClick = new LegendOnItemClick { ToggleDataSeries = true } },
+            Tooltip = new Tooltip
+            {
+                Shared = true,
+                Intersect = false,
+                X = new TooltipX
+                {
+                    // Day total (all plugs) in the tooltip header; the per-plug values are listed below it.
+                    Formatter = $"function(value, opts) {{ var t = [{totals}]; var i = opts ? opts.dataPointIndex : -1; return (i >= 0 && i < t.length) ? value + ' — total ' + t[i].toFixed(3) + ' kWh' : value; }}"
+                },
+                Y = new TooltipY { Formatter = "function(value) { return value == null ? '' : value.toFixed(3) + ' kWh'; }" }
+            },
+            DataLabels = new DataLabels { Enabled = false },
+        };
     }
 }

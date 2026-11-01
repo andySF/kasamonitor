@@ -91,6 +91,18 @@ public sealed class TapoClient : ITapoClient
         return SmartMessages.MapDailyEnergyData(result, firstDay, today, tz);
     }
 
+    public async Task<DeviceDetails> GetDeviceDetailsAsync(IPAddress ip, string protocol, TapoCredentials credentials, CancellationToken ct)
+    {
+        var results = new Dictionary<string, System.Text.Json.JsonElement>();
+        var errors = new List<string>();
+        foreach (var method in DeviceDetailsParsers.SmartMethods)
+        {
+            try { results[method] = await CallAsync(ip, protocol, credentials, method, ct); }
+            catch (KasaProtocolException ex) when (ex.ErrCode != 0) { errors.Add($"{method}: not supported by this device (error {ex.ErrCode})"); }
+        }
+        return DeviceDetailsParsers.ParseSmart(results, errors, DateTimeOffset.UtcNow);
+    }
+
     private async Task<System.Text.Json.JsonElement> CallAsync(
         IPAddress ip, string protocol, TapoCredentials credentials, string method, CancellationToken ct,
         System.Text.Json.Nodes.JsonObject? parameters = null)

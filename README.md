@@ -37,7 +37,13 @@ a Docker bridge network. The database and the key ring live in `deploy/data/` (v
   protocol such as TPAP. For TPAP the UI shows the usual fix: in the Tapo app, device settings → *Third-Party
   Compatibility* off and on again, then restart the plug; it normally comes back on KLAP.
 
-The web UI texts are in Romanian.
+- **Device details** (Dashboard, "Details" on a plug card): settings read from the plug on demand (cached 60 s) —
+  relay, uptime, default state after power loss, LED, auto-off / countdown, power protection, Wi-Fi signal, firmware,
+  device time, cloud, schedules. Read-only; see `docs/device-api-capabilities.md` for everything the local APIs offer.
+- **Browser errors in the server log**: JavaScript errors and the Blazor error banner are reported to
+  `POST /api/client-error` and logged at Warning (category `KasaMonitor.ClientErrors`), so `docker logs` shows them.
+
+The web UI uses Bootstrap 5 and Bootstrap Icons, served locally (no CDN). Texts on Plugs/Settings/Integration are in Romanian.
 
 ## Settings
 

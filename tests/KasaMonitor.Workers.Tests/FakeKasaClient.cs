@@ -12,6 +12,10 @@ internal sealed class FakeKasaClient : IKasaClient
     public Func<IPAddress, int, int, Task<IReadOnlyList<DailyKwh>>>? OnGetDayStat = null;
     public Func<IPAddress, int, Task<IReadOnlyList<MonthlyKwh>>>? OnGetMonthStat = null;
     public List<DiscoveredPlug> DiscoveredPlugs { get; } = new();
+    public Func<IPAddress, Task<DeviceDetails>>? OnGetDeviceDetails = null;
+
+    public Task<DeviceDetails> GetDeviceDetailsAsync(IPAddress ip, CancellationToken ct) =>
+        OnGetDeviceDetails?.Invoke(ip) ?? throw new InvalidOperationException("OnGetDeviceDetails not set");
 
     public Task<PlugInfo> GetSysInfoAsync(IPAddress ip, CancellationToken ct) =>
         OnGetSysInfo?.Invoke(ip) ?? throw new InvalidOperationException("OnGetSysInfo not set");

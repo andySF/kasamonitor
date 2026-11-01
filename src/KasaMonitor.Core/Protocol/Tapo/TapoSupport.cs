@@ -12,7 +12,7 @@ public static class TapoSupport
 
     /// <summary>Shown in the UI next to plugs whose discovery reports a protocol the app cannot speak (TPAP, ...).</summary>
     public const string ThirdPartyCompatibilityHint =
-        "În aplicația Tapo: Setări dispozitiv → Third-Party Compatibility: oprit, apoi pornit, și repornește priza; de obicei revine pe KLAP.";
+        "În aplicația Tapo: Me → Third-Party Services → Third-Party Compatibility (setare pe cont): oprește, așteaptă 10 s, pornește din nou; priza trece pe KLAP în ~30 s și e reclasificată la următoarea scanare. Restartul prizei nu ajută.";
 
     public enum Route
     {

@@ -60,12 +60,27 @@ public sealed partial class KasaClient : IKasaClient
         return dto.MonthList.Select(m => new MonthlyKwh(m.Year, m.Month, m.EnergyWh)).ToList();
     }
 
+    public async Task<DeviceDetails> GetDeviceDetailsAsync(IPAddress ip, CancellationToken ct)
+    {
+        var json = await TcpQueryRawAsync(ip, DeviceDetailsParsers.LegacyDetailsRequest, ct);
+        return DeviceDetailsParsers.ParseLegacy(json, DateTimeOffset.UtcNow);
+    }
+
     private async Task<T> TcpQueryAsync<T>(
         IPAddress ip,
         string requestJson,
         string outerKey,
         string innerKey,
         CancellationToken ct)
+    {
+        var responseJson = await TcpQueryRawAsync(ip, requestJson, ct);
+        using var doc = JsonDocument.Parse(responseJson);
+        var inner = doc.RootElement.GetProperty(outerKey).GetProperty(innerKey);
+        return inner.Deserialize<T>()
+            ?? throw new InvalidDataException($"Null inner payload for {outerKey}.{innerKey}");
+    }
+
+    private async Task<string> TcpQueryRawAsync(IPAddress ip, string requestJson, CancellationToken ct)
     {
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         cts.CancelAfter(_timeout);
@@ -87,11 +102,7 @@ public sealed partial class KasaClient : IKasaClient
             var body = new byte[len];
             await stream.ReadExactlyAsync(body, cts.Token);
 
-            var responseJson = Encoding.UTF8.GetString(KasaCodec.Decrypt(body));
-            using var doc = JsonDocument.Parse(responseJson);
-            var inner = doc.RootElement.GetProperty(outerKey).GetProperty(innerKey);
-            return inner.Deserialize<T>()
-                ?? throw new InvalidDataException($"Null inner payload for {outerKey}.{innerKey}");
+            return Encoding.UTF8.GetString(KasaCodec.Decrypt(body));
         }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)
         {

@@ -20,5 +20,8 @@ public interface ITapoClient
     Task<IReadOnlyList<DailyKwh>> GetDailyEnergyAsync(IPAddress ip, string protocol, TapoCredentials credentials,
         DateOnly firstDay, DateOnly lastDay, DateOnly today, TimeZoneInfo tz, CancellationToken ct);
 
+    /// <summary>Settings/state for the details card: <see cref="DeviceDetailsParsers.SmartMethods"/>, each one on its own.</summary>
+    Task<DeviceDetails> GetDeviceDetailsAsync(IPAddress ip, string protocol, TapoCredentials credentials, CancellationToken ct);
+
     bool SupportsProtocol(string protocol);
 }

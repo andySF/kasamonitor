@@ -2,139 +2,166 @@
 @rendermode InteractiveServer
 @using KasaMonitor.Workers
 @using KasaMonitor.Core.Protocol.Tapo
+@using KasaMonitor.Web.Ui
 @inject IServiceScopeFactory ScopeFactory
 @inject PlugDiscoveryService Discovery
 @implements IDisposable
 
 <PageTitle>KasaMonitor — Prize</PageTitle>
-<h1>Prize</h1>
 
-<section class="discovery">
-    <div class="discovery-actions">
-        <button @onclick="ScanNowAsync" disabled="@_scanning">@(_scanning ? "Se scanează…" : "Scanează acum")</button>
-        <span class="add-ip">
-            <input @bind="_manualIp" placeholder="IP, ex. 192.168.254.146" />
-            <button @onclick="AddByIpAsync" disabled="@_adding">@(_adding ? "Se încearcă…" : "Adaugă după IP")</button>
-        </span>
+<div class="d-flex flex-wrap align-items-center justify-content-between gap-2 mb-3">
+    <h1 class="h3 mb-0"><i class="bi bi-outlet me-2"></i>Prize</h1>
+    <div class="d-flex flex-wrap gap-2">
+        <button class="btn btn-success btn-sm" @onclick="ScanNowAsync" disabled="@_scanning" title="Caută prize în rețea acum (UDP 9999 și 20002)">
+            @if (_scanning) { <span class="spinner-border spinner-border-sm me-1"></span><span>Se scanează…</span> }
+            else { <i class="bi bi-search me-1"></i><span>Scanează acum</span> }
+        </button>
+        <div class="input-group input-group-sm" style="width: 22rem;">
+            <span class="input-group-text"><i class="bi bi-plus-lg"></i></span>
+            <input class="form-control" @bind="_manualIp" placeholder="IP, ex. 192.168.1.50" />
+            <button class="btn btn-outline-primary" @onclick="AddByIpAsync" disabled="@_adding" title="Încearcă legacy (TCP 9999), apoi Tapo (UDP 20002 / KLAP / AES)">
+                @(_adding ? "Se încearcă…" : "Adaugă după IP")
+            </button>
+        </div>
     </div>
-    @if (_message is not null)
-    {
-        <p class="message">@_message</p>
-    }
+</div>
 
-    @if (Discovery.LastScan is { } scan)
-    {
-        <h3>Ultima scanare: @scan.AtUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss") — @scan.Items.Count găsite, @scan.NewCount noi, @scan.UnsupportedCount nesuportate (adăugare automată @(scan.AutoAdd ? "pornită" : "oprită"))</h3>
+@if (_message is not null)
+{
+    <div class="alert alert-info py-2 d-flex align-items-center gap-2"><i class="bi bi-info-circle"></i>@_message</div>
+}
+
+@if (Discovery.LastScan is { } scan)
+{
+    <div class="card mb-4">
+        <div class="card-header d-flex flex-wrap gap-3 align-items-center small">
+            <span class="fw-semibold"><i class="bi bi-broadcast me-1"></i>Ultima scanare</span>
+            <span title="@UiFormat.FullLocal(scan.AtUtc)">@UiFormat.RelativeRo(scan.AtUtc, DateTimeOffset.UtcNow)</span>
+            <span class="badge text-bg-light border">@scan.Items.Count găsite</span>
+            <span class="badge text-bg-success">@scan.NewCount noi</span>
+            <span class="badge text-bg-warning">@scan.UnsupportedCount nesuportate</span>
+            <span class="text-secondary">adăugare automată @(scan.AutoAdd ? "pornită" : "oprită")</span>
+        </div>
         @if (scan.Items.Count > 0)
         {
-            <table class="plugs-table">
-                <thead><tr><th>Stare</th><th>Alias</th><th>Model</th><th>MAC</th><th>IP</th><th>Protocol</th><th></th></tr></thead>
+            <div class="table-responsive">
+                <table class="table table-sm table-hover align-middle mb-0">
+                    <thead class="table-light"><tr><th>Stare</th><th>Alias</th><th>Model</th><th>MAC</th><th>IP</th><th class="text-end"></th></tr></thead>
+                    <tbody>
+                        @foreach (var i in scan.Items.OrderBy(i => i.Status).ThenBy(i => i.Plug.Info.Alias))
+                        {
+                            <tr>
+                                <td>
+                                    <span class="badge @ScanBadge(i) text-wrap text-start">@StatusText(i)</span>
+                                    @if (!i.Plug.IsSupported && TapoSupport.IsUnknownProtocolReason(i.Plug.UnsupportedReason))
+                                    {
+                                        <div class="form-text text-warning-emphasis">@TapoSupport.ThirdPartyCompatibilityHint</div>
+                                    }
+                                </td>
+                                <td>@i.Plug.Info.Alias</td>
+                                <td><span class="badge text-bg-light border">@PlugModelName.Short(i.Plug.Info.Model)</span> <span class="badge @UiFormat.ProtocolBadge(i.Plug.Protocol)">@i.Plug.Protocol</span></td>
+                                <td><code class="text-secondary small">@i.Plug.Info.Mac</code></td>
+                                <td>@i.Plug.IpAddress</td>
+                                <td class="text-end">
+                                    @if (i.PlugId is null)
+                                    {
+                                        <button class="btn btn-outline-success btn-sm" @onclick="() => AddDiscoveredAsync(i)" title="Adaugă în listă"><i class="bi bi-plus-lg"></i></button>
+                                    }
+                                </td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+        }
+    </div>
+}
+
+<div class="form-check form-switch mb-2">
+    <input class="form-check-input" type="checkbox" id="showArchived" @bind="_showArchived" />
+    <label class="form-check-label" for="showArchived">Arată retrase</label>
+</div>
+
+@if (_plugs is null)
+{
+    <p class="text-secondary"><span class="spinner-border spinner-border-sm me-2"></span>Se încarcă…</p>
+}
+else if (_plugs.Count == 0)
+{
+    <div class="alert alert-secondary">Nicio priză în baza de date. Apasă „Scanează acum” sau adaugă una după IP.</div>
+}
+else
+{
+    var now = DateTimeOffset.UtcNow;
+    <div class="card">
+        <div class="table-responsive">
+            <table class="table table-hover align-middle mb-0">
+                <thead class="table-light">
+                    <tr><th>Alias</th><th>Model</th><th>IP / MAC</th><th>Firmware</th><th>Văzută</th><th>Stare</th><th class="text-end">Acțiuni</th></tr>
+                </thead>
                 <tbody>
-                    @foreach (var i in scan.Items.OrderBy(i => i.Status).ThenBy(i => i.Plug.Info.Alias))
+                    @foreach (var p in _plugs.Where(p => _showArchived || !p.IsArchived).OrderBy(p => p.Alias))
                     {
-                        <tr>
-                            <td>
-                                @StatusText(i)
-                                @if (!i.Plug.IsSupported && TapoSupport.IsUnknownProtocolReason(i.Plug.UnsupportedReason))
+                        <tr class="@(p.IsArchived ? "opacity-50" : "")">
+                            <td style="min-width: 14rem;">
+                                @if (_editingId == p.Id)
                                 {
-                                    <div class="hint">@TapoSupport.ThirdPartyCompatibilityHint</div>
+                                    <div class="input-group input-group-sm">
+                                        <input class="form-control" @bind="_editAlias" @bind:event="oninput" />
+                                        <button class="btn btn-success" @onclick="() => SaveAlias(p.Id)" title="Salvează"><i class="bi bi-check-lg"></i></button>
+                                        <button class="btn btn-outline-secondary" @onclick="CancelEdit" title="Renunță"><i class="bi bi-x-lg"></i></button>
+                                    </div>
+                                }
+                                else
+                                {
+                                    <span class="fw-semibold">@p.Alias</span>
+                                    @if (p.AliasIsCustom) { <span class="badge text-bg-light border ms-1" title="Alias setat manual: nu se mai preia de pe priză">personalizat</span> }
+                                    <button class="btn btn-link btn-sm p-0 ms-2 align-baseline text-secondary" @onclick="() => StartEdit(p)" title="Redenumește"><i class="bi bi-pencil"></i></button>
                                 }
                             </td>
-                            <td>@i.Plug.Info.Alias</td>
-                            <td>@i.Plug.Info.Model</td>
-                            <td><code>@i.Plug.Info.Mac</code></td>
-                            <td>@i.Plug.IpAddress</td>
-                            <td>@i.Plug.Protocol</td>
                             <td>
-                                @if (i.PlugId is null)
+                                <span class="badge text-bg-light border" title="@p.Model">@PlugModelName.Short(p.Model)</span>
+                                <span class="badge @UiFormat.ProtocolBadge(p.Protocol)">@p.Protocol</span>
+                            </td>
+                            <td>
+                                <div>@p.IpAddress</div>
+                                <code class="text-secondary small">@p.Mac</code>
+                            </td>
+                            <td class="small text-nowrap">@(string.IsNullOrEmpty(p.SwVer) ? "—" : p.SwVer.Split(' ')[0])</td>
+                            <td class="small text-nowrap">
+                                <div title="Ultima dată: @UiFormat.FullLocal(p.LastSeenUtc)"><i class="bi bi-clock me-1 text-secondary"></i>@UiFormat.RelativeRo(p.LastSeenUtc, now)</div>
+                                <div class="text-secondary" title="Prima dată: @UiFormat.FullLocal(p.FirstSeenUtc)">din @p.FirstSeenUtc.ToLocalTime().ToString("yyyy-MM-dd")</div>
+                            </td>
+                            <td style="max-width: 22rem;">
+                                @if (p.IsArchived) { <span class="badge text-bg-secondary">retrasă</span> }
+                                else if (!p.IsSupported)
                                 {
-                                    <button @onclick="() => AddDiscoveredAsync(i)">Adaugă</button>
+                                    <span class="badge text-bg-warning text-wrap text-start">@TapoSupport.Describe(p.Model, p.UnsupportedReason!)</span>
+                                    @if (TapoSupport.IsUnknownProtocolReason(p.UnsupportedReason))
+                                    {
+                                        <div class="form-text text-warning-emphasis">@TapoSupport.ThirdPartyCompatibilityHint</div>
+                                    }
+                                }
+                                else { <span class="badge text-bg-success">activă</span> }
+                            </td>
+                            <td class="text-end text-nowrap">
+                                <a class="btn btn-outline-secondary btn-sm" href="/history?plugId=@p.Id" title="Istoric"><i class="bi bi-bar-chart"></i></a>
+                                @if (p.IsArchived)
+                                {
+                                    <button class="btn btn-outline-success btn-sm" @onclick="() => ToggleArchive(p)" title="Readu: priza e interogată din nou și reapare în /metrics"><i class="bi bi-arrow-counterclockwise"></i></button>
+                                }
+                                else
+                                {
+                                    <button class="btn btn-outline-secondary btn-sm" @onclick="() => ToggleArchive(p)" title="Retrage: nu mai e interogată și nu mai apare în /metrics"><i class="bi bi-archive"></i></button>
                                 }
                             </td>
                         </tr>
                     }
                 </tbody>
             </table>
-        }
-    }
-</section>
-
-<label class="show-archived"><input type="checkbox" @bind="_showArchived" /> Arată retrase</label>
-
-@if (_plugs is null)
-{
-    <p><em>Se încarcă…</em></p>
+        </div>
+    </div>
 }
-else if (_plugs.Count == 0)
-{
-    <p><em>Nicio priză în baza de date. Apasă „Scanează acum” sau adaugă una după IP.</em></p>
-}
-else
-{
-    <table class="plugs-table">
-        <thead>
-            <tr><th>Alias</th><th>MAC</th><th>IP</th><th>Model</th><th>Protocol</th><th>SwVer</th><th>Prima dată</th><th>Ultima dată</th><th>Stare</th><th></th></tr>
-        </thead>
-        <tbody>
-            @foreach (var p in _plugs.Where(p => _showArchived || !p.IsArchived).OrderBy(p => p.Alias))
-            {
-                <tr class="@(p.IsArchived ? "archived" : "") @(p.IsSupported ? "" : "unsupported")">
-                    <td>
-                        @if (_editingId == p.Id)
-                        {
-                            <input @bind="_editAlias" />
-                            <button @onclick="() => SaveAlias(p.Id)">Salvează</button>
-                            <button @onclick="CancelEdit">Renunță</button>
-                        }
-                        else
-                        {
-                            <span>@p.Alias</span> @if (p.AliasIsCustom) { <small>(personalizat)</small> }
-                            <button @onclick="() => StartEdit(p)">Editează</button>
-                        }
-                    </td>
-                    <td><code>@p.Mac</code></td>
-                    <td>@p.IpAddress</td>
-                    <td>@p.Model</td>
-                    <td>@p.Protocol</td>
-                    <td>@p.SwVer</td>
-                    <td>@p.FirstSeenUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm")</td>
-                    <td>@p.LastSeenUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm")</td>
-                    <td>
-                        @if (p.IsArchived) { <span>retrasă</span> }
-                        else if (!p.IsSupported)
-                        {
-                            <span>@TapoSupport.Describe(p.Model, p.UnsupportedReason!)</span>
-                            @if (TapoSupport.IsUnknownProtocolReason(p.UnsupportedReason))
-                            {
-                                <div class="hint">@TapoSupport.ThirdPartyCompatibilityHint</div>
-                            }
-                        }
-                        else { <span>activă</span> }
-                    </td>
-                    <td>
-                        <button @onclick="() => ToggleArchive(p)" title="O priză retrasă nu mai e interogată și nu mai apare în /metrics">@(p.IsArchived ? "Readu" : "Retrage")</button>
-                    </td>
-                </tr>
-            }
-        </tbody>
-    </table>
-}
-
-<style>
-    .discovery { margin-bottom: 1.5em; }
-    .discovery-actions { display: flex; flex-wrap: wrap; gap: 1em; align-items: center; }
-    .discovery-actions button { padding: 0.4em 1em; }
-    .add-ip input { padding: 0.3em 0.5em; width: 16em; }
-    .message { margin: 0.6em 0; }
-    .hint { color: #a60; font-size: 0.85em; max-width: 40em; }
-    .show-archived { display: block; margin: 0.5em 0; }
-    .plugs-table { width: 100%; border-collapse: collapse; }
-    .plugs-table th, .plugs-table td { padding: 0.4em 0.6em; border-bottom: 1px solid #eee; text-align: left; vertical-align: top; }
-    .plugs-table tr.archived { opacity: 0.5; }
-    .plugs-table tr.unsupported { background: #fff8e8; }
-    .plugs-table button { margin-left: 0.4em; }
-    .plugs-table input { padding: 0.2em 0.4em; }
-</style>
 
 @code {
     private List<Plug>? _plugs;
@@ -160,6 +187,14 @@ else
         _plugs = (await repo.ListAllAsync(CancellationToken.None)).ToList();
         StateHasChanged();
     }
+
+    private static string ScanBadge(DiscoveryResultItem i) => i.Status switch
+    {
+        DiscoveryStatus.New => "text-bg-primary",
+        DiscoveryStatus.Added => "text-bg-success",
+        DiscoveryStatus.Known => "text-bg-light border",
+        _ => "text-bg-warning",
+    };
 
     private static string StatusText(DiscoveryResultItem i) => i.Status switch
     {

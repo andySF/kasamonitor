@@ -6,17 +6,17 @@
 @inject KasaMonitor.Core.Costing.TariffCalculator Tariff
 
 <PageTitle>KasaMonitor — History</PageTitle>
-<h1>History</h1>
+<h1 class="h3 mb-3"><i class="bi bi-bar-chart me-2"></i>History</h1>
 
 @if (_plugs is null || _plugs.Count == 0)
 {
-    <p><em>No plugs available.</em></p>
+    <div class="alert alert-secondary">No plugs available.</div>
 }
 else
 {
-    <div class="history-controls">
-        <label>Plug:
-            <select value="@(_allSelected ? AllValue : _selectedPlugId.ToString())" @onchange="OnPlugChanged">
+    <div class="d-flex flex-wrap gap-3 mb-3">
+        <label class="d-flex align-items-center gap-2">Plug
+            <select class="form-select form-select-sm w-auto" value="@(_allSelected ? AllValue : _selectedPlugId.ToString())" @onchange="OnPlugChanged">
                 <option value="@AllValue">Toate</option>
                 @foreach (var p in _plugs.OrderBy(p => p.Alias))
                 {
@@ -24,8 +24,8 @@ else
                 }
             </select>
         </label>
-        <label>Range:
-            <select value="@_rangeDays" @onchange="OnRangeChanged">
+        <label class="d-flex align-items-center gap-2">Range
+            <select class="form-select form-select-sm w-auto" value="@_rangeDays" @onchange="OnRangeChanged">
                 <option value="7">Last 7 days</option>
                 <option value="30">Last 30 days</option>
                 <option value="365">Last 12 months</option>
@@ -37,15 +37,16 @@ else
     {
         @if (_all is null)
         {
-            <p><em>Loading data…</em></p>
+            <p class="text-secondary"><span class="spinner-border spinner-border-sm me-2"></span>Loading data…</p>
         }
         else if (_all.Days.Count == 0)
         {
-            <p><em>No daily history yet — wait for the HistorySync worker (every 6h, or on plug discovery).</em></p>
+            <div class="alert alert-secondary">No daily history yet — it is read from the plugs every 6 h and right after a plug is added.</div>
         }
         else
         {
-            <h3>Energy per day, all plugs (kWh)</h3>
+            <div class="card mb-3"><div class="card-body">
+            <h2 class="h6 text-secondary">Energy per day, all plugs (kWh)</h2>
             <ApexChart @key="_chartKey" TItem="DayPoint" Title="kWh / day" Options="_allChartOptions">
                 @foreach (var s in _all.Series)
                 {
@@ -58,9 +59,11 @@ else
                                      YValue="@(d => d.Kwh)" />
                 }
             </ApexChart>
+            </div></div>
 
-            <table class="totals-table">
-                <thead><tr><th>Plug</th><th>kWh</th><th>Cost (RON)</th></tr></thead>
+            <div class="card" style="max-width: 32rem;">
+            <table class="table table-sm mb-0 totals-table">
+                <thead class="table-light"><tr><th>Plug</th><th>kWh</th><th>Cost (RON)</th></tr></thead>
                 <tbody>
                     @foreach (var s in _all.Series)
                     {
@@ -79,20 +82,22 @@ else
                     </tr>
                 </tfoot>
             </table>
-            <p class="note">@_all.Days.First().ToString("yyyy-MM-dd") – @_all.Days.Last().ToString("yyyy-MM-dd"), tariff @Tariff.RonPerKwh.ToString("0.00") RON/kWh. Withdrawn and unsupported plugs are not included.</p>
+            </div>
+            <p class="form-text">@_all.Days.First().ToString("yyyy-MM-dd") – @_all.Days.Last().ToString("yyyy-MM-dd"), tariff @Tariff.RonPerKwh.ToString("0.00") RON/kWh. Withdrawn and unsupported plugs are not included.</p>
         }
     }
     else if (_dailyData is null)
     {
-        <p><em>Loading data…</em></p>
+        <p class="text-secondary"><span class="spinner-border spinner-border-sm me-2"></span>Loading data…</p>
     }
     else if (_dailyData.Count == 0)
     {
-        <p><em>No daily history yet for this plug — wait for the HistorySync worker (every 6h, or on plug discovery).</em></p>
+        <div class="alert alert-secondary">No daily history yet for this plug — it is read every 6 h and right after a plug is added.</div>
     }
     else
     {
-        <h3>Energy per day (kWh)</h3>
+        <div class="card"><div class="card-body">
+        <h2 class="h6 text-secondary">Energy per day (kWh)</h2>
         <ApexChart @key="_chartKey" TItem="DailyKwhPoint" Title="kWh / day"
                    Options="_chartOptions">
             <ApexPointSeries TItem="DailyKwhPoint"
@@ -102,18 +107,13 @@ else
                              XValue="@(d => d.Date)"
                              YValue="@(d => (decimal)(d.EnergyWh / 1000.0))" />
         </ApexChart>
+        </div></div>
     }
 }
 
 <style>
-    .history-controls { display: flex; gap: 1em; margin-bottom: 1em; }
-    .history-controls label { display: flex; gap: 0.4em; align-items: center; }
-    .history-controls select { padding: 0.3em; }
-    .totals-table { border-collapse: collapse; margin-top: 1em; }
-    .totals-table th, .totals-table td { padding: 0.3em 0.8em; border-bottom: 1px solid #eee; text-align: left; }
     .totals-table td:nth-child(n+2), .totals-table th:nth-child(n+2) { text-align: right; }
     .totals-table .swatch { display: inline-block; width: 0.9em; height: 0.9em; margin-right: 0.5em; vertical-align: -0.1em; border-radius: 2px; }
-    .note { color: #888; font-size: 0.85em; }
 </style>
 
 @code {

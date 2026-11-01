@@ -9,5 +9,7 @@ public interface IKasaClient
     Task<EmeterReading> GetRealtimeAsync(IPAddress ip, CancellationToken ct);
     Task<IReadOnlyList<DailyKwh>> GetDayStatAsync(IPAddress ip, int year, int month, CancellationToken ct);
     Task<IReadOnlyList<MonthlyKwh>> GetMonthStatAsync(IPAddress ip, int year, CancellationToken ct);
+    /// <summary>Settings/state for the details card (one multi-module request, see <see cref="DeviceDetailsParsers.LegacyDetailsRequest"/>).</summary>
+    Task<DeviceDetails> GetDeviceDetailsAsync(IPAddress ip, CancellationToken ct);
     IAsyncEnumerable<DiscoveredPlug> DiscoverAsync(IReadOnlyList<IPAddress> broadcastAddresses, TimeSpan timeout, CancellationToken ct);
 }

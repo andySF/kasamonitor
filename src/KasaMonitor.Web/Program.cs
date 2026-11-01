@@ -103,7 +103,12 @@ builder.Services.AddHostedService(sp => new RollupWorker(
 
 builder.Services.AddHostedService<KasaMetrics>();
 
+builder.Services.AddSingleton(sp => new DeviceDetailsService(
+    sp.GetRequiredService<IKasaClient>(),
+    sp.GetRequiredService<ITapoClient>(),
+    sp.GetRequiredService<IKasaSettingsService>()));
 builder.Services.AddSingleton<MetricsScrapeLog>();
+builder.Services.AddSingleton<KasaMonitor.Web.Diagnostics.ClientErrorEndpoint>();
 builder.Services.AddSingleton<PrometheusTargetsChecker>();
 
 var app = builder.Build();
@@ -129,6 +134,10 @@ app.MapGet("/health", async (KasaDbContext ctx) =>
 });
 
 app.MapMetrics();
+
+app.MapPost("/api/client-error", (KasaMonitor.Web.Diagnostics.ClientErrorReport report, HttpContext ctx,
+        KasaMonitor.Web.Diagnostics.ClientErrorEndpoint endpoint) => endpoint.Handle(report, ctx))
+    .DisableAntiforgery();
 
 // Downloads for /integration (generated from the embedded deploy/ files; no secrets involved).
 var integration = app.MapGroup("/integration/files");

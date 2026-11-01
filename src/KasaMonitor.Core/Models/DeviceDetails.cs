@@ -21,6 +21,7 @@ public sealed record DeviceDetails(
         public const string Device = "Device";
         public const string Time = "Time";
         public const string Schedules = "Schedules";
+        public const string Meter = "Meter";
     }
 
     public string? Get(string label) => Items.FirstOrDefault(i => i.Label == label)?.Value;

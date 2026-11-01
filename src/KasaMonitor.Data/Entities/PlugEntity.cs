@@ -21,4 +21,7 @@ public sealed class PlugEntity
 
     /// <summary>Non-null: the plug answered discovery but cannot be queried; it is listed, never polled.</summary>
     public string? UnsupportedReason { get; set; }
+
+    /// <summary>Measured channel of a multi-channel device (Shelly EM: 0/1); 0 for plugs. Unique together with <see cref="Mac"/>.</summary>
+    public int Channel { get; set; }
 }

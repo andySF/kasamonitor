@@ -14,14 +14,16 @@ public sealed record AllPlugsDailyEnergy(
 {
     /// <summary>
     /// Sums the rows per plug and day, keeps only polled plugs (<see cref="Plug.IsPolled"/>: withdrawn and unsupported
-    /// plugs are excluded), and aligns every series on the days that have data for at least one included plug.
+    /// plugs are excluded) that count towards totals (energy meters such as Shelly EM are excluded, they already contain
+    /// the plugs behind them: <see cref="PlugChannel.CountsInTotals"/>), and aligns every series on the days that have
+    /// data for at least one included plug.
     /// Plugs without any row in the range get no series. Colors come from <see cref="PlugColors"/>.
     /// </summary>
     public static AllPlugsDailyEnergy Build(IEnumerable<Plug> plugs, IEnumerable<PlugDailyKwh> rows)
     {
         var plugList = plugs.ToList();
         var colors = PlugColors.Assign(plugList);
-        var polled = plugList.Where(p => p.IsPolled).ToDictionary(p => p.Id);
+        var polled = plugList.Where(p => p.IsPolled && PlugChannel.CountsInTotals(p.Model)).ToDictionary(p => p.Id);
 
         var sums = new Dictionary<(Guid PlugId, DateOnly Day), long>();
         foreach (var r in rows)

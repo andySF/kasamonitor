@@ -28,6 +28,13 @@ public static class UiFormat
         PlugProtocols.Legacy => "text-bg-primary",
         PlugProtocols.Klap => "text-bg-success",
         PlugProtocols.Aes => "text-bg-info",
+        PlugProtocols.ShellyRpc => "text-bg-dark",
         _ => "text-bg-warning",
     };
+
+    /// <summary>Tooltip of a model badge: "Shelly EM Gen3 (EMG3), S3EM-002CXCEU" for Shelly (HwVer holds the app), the model otherwise.</summary>
+    public static string ModelTitle(string model, string hwVer, string protocol) =>
+        protocol == PlugProtocols.ShellyRpc
+            ? $"{KasaMonitor.Core.Protocol.Shelly.ShellySupport.FriendlyModel(model, hwVer)}, {model}"
+            : model;
 }

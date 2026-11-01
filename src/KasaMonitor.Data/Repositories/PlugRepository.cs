@@ -13,7 +13,7 @@ public sealed class PlugRepository : IPlugRepository
 
     public async Task<Guid> UpsertFromDiscoveryAsync(DiscoveredPlug discovered, DateTimeOffset utcNow, CancellationToken ct)
     {
-        var existing = await _db.Plugs.FirstOrDefaultAsync(p => p.Mac == discovered.Info.Mac, ct);
+        var existing = await _db.Plugs.FirstOrDefaultAsync(p => p.Mac == discovered.Info.Mac && p.Channel == discovered.Channel, ct);
         if (existing is null)
         {
             var entity = new PlugEntity
@@ -31,7 +31,8 @@ public sealed class PlugRepository : IPlugRepository
                 LastSeenUtc = utcNow,
                 IsArchived = false,
                 Protocol = discovered.Protocol,
-                UnsupportedReason = discovered.UnsupportedReason
+                UnsupportedReason = discovered.UnsupportedReason,
+                Channel = discovered.Channel
             };
             _db.Plugs.Add(entity);
             await _db.SaveChangesAsync(ct);
@@ -70,9 +71,11 @@ public sealed class PlugRepository : IPlugRepository
     public async Task<IReadOnlyList<Plug>> ListAllAsync(CancellationToken ct) =>
         await _db.Plugs.AsNoTracking().Select(p => Map(p)).ToListAsync(ct);
 
-    public async Task<Plug?> GetByMacAsync(string mac, CancellationToken ct)
+    public Task<Plug?> GetByMacAsync(string mac, CancellationToken ct) => GetByMacAsync(mac, 0, ct);
+
+    public async Task<Plug?> GetByMacAsync(string mac, int channel, CancellationToken ct)
     {
-        var e = await _db.Plugs.AsNoTracking().FirstOrDefaultAsync(p => p.Mac == mac, ct);
+        var e = await _db.Plugs.AsNoTracking().FirstOrDefaultAsync(p => p.Mac == mac && p.Channel == channel, ct);
         return e is null ? null : Map(e);
     }
 
@@ -108,5 +111,6 @@ public sealed class PlugRepository : IPlugRepository
         IsArchived: e.IsArchived,
         Notes: e.Notes,
         Protocol: e.Protocol,
-        UnsupportedReason: e.UnsupportedReason);
+        UnsupportedReason: e.UnsupportedReason,
+        Channel: e.Channel);
 }

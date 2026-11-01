@@ -1,6 +1,7 @@
 using KasaMonitor.Core.Abstractions;
 using KasaMonitor.Core.Models;
 using KasaMonitor.Core.Protocol;
+using KasaMonitor.Core.Protocol.Shelly;
 using KasaMonitor.Core.Protocol.Tapo;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
@@ -31,8 +32,9 @@ public sealed record DiscoveryScan(DateTimeOffset AtUtc, bool AutoAdd, IReadOnly
 public sealed record AddByIpResult(bool Success, string Message, Guid? PlugId);
 
 /// <summary>
-/// Single owner of "find plugs and put them in the database": legacy UDP 9999 broadcast + Tapo UDP 20002 probe,
-/// classification (supported / unsupported), auto-add, one-click add and add-by-IP. Used by <see cref="DiscoveryWorker"/>
+/// Single owner of "find plugs and put them in the database": legacy UDP 9999 broadcast + Tapo UDP 20002 probe +
+/// Shelly mDNS / probe hosts, classification (supported / unsupported), auto-add, one-click add and add-by-IP.
+/// A plug's identity is (MAC, channel): a multi-channel Shelly meter yields one entry per measured channel. Used by <see cref="DiscoveryWorker"/>
 /// and by the /plugs page ("Scanează acum").
 /// </summary>
 public sealed class PlugDiscoveryService
@@ -44,7 +46,11 @@ public sealed class PlugDiscoveryService
     private readonly IPlugDiscoveredChannel _channel;
     private readonly TimeSpan _scanTimeout;
     private readonly ILogger<PlugDiscoveryService> _log;
+    private readonly IShellyClient? _shelly;
     private readonly SemaphoreSlim _gate = new(1, 1);
+
+    /// <summary>Timeout of the Shelly.GetDeviceInfo probe of each mDNS answer / <c>ShellyProbeHosts</c> address.</summary>
+    public static readonly TimeSpan ShellyProbeTimeout = TimeSpan.FromSeconds(1);
 
     public PlugDiscoveryService(
         IKasaClient kasa,
@@ -53,8 +59,10 @@ public sealed class PlugDiscoveryService
         IKasaSettingsService settings,
         IPlugDiscoveredChannel channel,
         TimeSpan scanTimeout,
-        ILogger<PlugDiscoveryService> log)
+        ILogger<PlugDiscoveryService> log,
+        IShellyClient? shelly = null)
     {
+        _shelly = shelly;
         _kasa = kasa;
         _tapo = tapo;
         _scopeFactory = scopeFactory;
@@ -70,20 +78,20 @@ public sealed class PlugDiscoveryService
     public async Task<DiscoveryScan> ScanAsync(CancellationToken ct)
     {
         var settings = await _settings.GetAsync(ct);
-        var found = await DiscoverAllAsync(settings.BroadcastAddresses, settings.TapoCredentials, ct);
+        var found = await DiscoverAllAsync(settings, ct);
 
         await _gate.WaitAsync(ct);
         try
         {
             using var scope = _scopeFactory.CreateScope();
             var repo = scope.ServiceProvider.GetRequiredService<IPlugRepository>();
-            var existing = (await repo.ListAllAsync(ct)).ToDictionary(p => p.Mac, StringComparer.Ordinal);
+            var existing = (await repo.ListAllAsync(ct)).ToDictionary(p => (p.Mac, p.Channel));
             var now = DateTimeOffset.UtcNow;
             var items = new List<DiscoveryResultItem>();
 
             foreach (var dp in found)
             {
-                existing.TryGetValue(dp.Info.Mac, out var known);
+                existing.TryGetValue((dp.Info.Mac, dp.Channel), out var known);
                 if (known is not null)
                 {
                     var id = await repo.UpsertFromDiscoveryAsync(dp, now, ct);
@@ -110,9 +118,9 @@ public sealed class PlugDiscoveryService
             var scan = new DiscoveryScan(now, settings.AutoAddDiscoveredPlugs, items);
             LastScan = scan;
             _log.LogInformation(
-                "Discovery on {Networks}: found {Found}, new {New}, unsupported {Unsupported} (auto-add {AutoAdd})",
-                string.Join(",", settings.BroadcastAddresses), items.Count, scan.NewCount, scan.UnsupportedCount,
-                settings.AutoAddDiscoveredPlugs ? "on" : "off");
+                "Discovery on {Networks}: found {Found} (Shelly channels {Shelly}), new {New}, unsupported {Unsupported} (auto-add {AutoAdd})",
+                string.Join(",", settings.BroadcastAddresses), items.Count, items.Count(i => i.Plug.Protocol == PlugProtocols.ShellyRpc),
+                scan.NewCount, scan.UnsupportedCount, settings.AutoAddDiscoveredPlugs ? "on" : "off");
             return scan;
         }
         finally
@@ -129,7 +137,7 @@ public sealed class PlugDiscoveryService
         {
             using var scope = _scopeFactory.CreateScope();
             var repo = scope.ServiceProvider.GetRequiredService<IPlugRepository>();
-            var before = await repo.GetByMacAsync(plug.Info.Mac, ct);
+            var before = await repo.GetByMacAsync(plug.Info.Mac, plug.Channel, ct);
             var wasKnown = before is not null;
             var id = await repo.UpsertFromDiscoveryAsync(plug, DateTimeOffset.UtcNow, ct);
             if (wasKnown && !before!.IsSupported && plug.IsSupported)
@@ -137,14 +145,14 @@ public sealed class PlugDiscoveryService
             if (!wasKnown)
             {
                 _channel.Publish(id);
-                _log.LogInformation("Added plug {Mac} ({Alias}, {Protocol}) at {Ip} -> Id {Id}",
-                    plug.Info.Mac, plug.Info.Alias, plug.Protocol, plug.IpAddress, id);
+                _log.LogInformation("Added plug {Mac} channel {Channel} ({Alias}, {Protocol}) at {Ip} -> Id {Id}",
+                    plug.Info.Mac, plug.Channel, plug.Info.Alias, plug.Protocol, plug.IpAddress, id);
             }
             if (LastScan is { } scan)
             {
                 LastScan = scan with
                 {
-                    Items = scan.Items.Select(i => i.Plug.Info.Mac == plug.Info.Mac
+                    Items = scan.Items.Select(i => i.Plug.Info.Mac == plug.Info.Mac && i.Plug.Channel == plug.Channel
                         ? i with { Status = plug.IsSupported ? DiscoveryStatus.Added : DiscoveryStatus.Unsupported, PlugId = id }
                         : i).ToList()
                 };
@@ -157,7 +165,10 @@ public sealed class PlugDiscoveryService
         }
     }
 
-    /// <summary>Manual add: legacy sysinfo on TCP 9999, then the Tapo probe on UDP 20002 (+ KLAP/AES), then KLAP and AES directly.</summary>
+    /// <summary>
+    /// Manual add: legacy sysinfo on TCP 9999, then the Tapo probe on UDP 20002 (+ KLAP/AES), then KLAP and AES directly,
+    /// then Shelly.GetDeviceInfo over HTTP (one entry per measured channel).
+    /// </summary>
     public async Task<AddByIpResult> AddByIpAsync(IPAddress ip, CancellationToken ct)
     {
         var settings = await _settings.GetAsync(ct);
@@ -204,9 +215,30 @@ public sealed class PlugDiscoveryService
             }
         }
 
+        if (dp is null && _shelly is not null)
+        {
+            var shellyPlugs = await ResolveShellyAsync(ip, settings.ShellyCredentials, ct, timeout: null);
+            if (shellyPlugs.Count > 0)
+            {
+                Guid? firstId = null;
+                foreach (var sp in shellyPlugs)
+                {
+                    var spId = await AddAsync(sp, ct);
+                    firstId ??= spId;
+                }
+                var first = shellyPlugs[0];
+                var shellyMsg = first.IsSupported
+                    ? $"{ip}: adăugat {ShellySupport.FriendlyModel(first.Info.Model, first.Info.HwVer)}, {shellyPlugs.Count} canal(e): " +
+                      string.Join(", ", shellyPlugs.Select(s => $"„{s.Info.Alias}”")) + "."
+                    : $"{ip}: adăugat în listă ca {TapoSupport.Describe(first.Info.Model, first.UnsupportedReason!)}.";
+                return new AddByIpResult(true, shellyMsg, firstId);
+            }
+        }
+
         if (dp is null)
             return new AddByIpResult(false,
-                $"{ip}: nu răspunde nici pe protocolul legacy (TCP 9999: {legacyError}), nici la descoperirea Tapo (UDP 20002) / KLAP / AES.", null);
+                $"{ip}: nu răspunde nici pe protocolul legacy (TCP 9999: {legacyError}), nici la descoperirea Tapo (UDP 20002) / KLAP / AES" +
+                (_shelly is null ? "." : ", nici ca Shelly Gen2+ (HTTP /rpc/Shelly.GetDeviceInfo)."), null);
 
         var id = await AddAsync(dp, ct);
         var msg = dp.IsSupported
@@ -215,22 +247,76 @@ public sealed class PlugDiscoveryService
         return new AddByIpResult(true, msg, id);
     }
 
-    private async Task<IReadOnlyList<DiscoveredPlug>> DiscoverAllAsync(
-        IReadOnlyList<IPAddress> addresses, TapoCredentials? creds, CancellationToken ct)
+    private async Task<IReadOnlyList<DiscoveredPlug>> DiscoverAllAsync(KasaRuntimeSettings settings, CancellationToken ct)
     {
+        var addresses = settings.BroadcastAddresses;
+        var creds = settings.TapoCredentials;
         var legacyTask = CollectAsync(_kasa.DiscoverAsync(addresses, _scanTimeout, ct));
         var tapoTask = CollectAsync(_tapo.DiscoverAsync(addresses, _scanTimeout, ct));
-        await Task.WhenAll(legacyTask, tapoTask);
+        var shellyTask = _shelly is not null && settings.ShellyDiscoveryEnabled
+            ? DiscoverShellyAsync(settings, ct)
+            : Task.FromResult<IReadOnlyList<DiscoveredPlug>>(Array.Empty<DiscoveredPlug>());
+        await Task.WhenAll(legacyTask, tapoTask, shellyTask);
 
-        var byMac = new Dictionary<string, DiscoveredPlug>(StringComparer.Ordinal);
-        foreach (var dp in legacyTask.Result) byMac.TryAdd(dp.Info.Mac, dp);   // legacy wins for devices that answer both
+        var byId = new Dictionary<(string Mac, int Channel), DiscoveredPlug>();
+        foreach (var dp in legacyTask.Result) byId.TryAdd((dp.Info.Mac, dp.Channel), dp);   // legacy wins for devices that answer both
         foreach (var r in tapoTask.Result)
         {
-            if (byMac.ContainsKey(r.Mac)) continue;
+            if (byId.ContainsKey((r.Mac, 0))) continue;
             var dp = await ResolveTapoAsync(r, creds, ct);
-            if (dp is not null) byMac.TryAdd(dp.Info.Mac, dp);
+            if (dp is not null) byId.TryAdd((dp.Info.Mac, dp.Channel), dp);
         }
-        return byMac.Values.ToList();
+        foreach (var dp in shellyTask.Result) byId.TryAdd((dp.Info.Mac, dp.Channel), dp);
+        return byId.Values.ToList();
+    }
+
+    /// <summary>
+    /// Shelly Gen2+: mDNS (<c>_shelly._tcp.local</c>) plus the optional <c>ShellyProbeHosts</c> list; every address that
+    /// answers Shelly.GetDeviceInfo is read (GetStatus + GetConfig) and mapped to one entry per measured channel.
+    /// </summary>
+    private async Task<IReadOnlyList<DiscoveredPlug>> DiscoverShellyAsync(KasaRuntimeSettings settings, CancellationToken ct)
+    {
+        var shelly = _shelly!;
+        var addresses = new List<IPAddress>();
+        try
+        {
+            await foreach (var answer in shelly.DiscoverAsync(_scanTimeout, ct))
+                if (!addresses.Contains(answer.Address)) addresses.Add(answer.Address);
+        }
+        catch (Exception ex) when (!ct.IsCancellationRequested)
+        {
+            _log.LogWarning("Shelly mDNS discovery failed: {Reason}", ex.Message);
+        }
+        var fromMdns = addresses.Count;
+        foreach (var ip in settings.ShellyProbeList)
+            if (!addresses.Contains(ip)) addresses.Add(ip);
+
+        var results = new System.Collections.Concurrent.ConcurrentBag<DiscoveredPlug>();
+        await Parallel.ForEachAsync(addresses, new ParallelOptions { MaxDegreeOfParallelism = 32, CancellationToken = ct },
+            async (ip, innerCt) =>
+            {
+                foreach (var dp in await ResolveShellyAsync(ip, settings.ShellyCredentials, innerCt, ShellyProbeTimeout))
+                    results.Add(dp);
+            });
+        _log.LogDebug("Shelly discovery: {Mdns} via mDNS, {Probed} probe hosts, {Channels} channels",
+            fromMdns, settings.ShellyProbeList.Count, results.Count);
+        return results.ToList();
+    }
+
+    /// <summary>One Shelly address to plugs; empty when it is not a Shelly Gen2+ device (no answer to GetDeviceInfo).</summary>
+    private async Task<IReadOnlyList<DiscoveredPlug>> ResolveShellyAsync(IPAddress ip, ShellyCredentials? creds, CancellationToken ct, TimeSpan? timeout)
+    {
+        ShellyDeviceInfo info;
+        try
+        {
+            info = await _shelly!.GetDeviceInfoAsync(ip, ct, timeout);
+        }
+        catch (Exception ex) when (!ct.IsCancellationRequested)
+        {
+            _log.LogDebug("{Ip} is not a Shelly Gen2+ device: {Reason}", ip, ex.Message);
+            return Array.Empty<DiscoveredPlug>();
+        }
+        return await ShellyPlugReader.ReadAsync(_shelly, ip, info, creds, ct);
     }
 
     /// <summary>Turns a UDP 20002 answer into a plug: queries it over KLAP/AES when possible, otherwise an unsupported placeholder.</summary>

@@ -1,0 +1,19 @@
+{
+  "data_blocks": [
+    {
+      "ts": 1677749760,
+      "period": 60,
+      "records": 6
+    },
+    {
+      "ts": 1793544120,
+      "period": 60,
+      "records": 9
+    },
+    {
+      "ts": 1793565720,
+      "period": 60,
+      "records": 1
+    }
+  ]
+}

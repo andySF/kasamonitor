@@ -12,14 +12,14 @@
 <div class="d-flex flex-wrap align-items-center justify-content-between gap-2 mb-3">
     <h1 class="h3 mb-0"><i class="bi bi-outlet me-2"></i>Prize</h1>
     <div class="d-flex flex-wrap gap-2">
-        <button class="btn btn-success btn-sm" @onclick="ScanNowAsync" disabled="@_scanning" title="Caută prize în rețea acum (UDP 9999 și 20002)">
+        <button class="btn btn-success btn-sm" @onclick="ScanNowAsync" disabled="@_scanning" title="Caută prize în rețea acum (UDP 9999 și 20002, mDNS Shelly)">
             @if (_scanning) { <span class="spinner-border spinner-border-sm me-1"></span><span>Se scanează…</span> }
             else { <i class="bi bi-search me-1"></i><span>Scanează acum</span> }
         </button>
         <div class="input-group input-group-sm" style="width: 22rem;">
             <span class="input-group-text"><i class="bi bi-plus-lg"></i></span>
             <input class="form-control" @bind="_manualIp" placeholder="IP, ex. 192.168.1.50" />
-            <button class="btn btn-outline-primary" @onclick="AddByIpAsync" disabled="@_adding" title="Încearcă legacy (TCP 9999), apoi Tapo (UDP 20002 / KLAP / AES)">
+            <button class="btn btn-outline-primary" @onclick="AddByIpAsync" disabled="@_adding" title="Încearcă legacy (TCP 9999), apoi Tapo (UDP 20002 / KLAP / AES), apoi Shelly (HTTP /rpc)">
                 @(_adding ? "Se încearcă…" : "Adaugă după IP")
             </button>
         </div>
@@ -59,8 +59,11 @@
                                     }
                                 </td>
                                 <td>@i.Plug.Info.Alias</td>
-                                <td><span class="badge text-bg-light border">@PlugModelName.Short(i.Plug.Info.Model)</span> <span class="badge @UiFormat.ProtocolBadge(i.Plug.Protocol)">@i.Plug.Protocol</span></td>
-                                <td><code class="text-secondary small">@i.Plug.Info.Mac</code></td>
+                                <td><span class="badge text-bg-light border" title="@UiFormat.ModelTitle(i.Plug.Info.Model, i.Plug.Info.HwVer, i.Plug.Protocol)">@PlugModelName.Short(i.Plug.Info.Model)</span> <span class="badge @UiFormat.ProtocolBadge(i.Plug.Protocol)">@i.Plug.Protocol</span></td>
+                                <td>
+                                    <code class="text-secondary small">@i.Plug.Info.Mac</code>
+                                    @if (i.Plug.Protocol == PlugProtocols.ShellyRpc && i.Plug.IsSupported) { <span class="badge text-bg-light border ms-1" title="Canal măsurat">ch@(i.Plug.Channel)</span> }
+                                </td>
                                 <td>@i.Plug.IpAddress</td>
                                 <td class="text-end">
                                     @if (i.PlugId is null)
@@ -120,12 +123,13 @@ else
                                 }
                             </td>
                             <td>
-                                <span class="badge text-bg-light border" title="@p.Model">@PlugModelName.Short(p.Model)</span>
+                                <span class="badge text-bg-light border" title="@UiFormat.ModelTitle(p.Model, p.HwVer, p.Protocol)">@PlugModelName.Short(p.Model)</span>
                                 <span class="badge @UiFormat.ProtocolBadge(p.Protocol)">@p.Protocol</span>
+                                @if (PlugChannel.IsMeter(p.Model)) { <span class="badge text-bg-info" title="Contor de energie: nu intră în totalurile din Dashboard">contor</span> }
                             </td>
                             <td>
                                 <div>@p.IpAddress</div>
-                                <code class="text-secondary small">@p.Mac</code>
+                                <code class="text-secondary small" title="@(p.Channel > 0 ? $"Canalul {p.Channel} al dispozitivului {p.Mac}" : "")">@p.MacLabel</code>
                             </td>
                             <td class="small text-nowrap">@(string.IsNullOrEmpty(p.SwVer) ? "—" : p.SwVer.Split(' ')[0])</td>
                             <td class="small text-nowrap">

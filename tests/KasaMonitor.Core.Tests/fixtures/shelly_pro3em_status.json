@@ -1,0 +1,24 @@
+{
+  "cloud": { "connected": true },
+  "em:0": {
+    "id": 0,
+    "a_current": 4.02, "a_voltage": 230.1, "a_act_power": 800.5, "a_aprt_power": 920.0, "a_pf": 0.87, "a_freq": 50.0,
+    "b_current": 2.10, "b_voltage": 231.0, "b_act_power": 450.0, "b_aprt_power": 480.0, "b_pf": 0.94, "b_freq": 50.0,
+    "c_current": 1.00, "c_voltage": 229.5, "c_act_power": 200.0, "c_aprt_power": 230.0, "c_pf": 0.87, "c_freq": 50.0,
+    "n_current": null,
+    "total_current": 7.12,
+    "total_act_power": 1450.5,
+    "total_aprt_power": 1630.0,
+    "user_calibrated_phase": []
+  },
+  "emdata:0": {
+    "id": 0,
+    "a_total_act_energy": 100000.0, "a_total_act_ret_energy": 0.0,
+    "b_total_act_energy": 50000.0, "b_total_act_ret_energy": 0.0,
+    "c_total_act_energy": 25000.0, "c_total_act_ret_energy": 0.0,
+    "total_act": 175000.9,
+    "total_act_ret": 12.5
+  },
+  "sys": { "mac": "34987A000003", "uptime": 86400, "unixtime": 1793544000, "utc_offset": 7200, "available_updates": {} },
+  "eth": { "ip": "192.168.1.62" }
+}

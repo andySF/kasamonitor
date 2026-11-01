@@ -1,11 +1,12 @@
 # KasaMonitor
 
 Self-hosted monitoring for TP-Link smart plugs with energy metering: **Kasa** (e.g. KP115, legacy XOR protocol on
-port 9999) and **Tapo** (e.g. P110/P115, KLAP and AES "securePassthrough" protocols). Blazor Server app (.NET 10)
+port 9999) and **Tapo** (e.g. P110/P115, KLAP and AES "securePassthrough" protocols), plus **Shelly Gen2/Gen3**
+plugs and energy meters (e.g. Shelly EM Gen3, local JSON-RPC, read-only). Blazor Server app (.NET 10)
 with SQLite, a web UI on port 8910 and a Prometheus `/metrics` endpoint. An optional Prometheus + Grafana stack
 with a ready-made dashboard and alert rules is included.
 
-Version: **0.2.0** (`Directory.Build.props`). Docker image: `duobit/kasamonitor`.
+Version: **0.3.0** (`Directory.Build.props`). Docker image: `duobit/kasamonitor`.
 
 ## Quick start
 
@@ -19,8 +20,8 @@ docker compose -f deploy/docker-compose.yml up -d
 Open `http://<host>:8910/`. Plugs on the same LAN are discovered within a few seconds; for Tapo plugs enter your
 TP-Link (Tapo app) account in `/settings` and press **Scanează acum** on `/plugs`.
 
-`network_mode: host` is required: discovery uses UDP broadcasts (9999 for Kasa, 20002 for Tapo) that do not leave
-a Docker bridge network. The database and the key ring live in `deploy/data/` (volume `./data:/data`).
+`network_mode: host` is required: discovery uses UDP broadcasts (9999 for Kasa, 20002 for Tapo) and mDNS multicast
+(224.0.0.251:5353 for Shelly) that do not leave a Docker bridge network. The database and the key ring live in `deploy/data/` (volume `./data:/data`).
 
 ## Features
 
@@ -29,7 +30,8 @@ a Docker bridge network. The database and the key ring live in `deploy/data/` (v
 - **Scan now** (`/plugs`, "Scanează acum"): runs discovery immediately and lists each plug as new / added / known /
   unsupported; with auto-add off, new plugs are added with one click.
 - **Add by IP** (`/plugs`): tries legacy TCP 9999, then the UDP 20002 probe (+ KLAP/AES), then KLAP and AES
-  directly (with TP-Link credentials). Useful for plugs on another subnet, where broadcasts do not reach.
+  directly (with TP-Link credentials), then Shelly (`GET /rpc/Shelly.GetDeviceInfo`). Useful for devices on another
+  subnet, where broadcasts and mDNS do not reach.
 - **Withdraw / restore** (`/plugs`, "Retrage" / "Readu"): a withdrawn plug is no longer polled and disappears from
   `/metrics` and the dashboard immediately; "Arată retrase" shows it again in the list.
 - **Unsupported plugs** (they answer discovery but cannot be queried) are listed with IP/MAC and the reason:
@@ -61,6 +63,9 @@ not been saved from `/settings`.
 | TP-Link password | `KasaMonitor__TapoPassword` | — | stored encrypted (ASP.NET DataProtection), shown masked; used for KLAP and AES |
 | Tariff per kWh | `KasaMonitor__TariffRonPerKwh` | `1.30` | web UI cost; read at startup |
 | Poll interval (s) | `KasaMonitor__PollIntervalSeconds` | `10` | read at startup |
+| Shelly discovery | `KasaMonitor__ShellyDiscoveryEnabled` | `true` | mDNS `_shelly._tcp.local` + the probe hosts below |
+| Shelly password | `KasaMonitor__ShellyPassword` | — | optional; admin password of Shelly devices with authentication on (digest auth, user `admin`); stored encrypted like the TP-Link password |
+| Shelly probe hosts | `KasaMonitor__ShellyProbeHosts` | — | optional; comma-separated IPs, ranges (`192.168.1.10-20`) or CIDR (`/22`–`/32`, max. 1024 addresses), each probed with `Shelly.GetDeviceInfo` (1 s) on every discovery |
 | Keep raw readings (months) | `KasaMonitor__ReadingsRetentionMonths` | `0` = unlimited | raw 10-second readings only; daily history and minute aggregates are never deleted. Saving a value that would delete existing readings asks for confirmation with the exact row count |
 | — | `KasaMonitor__DbPath` | `/data/kasa.db` (image) | |
 
@@ -138,8 +143,9 @@ reset and would count the whole cumulative value as new consumption. The trade-o
 
 ### Metrics (`/metrics`)
 
-Every series has the labels `alias` (plug name, MAC if empty), `mac`, `model` (e.g. `KP115`, `P115`, without the
-region suffix) and `protocol` (`legacy` | `klap` | `aes`).
+Every series has the labels `alias` (plug name, MAC if empty), `mac`, `model` (e.g. `KP115`, `P115`,
+`S3EM-002CXCEU`, without the region suffix) and `protocol` (`legacy` | `klap` | `aes` | `shelly-rpc`). For the
+channels ≥ 1 of a multi-channel Shelly meter `mac` is `<mac>-<channel>` (channel 0 keeps the plain MAC).
 
 | Metric | Type | Unit | Legacy (Kasa) source | Tapo (KLAP/AES) source |
 |---|---|---|---|---|
@@ -150,6 +156,20 @@ region suffix) and `protocol` (`legacy` | `klap` | `aes`).
 | `kasa_relay_state` | gauge | 0/1 | 1 when the poll succeeds | same |
 | `kasa_power_total` | counter | Wh, cumulative | `total_wh` (plug lifetime total) | `month_energy` (resets monthly on the plug) |
 | `kasa_rssi` | gauge | dBm | declared, not set yet | same |
+
+Shelly (`shelly-rpc`) sources, per measured channel: `kasa_power_load` = `em1:N.act_power` (signed: negative with a
+reversed clamp or exported energy) / `pm1:N.apower` / `switch:N.apower` / `em:0.total_act_power`; `kasa_voltage`,
+`kasa_current`; `kasa_power_total` = `em1data:N.total_act_energy` / `aenergy.total` / `emdata:0.total_act` (Wh,
+device lifetime); `kasa_relay_state` = `switch:N.output` (EM Gen3: `switch:0` on channel 0; no series when the device
+has no relay). Metrics only exported for devices that report them (Shelly):
+
+| Metric | Type | Unit | Shelly source |
+|---|---|---|---|
+| `kasa_power_factor` | gauge | ratio | `em1:N.pf` / `pf` |
+| `kasa_apparent_power_va` | gauge | VA | `em1:N.aprt_power` / `em:0.total_aprt_power` |
+| `kasa_frequency_hz` | gauge | Hz | `em1:N.freq` / `freq` |
+| `kasa_energy_returned_wh_total` | counter | Wh, cumulative | `em1data:N.total_act_ret_energy` / `ret_aenergy.total` |
+| `kasa_device_temperature_c` | gauge | °C | `switch:N.temperature.tC` |
 
 Note on `kasa_power_total`: it is exported as a Prometheus counter, but it is **not a strictly monotonic counter**
 across KasaMonitor restarts (it is re-seeded from the plug's total, which can be slightly lower). Use the 5-minute
@@ -202,6 +222,49 @@ Transports implement `ISmartTransport`; TPAP (SPAKE2+) can be added as another i
 via `get_energy_data` (interval 1440 = daily Wh, last 60 days, one request per month with a fallback to the quarter
 start some firmware require), upserted per plug and day.
 
+## Shelly Gen2 / Gen3
+
+Shelly devices of the second and third generation (local JSON-RPC over HTTP, `GET http://<ip>/rpc/<Method>`), protocol
+`shelly-rpc`. Verified on a **Shelly EM Gen3** (`S3EM-002CXCEU`, firmware 1.6.x); other Gen2+ devices are mapped from
+the official component schema without having been tested:
+
+| Device (examples) | Components read | Channels |
+|---|---|---|
+| Shelly EM Gen3, Shelly Pro EM | `em1:N` + `em1data:N` | one plug per channel (EM Gen3: 2) |
+| Shelly Pro 3EM | `em:0` + `emdata:0` | one plug with the three-phase totals |
+| Shelly Plus PM Mini | `pm1:N` | one per `pm1` |
+| Shelly Plus Plug S, Plus 1PM, Pro xPM | `switch:N` with `apower` | one per metered switch |
+
+- **Discovery** — mDNS query for `_shelly._tcp.local` (TXT `gen`, `app`; devices with `gen` < 2 are ignored) sent to
+  224.0.0.251:5353 from an ephemeral port on every IPv4 interface (on a multi-homed host the default multicast route
+  often points at a Docker/Hyper-V bridge; responders answer by unicast), plus the optional *Shelly probe hosts*
+  list for devices mDNS does not reach. Each answer is read with `Shelly.GetDeviceInfo`, `Shelly.GetStatus` and
+  `Shelly.GetConfig`. Add by IP on `/plugs` tries Shelly after legacy and Tapo. Components are found from the keys of
+  `Shelly.GetStatus`, never from the model.
+- **Channels** — one plug per measured channel, identity (MAC, channel). Default alias: the channel name
+  (`em1:N.name`), otherwise the device name / id plus ` ch0`, ` ch1`; rename on `/plugs` like any plug.
+- **Password** — devices with authentication on (`auth_en: true`) need the *Shelly password* in `/settings`
+  (HTTP digest, RFC 7616, `SHA-256`, user `admin`). Without it they are listed as `nesuportat: parolă Shelly lipsă`.
+- **Polling** — one `Shelly.GetStatus` per device and cycle (all channels, 3 s timeout); `Shelly.GetDeviceInfo` +
+  `Shelly.GetConfig` the first time and then hourly (model, firmware, default aliases).
+- **History** — meters with `em1data` (EM Gen3, Pro EM): daily kWh from the device's per-minute records
+  (`EM1Data.GetData`, one request per local day, 60 days back on the first sync, then from the last stored day).
+  Other Shelly devices keep no history on the device: daily kWh comes from KasaMonitor's own readings of the energy
+  counter. A day already stored is never replaced by a smaller value. A day whose records could not all be read
+  (page limit reached) is not stored and is retried at the next sync. Records are stamped with the device's own
+  clock: minutes written before the device synchronised its time (e.g. right after a reboot) can land on the wrong
+  day, and records dated more than 5 minutes in the future are ignored.
+- **Meters vs. plugs** — a meter on the main panel already includes the plugs behind it, so totals leave out models
+  matching `S3EM.*|SPEM.*` (Dashboard header, History "Toate", and the Grafana stats via `model!~"S3EM.*|SPEM.*"`).
+  The Grafana dashboard has a row *Contoare (Shelly EM)* with power, power factor, voltage and daily energy per channel.
+- **Reversed clamp** — the Dashboard card shows „inversat?” when a Shelly channel reads below −10 W (simple rule on
+  the current reading, accepted instead of "negative for a while"); fix the clamp direction (`reverse`) in the Shelly
+  app if it is not real export.
+- **Read-only** — only `Shelly.Get*`, `EM1Data.Get*` are called: KasaMonitor never switches the relay
+  (`Switch.Set`), never changes configuration (`*.SetConfig`), never reboots or updates the device.
+
+See `docs/device-api-capabilities.md` for what is shown, what exists and is not shown, and what would need writes.
+
 ## Data retention
 
 | Data | Table | Written | Deleted |
@@ -234,15 +297,15 @@ dotnet test KasaMonitor.sln
 From the repository root, with Docker running and `docker login` done once:
 
 ```powershell
-.\deploy\build-and-push.ps1 -Version 0.2.0          # build :0.2.0 + :latest and push both
-.\deploy\build-and-push.ps1 -Version 0.2.0 -NoPush  # local build only
+.\deploy\build-and-push.ps1 -Version 0.3.0          # build :0.3.0 + :latest and push both
+.\deploy\build-and-push.ps1 -Version 0.3.0 -NoPush  # local build only
 ```
 
 or manually:
 
 ```bash
-docker build -t duobit/kasamonitor:0.2.0 -t duobit/kasamonitor:latest -f deploy/Dockerfile .
-docker push duobit/kasamonitor:0.2.0
+docker build -t duobit/kasamonitor:0.3.0 -t duobit/kasamonitor:latest -f deploy/Dockerfile .
+docker push duobit/kasamonitor:0.3.0
 docker push duobit/kasamonitor:latest
 ```
 
@@ -253,7 +316,10 @@ To publish under your own Docker Hub account, change the image name (`-Repo` par
 
 1. Back up `deploy/data/kasa.db` (with the container stopped, or `sqlite3 kasa.db ".backup kasa.bak"`). Upgrading
    from 0.1.0 runs the migration `AddPlugProtocol`, which only adds the columns `Plugs.Protocol` and
-   `Plugs.UnsupportedReason`; existing data stays and existing plugs become `legacy`.
+   `Plugs.UnsupportedReason`; existing data stays and existing plugs become `legacy`. Upgrading to 0.3.0 runs
+   `AddPlugChannel`: adds `Plugs.Channel` (0 for every existing plug) and replaces the unique index on `Mac` with one
+   on (`Mac`, `Channel`); no other table is touched. Downgrading to 0.2.x after that (the migration's `Down`) needs
+   the rows with `Channel > 0` deleted first, otherwise re-creating the unique index on `Mac` fails.
 2. `docker compose -f deploy/docker-compose.yml pull && docker compose -f deploy/docker-compose.yml up -d`
    (Portainer: *Update the stack* with *Re-pull image and redeploy*).
 3. Check `http://<host>:8910/health`, `/plugs` (Scan now) and `curl -s http://<host>:8910/metrics | grep kasa_online`.

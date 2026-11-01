@@ -1,0 +1,87 @@
+{
+  "ble": {},
+  "bthome": {
+    "errors": [
+      "bluetooth_disabled"
+    ]
+  },
+  "cloud": {
+    "connected": true
+  },
+  "em1:0": {
+    "id": 0,
+    "voltage": 231.2,
+    "current": 3.155,
+    "act_power": 556.2,
+    "aprt_power": 731.4,
+    "pf": 0.81,
+    "freq": 50.0,
+    "calibration": "factory"
+  },
+  "em1:1": {
+    "id": 1,
+    "voltage": 231.2,
+    "current": 0.02,
+    "act_power": 0.0,
+    "aprt_power": 4.7,
+    "pf": 0.0,
+    "freq": 50.0,
+    "calibration": "factory"
+  },
+  "em1data:0": {
+    "id": 0,
+    "total_act_energy": 43.43,
+    "total_act_ret_energy": 68.6
+  },
+  "em1data:1": {
+    "id": 1,
+    "total_act_energy": 0.0,
+    "total_act_ret_energy": 0.0
+  },
+  "mqtt": {
+    "connected": false
+  },
+  "switch:0": {
+    "id": 0,
+    "source": "SHC",
+    "output": true,
+    "temperature": {
+      "tC": 47.0,
+      "tF": 116.5
+    }
+  },
+  "sys": {
+    "mac": "D885AC0B743C",
+    "restart_required": false,
+    "time": "08:50",
+    "unixtime": 1793515856,
+    "last_sync_ts": 1793544138,
+    "uptime": 522,
+    "ram_size": 254772,
+    "ram_free": 122020,
+    "ram_min_free": 108364,
+    "fs_size": 786432,
+    "fs_free": 315392,
+    "cfg_rev": 12,
+    "kvs_rev": 0,
+    "schedule_rev": 0,
+    "webhook_rev": 0,
+    "btrelay_rev": 0,
+    "available_updates": {
+      "stable": {
+        "version": "2.1.1"
+      }
+    },
+    "reset_reason": 3,
+    "utc_offset": 7200
+  },
+  "wifi": {
+    "sta_ip": "192.168.254.141",
+    "status": "got ip",
+    "ssid": "TestNet",
+    "rssi": -58
+  },
+  "ws": {
+    "connected": false
+  }
+}

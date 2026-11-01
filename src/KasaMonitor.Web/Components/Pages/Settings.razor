@@ -65,6 +65,39 @@ else
 
         <div class="col-lg-6">
             <div class="card h-100">
+                <div class="card-header fw-semibold"><i class="bi bi-speedometer me-2"></i>Shelly Gen2 / Gen3 (contoare și prize)</div>
+                <div class="card-body">
+                    <div class="form-check form-switch mb-3">
+                        <input class="form-check-input" type="checkbox" id="shellyDiscovery" @bind="_shellyDiscovery" />
+                        <label class="form-check-label" for="shellyDiscovery">Descoperire Shelly (mDNS <code>_shelly._tcp</code> + adresele de mai jos)</label>
+                    </div>
+                    <div class="mb-2">
+                        <label class="form-label" for="shellyPassword">Parolă Shelly (utilizator <code>admin</code>, opțional)</label>
+                        <input class="form-control" id="shellyPassword" @bind="_shellyPassword" type="password" autocomplete="new-password"
+                               placeholder="@(_hasShellyPassword ? "•••••••• (setată; lasă gol ca să rămână)" : "nesetată (doar pentru dispozitivele cu autentificare)")" />
+                    </div>
+                    @if (_hasShellyPassword)
+                    {
+                        <div class="form-check mb-2">
+                            <input class="form-check-input" type="checkbox" id="clearShellyPw" @bind="_clearShellyPassword" />
+                            <label class="form-check-label" for="clearShellyPw">Șterge parola Shelly</label>
+                        </div>
+                    }
+                    <div class="mb-1">
+                        <label class="form-label" for="shellyHosts">Adrese de probat (opțional)</label>
+                        <input class="form-control" id="shellyHosts" @bind="_shellyProbeHosts" placeholder="192.168.1.141, 192.168.1.150-160, 10.0.5.0/24" />
+                    </div>
+                    <div class="form-text">
+                        Pentru dispozitive pe care mDNS nu le găsește (alt subnet, mDNS oprit): IP-uri, intervale sau CIDR, separate prin virgulă;
+                        fiecare adresă e întrebată la fiecare descoperire cu <code>Shelly.GetDeviceInfo</code> (timeout 1 s). Aplicația doar citește
+                        (nu comută releul, nu schimbă configurația).
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="col-lg-6">
+            <div class="card h-100">
                 <div class="card-header fw-semibold"><i class="bi bi-sliders me-2"></i>Altele</div>
                 <div class="card-body">
                     <div class="mb-3">
@@ -114,7 +147,7 @@ else
             @if (_saved) { <span class="text-success"><i class="bi bi-check-circle me-1"></i>Salvat.@(_deletedMessage is null ? "" : " " + _deletedMessage)</span> }
             @if (_error is not null) { <span class="text-danger"><i class="bi bi-x-circle me-1"></i>@_error</span> }
         </div>
-        <div class="col-12 form-text">Setările de descoperire, contul TP-Link și retenția se aplică fără repornire (la următorul ciclu).</div>
+        <div class="col-12 form-text">Setările de descoperire, contul TP-Link, setările Shelly și retenția se aplică fără repornire (la următorul ciclu).</div>
     </div>
 }
 
@@ -133,6 +166,11 @@ else
     private bool _hasTapoPassword;
     private bool _clearTapoPassword;
     private int _retentionMonths;
+    private bool _shellyDiscovery;
+    private string _shellyPassword = "";
+    private bool _hasShellyPassword;
+    private bool _clearShellyPassword;
+    private string _shellyProbeHosts = "";
     private RetentionPlan? _pendingPlan;
     private bool _deleting;
     private string? _deletedMessage;
@@ -164,6 +202,11 @@ else
         _tapoPassword = "";
         _clearTapoPassword = false;
         _retentionMonths = s.ReadingsRetentionMonths;
+        _shellyDiscovery = s.ShellyDiscoveryEnabled;
+        _hasShellyPassword = s.HasShellyPassword;
+        _shellyPassword = "";
+        _clearShellyPassword = false;
+        _shellyProbeHosts = s.ShellyProbeHosts;
     }
 
     private async Task SaveAsync()
@@ -174,6 +217,12 @@ else
         if (invalid.Count > 0)
         {
             _error = $"Adrese broadcast invalide: {string.Join(", ", invalid)}";
+            return;
+        }
+        var (_, badShelly) = KasaMonitor.Core.Protocol.Shelly.ShellySupport.ParseProbeHosts(_shellyProbeHosts);
+        if (badShelly.Count > 0)
+        {
+            _error = $"Adrese Shelly invalide: {string.Join(", ", badShelly)}";
             return;
         }
         _retentionMonths = Math.Clamp(_retentionMonths, 0, KasaSettingsService.MaxRetentionMonths);
@@ -222,7 +271,11 @@ else
             await KasaSettings.SaveAsync(new KasaSettingsUpdate(
                 _autoDiscovery, _intervalMin, _broadcast, _autoAdd, _tapoUser,
                 NewTapoPassword: _tapoPassword, ClearTapoPassword: _clearTapoPassword,
-                ReadingsRetentionMonths: _retentionMonths), CancellationToken.None);
+                ReadingsRetentionMonths: _retentionMonths,
+                ShellyDiscoveryEnabled: _shellyDiscovery,
+                ShellyProbeHosts: _shellyProbeHosts,
+                NewShellyPassword: _shellyPassword,
+                ClearShellyPassword: _clearShellyPassword), CancellationToken.None);
         }
         catch (FormatException ex)
         {

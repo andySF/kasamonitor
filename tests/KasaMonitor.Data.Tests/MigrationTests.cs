@@ -52,4 +52,35 @@ public class MigrationTests
         ctx.Database.SqlQueryRaw<int>("SELECT COUNT(*) AS Value FROM Plugs WHERE UnsupportedReason IS NULL").ToList().Should().Equal(1);
         ctx.Database.SqlQueryRaw<int>("SELECT COUNT(*) AS Value FROM Samples").ToList().Should().Equal(1);
     }
+    [Fact]
+    public void AddPlugChannel_KeepsExistingRows_AsChannel0_AndAllowsASecondChannel()
+    {
+        using var conn = new SqliteConnection("Filename=:memory:");
+        conn.Open();
+        var opts = new DbContextOptionsBuilder<KasaDbContext>().UseSqlite(conn).Options;
+        using var ctx = new KasaDbContext(opts);
+        var migrator = ctx.GetService<Microsoft.EntityFrameworkCore.Migrations.IMigrator>();
+
+        // Schema as deployed in 0.2.x, with one plug, one sample and one daily value.
+        migrator.Migrate("20261101090240_AddPlugProtocol");
+        ctx.Database.ExecuteSqlRaw(
+            "INSERT INTO Plugs (Id, Mac, IpAddress, Alias, AliasIsCustom, Model, HwVer, SwVer, OemId, FirstSeenUtc, LastSeenUtc, IsArchived, Protocol) " +
+            "VALUES ('6f1c3c1e-0000-0000-0000-000000000001', 'c006c3702bfc', '192.168.254.105', 'Birou', 0, 'KP115(EU)', '1.0', '1.0.20', 'X', '2026-05-08 10:00:00+00:00', '2026-05-08 10:00:00+00:00', 0, 'legacy')");
+        ctx.Database.ExecuteSqlRaw(
+            "INSERT INTO Samples (PlugId, TimestampUtc, Online, PowerMw) VALUES ('6f1c3c1e-0000-0000-0000-000000000001', 1, 1, 5000)");
+        ctx.Database.ExecuteSqlRaw(
+            "INSERT INTO DailyEnergy (PlugId, Date, EnergyWh) VALUES ('6f1c3c1e-0000-0000-0000-000000000001', '2026-10-31', 1234)");
+
+        ctx.Database.Migrate();
+
+        ctx.Database.SqlQueryRaw<int>("SELECT Channel AS Value FROM Plugs").ToList().Should().Equal(0);
+        ctx.Database.SqlQueryRaw<int>("SELECT COUNT(*) AS Value FROM Samples").ToList().Should().Equal(1);
+        ctx.Database.SqlQueryRaw<int>("SELECT COUNT(*) AS Value FROM DailyEnergy").ToList().Should().Equal(1);
+        ctx.Database.SqlQueryRaw<string>("SELECT name AS Value FROM sqlite_master WHERE type = 'index' AND tbl_name = 'Plugs'")
+            .ToList().Should().Contain("IX_Plugs_Mac_Channel").And.NotContain("IX_Plugs_Mac");
+        ctx.Database.ExecuteSqlRaw(
+            "INSERT INTO Plugs (Id, Mac, IpAddress, Alias, AliasIsCustom, Model, HwVer, SwVer, OemId, FirstSeenUtc, LastSeenUtc, IsArchived, Protocol, Channel) " +
+            "VALUES ('6f1c3c1e-0000-0000-0000-000000000002', 'c006c3702bfc', '192.168.254.105', 'Birou ch1', 0, 'KP115(EU)', '1.0', '1.0.20', 'X', '2026-05-08 10:00:00+00:00', '2026-05-08 10:00:00+00:00', 0, 'legacy', 1)");
+        ctx.Database.SqlQueryRaw<int>("SELECT COUNT(*) AS Value FROM Plugs").ToList().Should().Equal(2);
+    }
 }

@@ -12,6 +12,9 @@ public static class PlugProtocols
     /// <summary>TP-Link "securePassthrough" (HTTP /app, RSA handshake + AES-CBC, login_device), used by older Tapo firmware.</summary>
     public const string Aes = "aes";
 
+    /// <summary>Shelly Gen2/Gen3 local JSON-RPC over HTTP (<c>/rpc/&lt;Method&gt;</c>), optional digest auth.</summary>
+    public const string ShellyRpc = "shelly-rpc";
+
     /// <summary>A protocol the application cannot speak (TPAP, Kasa-on-KLAP, ...). The plug is listed but never polled.</summary>
     public const string Unsupported = "unsupported";
 }

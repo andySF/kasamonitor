@@ -1,9 +1,10 @@
 # What the plugs' local APIs offer
 
-Reference for deciding what KasaMonitor can show or do next. Two local protocols are covered:
+Reference for deciding what KasaMonitor can show or do next. Three local protocols are covered:
 
 - **Kasa legacy** (e.g. KP115): JSON on TCP/UDP port 9999, XOR-obfuscated. No authentication.
 - **Tapo SMART** (e.g. P110/P115): JSON `{"method": …, "params": …}` over KLAP or AES "securePassthrough" on HTTP port 80. Needs the TP-Link account.
+- **Shelly Gen2/Gen3** (e.g. Shelly EM Gen3): JSON-RPC 2.0 over HTTP, `GET http://<ip>/rpc/<Method>?<params>`. Optional digest authentication (see the Shelly section).
 
 Method names come from the python-kasa project, which exercises these APIs (`kasa/iot/…` for legacy, `kasa/smart/modules/…` for SMART), and from the answers of our own plugs. The SMART part was checked against a P115(EU) fw 1.2.3 capture. Write commands marked "names unverified" do not appear in python-kasa and must be confirmed before use. A device lists the SMART features it has in `component_nego` (e.g. `auto_off`, `power_protection`, `led`, `countdown`, `schedule`, `antitheft`, `default_states`, `energy_monitoring`, `firmware`, `cloud_connect`). A request for a missing feature answers with an error code (e.g. -1).
 
@@ -60,6 +61,53 @@ Legend for the "KasaMonitor" column:
 | Reboot / reset | `device_reboot`, `device_reset` | restart / factory reset | **action** (reset: deliberately not) |
 | Matter / HomeKit | `get_matter_setup_info`, `get_homekit_info` | pairing codes (newer models) | not relevant for P115 |
 | Batching | `multipleRequest {requests: […]}` | several methods in one round trip | possible optimisation (we send one method per request) |
+
+## Shelly Gen2 / Gen3
+
+Source: the official Gen2+ API documentation (components `Shelly`, `Sys`, `WiFi`, `Cloud`, `MQTT`, `Switch`, `EM`,
+`EMData`, `EM1`, `EM1Data`, `PM1`) and the answers of a Shelly EM Gen3 (`S3EM-002CXCEU`, app `EMG3`, firmware
+1.6.99, Gen3) read on 2026-11-01. Each component has `<Type>.GetStatus` / `<Type>.GetConfig` (`?id=N`);
+`Shelly.GetStatus` / `Shelly.GetConfig` return all components at once, keyed `type:id` (e.g. `em1:0`).
+`Shelly.GetDeviceInfo` never needs authentication. With `auth_en: true` every other call answers 401 with
+`WWW-Authenticate: Digest qop="auth", realm="<device id>", nonce=…, algorithm=SHA-256`; the client answers with HTTP
+digest (RFC 7616, user `admin`). KasaMonitor calls **only** `Shelly.GetDeviceInfo`, `Shelly.GetStatus`,
+`Shelly.GetConfig`, `EM1Data.GetRecords`, `EM1Data.GetData`.
+
+| Area | Request | What it returns / does | KasaMonitor |
+|---|---|---|---|
+| Identity | `Shelly.GetDeviceInfo` | `id`, `mac`, `model` (S3EM-002CXCEU), `gen`, `ver`, `app` (EMG3), `auth_en`, `name` | **used** (discovery, hourly refresh; model, firmware, gen); **shown** |
+| Meter channel (EM Gen3, Pro EM) | `em1:N` in `Shelly.GetStatus` | `voltage` V, `current` A, `act_power` W (signed), `aprt_power` VA, `pf`, `freq` Hz, `calibration`, `errors` | **used** (W, V, A, pf, VA, Hz → metrics); **shown** (pf, VA, Hz, calibration) |
+| Meter energy counters | `em1data:N` | `total_act_energy`, `total_act_ret_energy` (Wh, cumulative) | **used** (`kasa_power_total`, `kasa_energy_returned_wh_total`); **shown** |
+| Three-phase meter (Pro 3EM) | `em:0`, `emdata:0` | per phase `a_`/`b_`/`c_` voltage, current, act/aprt power, pf, freq; `total_current`, `total_act_power`, `total_aprt_power`; `total_act`, `total_act_ret` | **used** (totals only, one channel; untested). Per-phase values: **easy** |
+| Power meter (PM Mini) | `pm1:N` | `voltage`, `current`, `apower`, `freq`, `pf`, `aenergy.total`, `ret_aenergy.total` | **used** (untested) |
+| Metered relay (Plus Plug S, 1PM, Pro xPM) | `switch:N` | `output`, `apower`, `voltage`, `current`, `pf`, `freq`, `aenergy.total` (+ `by_minute`), `temperature.tC`, `source` | **used** (untested): W/V/A/pf/Hz/Wh, relay, temperature |
+| Relay without metering (EM Gen3) | `switch:0` status / config | `output`, `temperature.tC`; config `initial_state`, `auto_on`, `auto_on_delay`, `auto_off`, `auto_off_delay`, `name` | **used** (`kasa_relay_state` on channel 0, temperature); **shown** (default state, auto on/off) |
+| Meter config | `em1:N` in `Shelly.GetConfig` | `name`, `reverse` (CT direction), `ct_type` (e.g. `50AEMG3`) | **used** (alias from `name`); **shown** (CT type, reversed) |
+| Per-minute energy history | `EM1Data.GetRecords?id=N` | `data_blocks[{ts, period, records}]` (what the device keeps) | **used** (start of the first sync) |
+| | `EM1Data.GetData?id=N&ts=&end_ts=` | `keys[]` + `data[{ts, period, values[[…]]}]`, one row per period (60 s): energy of that minute (`total_act_energy`, `total_act_ret_energy`, reactive energies), min/max/avg power, voltage, current; `next_record_ts` when more pages exist | **used** (daily kWh, one request per local day). Min/max/avg per minute: **easy** |
+| Energy history (Pro 3EM) | `EMData.GetRecords`, `EMData.GetData` | same shape, three-phase keys | **easy** (not read: daily kWh comes from our own readings) |
+| CSV export | `/emdata/0/data.csv`, `/em1data/N/data.csv` (HTTP) | the same records as CSV | not used |
+| System | `sys` in `Shelly.GetStatus` | `uptime`, `time`, `unixtime`, `utc_offset`, `available_updates.stable.version` (and `beta`), `restart_required`, `ram_*`, `fs_*`, `cfg_rev`, `reset_reason` | **shown** (uptime, update available, device time, restart required). RAM/FS: **easy** |
+| Location / time zone | `sys.location` in `Shelly.GetConfig` | `tz`, `lat`, `lon` | **shown** (time zone) |
+| Network | `wifi` status | `sta_ip`, `status`, `ssid`, `rssi` | **shown**; `rssi` also in `PlugInfo` |
+| Cloud / MQTT / WebSocket | `cloud.connected`, `mqtt.connected`, `ws.connected` | connection state | **shown** (cloud, MQTT) |
+| Bluetooth | `ble`, `bthome` | BLE gateway / BTHome state | not relevant |
+| Relay control | `Switch.Set`, `Switch.Toggle` | switch the relay | **action** (deliberately not: KasaMonitor is read-only) |
+| Configuration | `EM1.SetConfig` (`reverse`, `name`, `ct_type`), `Switch.SetConfig`, `Sys.SetConfig` (time zone, name), `WiFi.SetConfig`, `Cloud.SetConfig`, `MQTT.SetConfig` | change settings | **action** (not implemented; e.g. fixing a wrong `sys.location.tz` or a reversed CT is done in the Shelly app / web UI) |
+| Counters / data | `EM1Data.ResetCounters`, `EM1Data.DeleteAllData`, `EMData.*` equivalents | reset energy totals / delete history | **action** (deliberately not) |
+| Maintenance | `Shelly.Reboot`, `Shelly.Update`, `Shelly.FactoryReset`, `Shelly.SetAuth` | reboot, firmware update, reset, set password | **action** (deliberately not) |
+| Scripts / webhooks / schedules | `Script.*`, `Webhook.*`, `Schedule.*` | on-device automation | not used |
+
+Notes:
+
+- A device with `auth_en: true` and no password in `/settings` is listed as `nesuportat: parolă Shelly lipsă`; a
+  rejected password as `autentificare Shelly eșuată`. The digest challenge is cached per device (nonce count
+  incremented), so a steady poll costs one request; a stale nonce costs one extra 401.
+- Time stamps of `EM1Data` records are the device's own clock. A device whose clock jumps (e.g. right after a time
+  zone change, or before the first SNTP sync) writes records at wrong times; KasaMonitor drops records dated after
+  today and sums the rest by the application's local day.
+- Discovery: Gen2+ devices announce `_shelly._tcp.local` with TXT `gen`, `app`, `ver`; `sys.device.discoverable =
+  false` hides them from mDNS — use *Shelly probe hosts* or add by IP.
 
 ## Limitations
 

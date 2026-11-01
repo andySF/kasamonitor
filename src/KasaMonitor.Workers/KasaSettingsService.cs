@@ -1,5 +1,6 @@
 using KasaMonitor.Core.Abstractions;
 using KasaMonitor.Core.Models;
+using KasaMonitor.Core.Protocol.Shelly;
 using Microsoft.Extensions.DependencyInjection;
 using System.Globalization;
 using System.Net;
@@ -20,6 +21,12 @@ public static class SettingKeys
     public const string ReadingsRetentionMonths = "ReadingsRetentionMonths";
     /// <summary>Price per kWh saved from /settings (invariant decimal); used for every cost shown in the UI.</summary>
     public const string TariffRonPerKwh = "TariffRonPerKwh";
+    /// <summary>mDNS discovery of Shelly Gen2+ devices (and probing of <see cref="ShellyProbeHosts"/>).</summary>
+    public const string ShellyDiscoveryEnabled = "ShellyDiscoveryEnabled";
+    /// <summary>Admin password of Shelly devices with authentication on; stored encrypted like <see cref="TapoPassword"/>.</summary>
+    public const string ShellyPassword = "ShellyPassword";
+    /// <summary>Optional IPs / ranges / CIDR blocks probed with Shelly.GetDeviceInfo on every discovery (mDNS fallback).</summary>
+    public const string ShellyProbeHosts = "ShellyProbeHosts";
 }
 
 /// <summary>Values from configuration (env <c>KasaMonitor__*</c>), used when the database has no value for a key.</summary>
@@ -31,7 +38,10 @@ public sealed record KasaSettingsDefaults(
     string? TapoUsername = null,
     string? TapoPassword = null,
     int ReadingsRetentionMonths = 0,
-    decimal TariffRonPerKwh = 1.30m);
+    decimal TariffRonPerKwh = 1.30m,
+    bool ShellyDiscoveryEnabled = true,
+    string? ShellyPassword = null,
+    string ShellyProbeHosts = "");
 
 /// <summary>Effective settings (database first, configuration as fallback).</summary>
 public sealed record KasaRuntimeSettings(
@@ -44,10 +54,21 @@ public sealed record KasaRuntimeSettings(
     bool HasTapoPassword,
     TapoCredentials? TapoCredentials,
     int ReadingsRetentionMonths = 0,
-    decimal TariffRonPerKwh = 1.30m);
+    decimal TariffRonPerKwh = 1.30m,
+    bool ShellyDiscoveryEnabled = true,
+    ShellyCredentials? ShellyCredentials = null,
+    string ShellyProbeHosts = "",
+    IReadOnlyList<IPAddress>? ShellyProbeAddresses = null)
+{
+    public bool HasShellyPassword => ShellyCredentials is not null;
+    public IReadOnlyList<IPAddress> ShellyProbeList => ShellyProbeAddresses ?? Array.Empty<IPAddress>();
+}
 
 /// <param name="NewTapoPassword">Null or empty keeps the stored password.</param>
 /// <param name="ReadingsRetentionMonths">Null keeps the stored value.</param>
+/// <param name="ShellyDiscoveryEnabled">Null keeps the stored value.</param>
+/// <param name="ShellyProbeHosts">Null keeps the stored value.</param>
+/// <param name="NewShellyPassword">Null or empty keeps the stored password.</param>
 public sealed record KasaSettingsUpdate(
     bool AutoDiscoveryEnabled,
     int AutoDiscoveryIntervalMinutes,
@@ -56,7 +77,11 @@ public sealed record KasaSettingsUpdate(
     string TapoUsername,
     string? NewTapoPassword,
     bool ClearTapoPassword,
-    int? ReadingsRetentionMonths = null);
+    int? ReadingsRetentionMonths = null,
+    bool? ShellyDiscoveryEnabled = null,
+    string? ShellyProbeHosts = null,
+    string? NewShellyPassword = null,
+    bool ClearShellyPassword = false);
 
 public interface IKasaSettingsService
 {
@@ -117,8 +142,21 @@ public sealed class KasaSettingsService : IKasaSettingsService
             ? parsedTariff
             : _defaults.TariffRonPerKwh;
 
+        var shellyEnabled = ParseBool(db, SettingKeys.ShellyDiscoveryEnabled) ?? _defaults.ShellyDiscoveryEnabled;
+        string? shellyPassword;
+        if (db.TryGetValue(SettingKeys.ShellyPassword, out var protectedShelly))
+            shellyPassword = protectedShelly.Length == 0 ? null : _protector.Unprotect(protectedShelly);
+        else
+            shellyPassword = string.IsNullOrEmpty(_defaults.ShellyPassword) ? null : _defaults.ShellyPassword;
+        var probeText = db.TryGetValue(SettingKeys.ShellyProbeHosts, out var ph) ? ph : _defaults.ShellyProbeHosts;
+        var (probeHosts, _) = ShellySupport.ParseProbeHosts(probeText);
+
         return new KasaRuntimeSettings(enabled, interval, broadcastText, addrs, autoAdd,
-            user, !string.IsNullOrEmpty(password), creds, retention, tariff);
+            user, !string.IsNullOrEmpty(password), creds, retention, tariff,
+            shellyEnabled,
+            string.IsNullOrEmpty(shellyPassword) ? null : new ShellyCredentials(shellyPassword),
+            probeText,
+            probeHosts);
     }
 
     public async Task SaveAsync(KasaSettingsUpdate update, CancellationToken ct)
@@ -126,6 +164,8 @@ public sealed class KasaSettingsService : IKasaSettingsService
         var (_, invalid) = ParseBroadcastNetworks(update.BroadcastNetworks);
         if (invalid.Count > 0)
             throw new FormatException($"Adrese broadcast invalide: {string.Join(", ", invalid)}");
+        if (update.ShellyProbeHosts is { } probe && ShellySupport.ParseProbeHosts(probe).Invalid is { Count: > 0 } badHosts)
+            throw new FormatException($"Adrese Shelly invalide: {string.Join(", ", badHosts)} (IP, interval a.b.c.d-e sau CIDR /{ShellySupport.MinCidrPrefix}–/32, max. {ShellySupport.MaxProbeHosts} adrese)");
 
         using var scope = _scopeFactory.CreateScope();
         var repo = scope.ServiceProvider.GetRequiredService<ISettingsRepository>();
@@ -142,6 +182,14 @@ public sealed class KasaSettingsService : IKasaSettingsService
             await repo.SetAsync(SettingKeys.TapoPassword, "", ct);
         else if (!string.IsNullOrEmpty(update.NewTapoPassword))
             await repo.SetAsync(SettingKeys.TapoPassword, _protector.Protect(update.NewTapoPassword), ct);
+        if (update.ShellyDiscoveryEnabled is { } shellyOn)
+            await repo.SetAsync(SettingKeys.ShellyDiscoveryEnabled, shellyOn ? "true" : "false", ct);
+        if (update.ShellyProbeHosts is { } hosts)
+            await repo.SetAsync(SettingKeys.ShellyProbeHosts, hosts.Trim(), ct);
+        if (update.ClearShellyPassword)
+            await repo.SetAsync(SettingKeys.ShellyPassword, "", ct);
+        else if (!string.IsNullOrEmpty(update.NewShellyPassword))
+            await repo.SetAsync(SettingKeys.ShellyPassword, _protector.Protect(update.NewShellyPassword), ct);
     }
 
     /// <summary>Comma-separated IPv4 addresses; returns the valid ones and the rejected tokens.</summary>

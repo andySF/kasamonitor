@@ -1,0 +1,17 @@
+{
+  "ble": {},
+  "cloud": { "connected": true },
+  "mqtt": { "connected": false },
+  "pm1:0": {
+    "id": 0,
+    "voltage": 231.4,
+    "current": 1.05,
+    "apower": 240.5,
+    "freq": 50.0,
+    "pf": 0.98,
+    "aenergy": { "total": 5000.4, "by_minute": [4.0, 4.0, 4.0], "minute_ts": 1793544000 },
+    "ret_aenergy": { "total": 1.6, "by_minute": [0, 0, 0], "minute_ts": 1793544000 }
+  },
+  "sys": { "mac": "A0A3B3000002", "uptime": 120, "unixtime": 1793544000, "utc_offset": 7200, "available_updates": {} },
+  "wifi": { "sta_ip": "192.168.1.61", "status": "got ip", "ssid": "TestNet", "rssi": -70 }
+}

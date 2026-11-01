@@ -17,9 +17,13 @@ public sealed record Plug(
     bool IsArchived,
     string? Notes,
     string Protocol = PlugProtocols.Legacy,
-    string? UnsupportedReason = null
+    string? UnsupportedReason = null,
+    int Channel = 0
 )
 {
+    /// <summary>MAC for channel 0, "&lt;mac&gt;-&lt;channel&gt;" otherwise: the <c>mac</c> metric label and a unique display key.</summary>
+    public string MacLabel => PlugChannel.MacLabel(Mac, Channel);
+
     public bool IsSupported => UnsupportedReason is null;
 
     /// <summary>Polled, exported to /metrics and shown in history: not withdrawn (archived) and on a supported protocol.</summary>

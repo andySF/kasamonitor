@@ -9,8 +9,8 @@ services:
   kasamonitor:
     image: duobit/kasamonitor:latest
     container_name: kasamonitor
-    # REQUIRED. Plug discovery sends UDP broadcasts (port 9999 for Kasa, 20002 for Tapo) and listens for the
-    # answers; on a Docker bridge network the broadcast never reaches your LAN. With host networking the app
+    # REQUIRED. Plug discovery sends UDP broadcasts (port 9999 for Kasa, 20002 for Tapo) and an mDNS query
+    # (224.0.0.251:5353 for Shelly) and listens for the answers; on a Docker bridge network they never reach your LAN. With host networking the app
     # also listens directly on the host's port 8910 (no "ports:" mapping needed or possible).
     network_mode: host
     restart: unless-stopped
@@ -27,3 +27,5 @@ services:
       KasaMonitor__PollIntervalSeconds: "10"
       KasaMonitor__TapoUsername: ""                      # TP-Link / Tapo app account e-mail (Tapo plugs only)
       KasaMonitor__TapoPassword: ""                      # TP-Link / Tapo app account password
+      # KasaMonitor__ShellyPassword: ""                  # Shelly admin password (only devices with authentication on)
+      # KasaMonitor__ShellyProbeHosts: ""                # e.g. "192.168.1.141, 10.0.5.0/24" when mDNS does not reach

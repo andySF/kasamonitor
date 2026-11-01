@@ -46,7 +46,7 @@ else
         else
         {
             <div class="card mb-3"><div class="card-body">
-            <h2 class="h6 text-secondary">Energy per day, all plugs (kWh)</h2>
+            <h2 class="h6 text-secondary" title="Contoarele de energie (Shelly EM) nu sunt incluse: ele conțin deja consumul prizelor">Energie pe zi, toate prizele (kWh, fără contoare)</h2>
             <ApexChart @key="_chartKey" TItem="DayPoint" Title="kWh / day" Options="_allChartOptions">
                 @foreach (var s in _all.Series)
                 {

@@ -22,7 +22,8 @@ public sealed class KasaDbContext : DbContext
         {
             e.ToTable("Plugs");
             e.HasKey(p => p.Id);
-            e.HasIndex(p => p.Mac).IsUnique();
+            // Identity of a plug: MAC + measured channel (multi-channel Shelly meters). Existing rows migrate to channel 0.
+            e.HasIndex(p => new { p.Mac, p.Channel }).IsUnique();
             e.Property(p => p.Protocol).HasDefaultValue("legacy");
         });
 

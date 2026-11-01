@@ -1,10 +1,12 @@
 using KasaMonitor.Core.Abstractions;
 using KasaMonitor.Core.Models;
 using KasaMonitor.Core.Protocol;
+using KasaMonitor.Core.Protocol.Shelly;
 using KasaMonitor.Core.Protocol.Tapo;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using System.Text.Json;
 
 namespace KasaMonitor.Workers;
 
@@ -21,6 +23,11 @@ public sealed class PollingWorker : BackgroundService
     private readonly System.Collections.Concurrent.ConcurrentDictionary<Guid, LegacyCounters> _legacyCounters = new();
     private readonly Func<DateTimeOffset> _clock;
     private readonly TimeZoneInfo _tz;
+    private readonly IShellyClient? _shelly;
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, DateTimeOffset> _shellyInfoReadAt = new(StringComparer.Ordinal);
+
+    /// <summary>How often Shelly.GetDeviceInfo + Shelly.GetConfig refresh a Shelly device's model, firmware and default aliases.</summary>
+    public static readonly TimeSpan ShellyInfoRefresh = TimeSpan.FromHours(1);
 
     /// <summary>How often a legacy plug's emeter.get_daystat is asked for today's / this month's Wh.</summary>
     public static readonly TimeSpan LegacyCountersRefresh = TimeSpan.FromMinutes(5);
@@ -36,8 +43,10 @@ public sealed class PollingWorker : BackgroundService
         TimeSpan interval,
         ILogger<PollingWorker> log,
         Func<DateTimeOffset>? clock = null,
-        TimeZoneInfo? timeZone = null)
+        TimeZoneInfo? timeZone = null,
+        IShellyClient? shelly = null)
     {
+        _shelly = shelly;
         _clock = clock ?? (() => DateTimeOffset.UtcNow);
         _tz = timeZone ?? TimeZoneInfo.Local;
         _kasa = kasa;
@@ -63,44 +72,133 @@ public sealed class PollingWorker : BackgroundService
             _broadcaster.Remove(inactive.Id);   // drops its /metrics series and dashboard card
 
         var plugs = all.Where(IsActive).ToList();
-        TapoCredentials? creds = null;
+        KasaRuntimeSettings? settings = null;
         if (plugs.Any(p => p.Protocol != PlugProtocols.Legacy))
-            creds = (await _settings.GetAsync(ct)).TapoCredentials;
+            settings = await _settings.GetAsync(ct);
+        var creds = settings?.TapoCredentials;
 
         var now = DateTimeOffset.UtcNow;
         var samplesToInsert = new List<Sample>();
+        var shellyRefreshes = new System.Collections.Concurrent.ConcurrentBag<(IReadOnlyList<Plug> Channels, JsonElement Status)>();
 
-        await Parallel.ForEachAsync(plugs, new ParallelOptions { MaxDegreeOfParallelism = 8, CancellationToken = ct },
-            async (plug, innerCt) =>
+        // One poll unit per device: a single plug, or all channels of one Shelly device (one Shelly.GetStatus for all).
+        var units = plugs.Where(p => p.Protocol != PlugProtocols.ShellyRpc).Select(p => (IReadOnlyList<Plug>)new[] { p })
+            .Concat(plugs.Where(p => p.Protocol == PlugProtocols.ShellyRpc)
+                .GroupBy(p => p.Mac, StringComparer.Ordinal)
+                .Select(g => (IReadOnlyList<Plug>)g.OrderBy(p => p.Channel).ToList()))
+            .ToList();
+
+        await Parallel.ForEachAsync(units, new ParallelOptions { MaxDegreeOfParallelism = 8, CancellationToken = ct },
+            async (unit, innerCt) =>
             {
-                var model = PlugModelName.Short(plug.Model);
-                Sample s;
+                if (unit[0].Protocol == PlugProtocols.ShellyRpc)
+                {
+                    await PollShellyAsync(unit, settings!, now, samplesToInsert, shellyRefreshes, innerCt);
+                    return;
+                }
+                var plug = unit[0];
                 try
                 {
                     var reading = await ReadAsync(plug, creds, innerCt);
-                    s = new Sample(0, plug.Id, now, true,
-                        reading.PowerMw, reading.VoltageMv, reading.CurrentMa, reading.TotalWh,
-                        Rssi: null, RelayOn: null, ErrorMessage: null);
-                    _broadcaster.Publish(new PlugLiveState(plug.Id, plug.Mac, plug.Alias, true, reading, now, model, plug.Protocol));
-                    var ended = _failures.RecordSuccess(plug.Id);
-                    if (ended > 0)
-                        _log.LogInformation("Plug {Alias} ({Ip}) is responding again after {Failures} failed polls",
-                            plug.Alias, plug.IpAddress, ended);
+                    Succeeded(plug, reading, now, samplesToInsert);
                 }
                 catch (Exception ex) when (!innerCt.IsCancellationRequested)
                 {
-                    s = new Sample(0, plug.Id, now, false, null, null, null, null, null, null, ex.Message);
-                    _broadcaster.Publish(new PlugLiveState(plug.Id, plug.Mac, plug.Alias, false, null, now, model, plug.Protocol));
-                    var (shouldLog, count) = _failures.RecordFailure(plug.Id, now);
-                    if (shouldLog)
-                        _log.LogWarning("Poll failed for plug {Alias} ({Ip}, {Protocol}), {Failures} consecutive failures: {Reason}",
-                            plug.Alias, plug.IpAddress, plug.Protocol, count, ex.Message);
+                    Failed(plug, ex.Message, now, samplesToInsert, log: true);
                 }
-                lock (samplesToInsert) samplesToInsert.Add(s);
             });
 
         if (samplesToInsert.Count > 0)
             await sampleRepo.InsertManyAsync(samplesToInsert, ct);
+
+        // Hourly Shelly info/config refresh: after the samples are stored, so it never delays the readings.
+        foreach (var (channels, status) in shellyRefreshes)
+        {
+            try { await RefreshShellyInfoAsync(channels, status, settings!, ct); }
+            catch (Exception ex) when (!ct.IsCancellationRequested)
+            {
+                _log.LogDebug("Shelly info refresh for {Ip} failed: {Reason}", channels[0].IpAddress, ex.Message);
+            }
+        }
+    }
+
+    private void Succeeded(Plug plug, EmeterReading reading, DateTimeOffset now, List<Sample> samples)
+    {
+        var s = new Sample(0, plug.Id, now, true,
+            reading.PowerMw, reading.VoltageMv, reading.CurrentMa, reading.TotalWh,
+            Rssi: null, RelayOn: reading.RelayOn, ErrorMessage: null);
+        _broadcaster.Publish(new PlugLiveState(plug.Id, plug.Mac, plug.Alias, true, reading, now,
+            PlugModelName.Short(plug.Model), plug.Protocol, plug.Channel));
+        var ended = _failures.RecordSuccess(plug.Id);
+        if (ended > 0)
+            _log.LogInformation("Plug {Alias} ({Ip}) is responding again after {Failures} failed polls",
+                plug.Alias, plug.IpAddress, ended);
+        lock (samples) samples.Add(s);
+    }
+
+    /// <param name="log">False for the other channels of a Shelly device whose single request failed (one warning per device).</param>
+    private void Failed(Plug plug, string reason, DateTimeOffset now, List<Sample> samples, bool log)
+    {
+        var s = new Sample(0, plug.Id, now, false, null, null, null, null, null, null, reason);
+        _broadcaster.Publish(new PlugLiveState(plug.Id, plug.Mac, plug.Alias, false, null, now,
+            PlugModelName.Short(plug.Model), plug.Protocol, plug.Channel));
+        var (shouldLog, count) = _failures.RecordFailure(plug.Id, now);
+        if (shouldLog && log)
+            _log.LogWarning("Poll failed for plug {Alias} ({Ip}, {Protocol}), {Failures} consecutive failures: {Reason}",
+                plug.Alias, plug.IpAddress, plug.Protocol, count, reason);
+        lock (samples) samples.Add(s);
+    }
+
+    /// <summary>
+    /// All channels of one Shelly device from a single <c>Shelly.GetStatus</c> (timeout in the client, 3 s). Every
+    /// <see cref="ShellyInfoRefresh"/> the device's info and config are read again (queued in <paramref name="refreshes"/>,
+    /// run after the samples are inserted) to refresh model, firmware and the default aliases of the channels already
+    /// in the database (custom aliases are kept).
+    /// </summary>
+    private async Task PollShellyAsync(IReadOnlyList<Plug> channels, KasaRuntimeSettings settings, DateTimeOffset now,
+        List<Sample> samples, System.Collections.Concurrent.ConcurrentBag<(IReadOnlyList<Plug>, JsonElement)> refreshes, CancellationToken ct)
+    {
+        var ip = channels[0].IpAddress;
+        JsonElement status;
+        try
+        {
+            if (_shelly is null) throw new KasaProtocolException($"Protocol '{PlugProtocols.ShellyRpc}' is not supported.");
+            status = await _shelly.GetStatusAsync(ip, settings.ShellyCredentials?.Password, ct);
+        }
+        catch (Exception ex) when (!ct.IsCancellationRequested)
+        {
+            var reason = ex is ShellyAuthenticationException auth
+                ? (auth.PasswordMissing ? ShellySupport.MissingPasswordReason : ShellySupport.AuthFailedReason)
+                : ex.Message;
+            foreach (var plug in channels) Failed(plug, reason, now, samples, log: plug == channels[0]);
+            return;
+        }
+
+        var readings = ShellyStatusParser.Parse(status);
+        foreach (var plug in channels)
+        {
+            if (readings.For(plug.Channel) is { } reading) Succeeded(plug, reading, now, samples);
+            else Failed(plug, $"canalul {plug.Channel} lipsește din Shelly.GetStatus", now, samples, log: true);
+        }
+
+        if (!_shellyInfoReadAt.TryGetValue(channels[0].Mac, out var last) || _clock() - last >= ShellyInfoRefresh)
+            refreshes.Add((channels, status));
+    }
+
+    private async Task RefreshShellyInfoAsync(IReadOnlyList<Plug> channels, JsonElement status, KasaRuntimeSettings settings, CancellationToken ct)
+    {
+        var mac = channels[0].Mac;
+        var now = _clock();
+        if (_shellyInfoReadAt.TryGetValue(mac, out var last) && now - last < ShellyInfoRefresh) return;
+        _shellyInfoReadAt[mac] = now;
+
+        var ip = channels[0].IpAddress;
+        var info = await _shelly!.GetDeviceInfoAsync(ip, ct);
+        var mapped = await ShellyPlugReader.ReadAsync(_shelly, ip, info, settings.ShellyCredentials, ct, status);
+        using var scope = _scopeFactory.CreateScope();
+        var repo = scope.ServiceProvider.GetRequiredService<IPlugRepository>();
+        foreach (var dp in mapped.Where(d => d.IsSupported && d.Info.Mac == mac && channels.Any(c => c.Channel == d.Channel)))
+            await repo.UpsertFromDiscoveryAsync(dp, DateTimeOffset.UtcNow, ct);
     }
 
     private async Task<EmeterReading> ReadAsync(Plug plug, TapoCredentials? creds, CancellationToken ct)

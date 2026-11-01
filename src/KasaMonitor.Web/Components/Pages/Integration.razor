@@ -60,7 +60,7 @@
     }
 
     <h3>Metrici <code>kasa_*</code></h3>
-    <p class="note">Etichete pe toate seriile: @foreach (var l in KasaMetrics.LabelNames) { <code>@l</code><span> </span> } (protocol: legacy, klap, aes). Valorile se actualizează la fiecare citire a prizelor (implicit 10 s).</p>
+    <p class="note">Etichete pe toate seriile: @foreach (var l in KasaMetrics.LabelNames) { <code>@l</code><span> </span> } (protocol: legacy, klap, aes, shelly-rpc; pentru canalele ≥ 1 ale unui contor Shelly <code>mac</code> = <code>&lt;mac&gt;-&lt;canal&gt;</code>). Valorile se actualizează la fiecare citire a prizelor (implicit 10 s).</p>
     @if (_families is null)
     {
         <p><em>Se încarcă…</em></p>
@@ -92,7 +92,7 @@
                 }
             </tbody>
         </table>
-        <p class="note"><code>kasa_power_total</code> e în Wh cumulativ și poate scădea puțin la repornirea aplicației; energia se calculează ca sumă a creșterilor la 5 minute (așa face dashboard-ul), nu cu <code>increase()</code>. <code>kasa_voltage</code>/<code>kasa_current</code> există doar pentru prizele care le raportează; <code>kasa_rssi</code> nu e încă populată.</p>
+        <p class="note"><code>kasa_power_total</code> e în Wh cumulativ și poate scădea puțin la repornirea aplicației; energia se calculează ca sumă a creșterilor la 5 minute (așa face dashboard-ul), nu cu <code>increase()</code>. <code>kasa_voltage</code>/<code>kasa_current</code> există doar pentru prizele care le raportează; <code>kasa_power_factor</code>, <code>kasa_apparent_power_va</code>, <code>kasa_frequency_hz</code>, <code>kasa_energy_returned_wh_total</code> și <code>kasa_device_temperature_c</code> doar pentru dispozitivele Shelly care le raportează; <code>kasa_rssi</code> nu e încă populată. Contoarele (model <code>S3EM…</code>/<code>SPEM…</code>) includ consumul prizelor din spatele lor: dashboard-ul le exclude din totaluri cu <code>model!~"@PlugChannel.MeterModelRegex"</code>.</p>
     }
 
     <h3>Prize care NU apar în metrici</h3>
@@ -106,7 +106,7 @@
                 @foreach (var p in _hidden)
                 {
                     <tr>
-                        <td>@p.Alias</td><td><code>@p.Mac</code></td><td>@p.IpAddress</td>
+                        <td>@p.Alias</td><td><code>@p.MacLabel</code></td><td>@p.IpAddress</td>
                         <td>@(p.IsArchived ? "retrasă (Prize → Readu)" : TapoSupport.Describe(p.Model, p.UnsupportedReason ?? ""))</td>
                     </tr>
                 }

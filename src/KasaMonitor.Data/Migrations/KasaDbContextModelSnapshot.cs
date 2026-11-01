@@ -118,6 +118,9 @@ namespace KasaMonitor.Data.Migrations
                     b.Property<bool>("AliasIsCustom")
                         .HasColumnType("INTEGER");
 
+                    b.Property<int>("Channel")
+                        .HasColumnType("INTEGER");
+
                     b.Property<DateTimeOffset>("FirstSeenUtc")
                         .HasColumnType("TEXT");
 
@@ -165,7 +168,7 @@ namespace KasaMonitor.Data.Migrations
 
                     b.HasKey("Id");
 
-                    b.HasIndex("Mac")
+                    b.HasIndex("Mac", "Channel")
                         .IsUnique();
 
                     b.ToTable("Plugs", (string)null);

@@ -15,17 +15,17 @@
     <h1 class="h3 mb-0"><i class="bi bi-speedometer2 me-2"></i>Dashboard</h1>
     <div class="d-flex flex-wrap gap-2">
         <div class="card px-3 py-2 text-center">
-            <div class="small text-secondary">Putere acum</div>
+            <div class="small text-secondary" title="Suma prizelor; contoarele de energie (Shelly EM) nu intră în total">Putere acum</div>
             <div class="fs-5 fw-semibold"><i class="bi bi-lightning-charge text-warning"></i> @TotalPowerW.ToString("0") W</div>
             <div class="small text-secondary">@EnergyFormat.Lei(HourlyCostRon)/h</div>
         </div>
         <div class="card px-3 py-2 text-center">
-            <div class="small text-secondary">Azi (toate prizele)</div>
+            <div class="small text-secondary" title="@DayCountersNote">Azi (toate prizele)</div>
             <div class="fs-5 fw-semibold">@(TodayTotalWh is { } t ? EnergyFormat.Kwh(t) + " kWh" : "—")</div>
             <div class="small text-secondary">@(TodayTotalWh is { } tc ? EnergyFormat.Lei(_tariff.CostFromWh(tc)) : "")</div>
         </div>
         <div class="card px-3 py-2 text-center">
-            <div class="small text-secondary">Luna (toate prizele)</div>
+            <div class="small text-secondary" title="@DayCountersNote">Luna (toate prizele)</div>
             <div class="fs-5 fw-semibold">@(MonthTotalWh is { } m ? EnergyFormat.Kwh(m) + " kWh" : "—")</div>
             <div class="small text-secondary">@(MonthTotalWh is { } mc ? EnergyFormat.Lei(_tariff.CostFromWh(mc)) : "")</div>
         </div>
@@ -55,7 +55,13 @@ else
                         </div>
                         @if (s.LastReading is not null)
                         {
-                            <div class="fs-4 fw-semibold">@((s.LastReading.PowerMw / 1000.0).ToString("0.0")) W</div>
+                            <div class="fs-4 fw-semibold">
+                                @((s.LastReading.PowerMw / 1000.0).ToString("0.0")) W
+                                @if (s.Protocol == PlugProtocols.ShellyRpc && s.LastReading.PowerMw < ReversedBelowMw)
+                                {
+                                    <span class="badge text-bg-warning fs-6 align-middle" title="Putere negativă: clema e montată invers (sau energia e livrată în rețea). Se poate corecta din aplicația Shelly (reverse); KasaMonitor doar citește.">inversat?</span>
+                                }
+                            </div>
                             <div class="small text-secondary">
                                 @if (s.LastReading.VoltageMv is { } mv)
                                 {
@@ -65,9 +71,13 @@ else
                                 {
                                     <span class="me-2">@((ma / 1000.0).ToString("0.000")) A</span>
                                 }
-                                @if (s.Protocol == PlugProtocols.Legacy)
+                                @if (s.LastReading.PowerFactor is { } pf)
                                 {
-                                    <span title="Contorul cumulativ al prizei">Total @((s.LastReading.TotalWh / 1000.0).ToString("0.000")) kWh</span>
+                                    <span class="me-2" title="Factor de putere">pf @pf.ToString("0.00")</span>
+                                }
+                                @if (s.Protocol is PlugProtocols.Legacy or PlugProtocols.ShellyRpc && s.LastReading.TotalWh is { } totalWh)
+                                {
+                                    <span title="Contorul cumulativ al prizei">Total @((totalWh / 1000.0).ToString("0.000")) kWh</span>
                                 }
                             </div>
                             @if (s.LastReading.TodayWh is { } todayWh)
@@ -131,7 +141,16 @@ else
     private bool _loadingDetails;
     private DeviceDetails? _details;
 
-    private double TotalPowerW => _states.Values
+    /// <summary>"inversat?" is shown below -10 W (small negative readings of an idle channel are noise).</summary>
+    private const long ReversedBelowMw = -10_000;
+
+    private const string DayCountersNote =
+        "Suma contoarelor de azi / din lună raportate de prize (Kasa, Tapo). Prizele Shelly nu au astfel de contoare în dispozitiv și nu sunt incluse aici (istoricul lor zilnic e în History); contoarele de energie (Shelly EM) nu intră în totaluri.";
+
+    /// <summary>Plugs that count towards the header totals: energy meters (Shelly EM) already include them.</summary>
+    private IEnumerable<PlugLiveState> Counted => _states.Values.Where(s => PlugChannel.CountsInTotals(s.Model));
+
+    private double TotalPowerW => Counted
         .Where(s => s.IsOnline && s.LastReading is not null)
         .Sum(s => s.LastReading!.PowerMw / 1000.0);
 
@@ -140,8 +159,8 @@ else
 
     private decimal HourlyCostRon => _tariff.CostFromWh((long)TotalPowerW);
 
-    private long? TodayTotalWh => EnergyFormat.Sum(_states.Values.Select(s => s.LastReading), r => r.TodayWh);
-    private long? MonthTotalWh => EnergyFormat.Sum(_states.Values.Select(s => s.LastReading), r => r.MonthWh);
+    private long? TodayTotalWh => EnergyFormat.Sum(Counted.Select(s => s.LastReading), r => r.TodayWh);
+    private long? MonthTotalWh => EnergyFormat.Sum(Counted.Select(s => s.LastReading), r => r.MonthWh);
 
     /// <summary>Tariff saved in /settings (falls back to the startup value); re-read every 30 s.</summary>
     private async Task LoadTariffAsync()
@@ -176,6 +195,7 @@ else
         DeviceDetails.Sections.Device => "bi-cpu",
         DeviceDetails.Sections.Time => "bi-clock",
         DeviceDetails.Sections.Schedules => "bi-calendar-event",
+        DeviceDetails.Sections.Meter => "bi-speedometer",
         _ => "bi-info-circle",
     };
 

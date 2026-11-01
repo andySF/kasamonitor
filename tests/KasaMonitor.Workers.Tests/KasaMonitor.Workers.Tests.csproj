@@ -21,4 +21,9 @@
     <ProjectReference Include="..\..\src\KasaMonitor.Data\KasaMonitor.Data.csproj" />
     <ProjectReference Include="..\..\src\KasaMonitor.Core\KasaMonitor.Core.csproj" />
   </ItemGroup>
+
+  <ItemGroup>
+    <!-- Shelly answers captured from a real EM Gen3 (owned by KasaMonitor.Core.Tests). -->
+    <None Include="../KasaMonitor.Core.Tests/fixtures/shelly_*.json" Link="fixtures/%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
 </Project>

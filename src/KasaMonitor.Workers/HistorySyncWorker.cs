@@ -1,6 +1,7 @@
 using KasaMonitor.Core.Abstractions;
 using KasaMonitor.Core.Models;
 using KasaMonitor.Core.Protocol;
+using KasaMonitor.Core.Protocol.Shelly;
 using KasaMonitor.Core.Protocol.Tapo;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -18,7 +19,11 @@ public sealed class HistorySyncWorker : BackgroundService
     private readonly IKasaSettingsService? _settings;
     private readonly TimeZoneInfo _tz;
     private readonly IPlugDiscoveredChannel? _discovered;
+    private readonly IShellyClient? _shelly;
     private readonly SemaphoreSlim _syncGate = new(1, 1);
+
+    /// <summary>Days of Shelly history read at the first sync of a channel; later syncs start from the last known day.</summary>
+    public const int ShellyHistoryDays = 60;
 
     public static readonly TimeSpan CycleInterval = TimeSpan.FromHours(6);
     /// <summary>Retry interval of the periodic cycle while the database has no plug with history (fresh install).</summary>
@@ -37,8 +42,10 @@ public sealed class HistorySyncWorker : BackgroundService
         ITapoClient? tapo = null,
         IKasaSettingsService? settings = null,
         TimeZoneInfo? timeZone = null,
-        IPlugDiscoveredChannel? discovered = null)
+        IPlugDiscoveredChannel? discovered = null,
+        IShellyClient? shelly = null)
     {
+        _shelly = shelly;
         _discovered = discovered;
         _kasa = kasa;
         _scopeFactory = scopeFactory;
@@ -49,10 +56,15 @@ public sealed class HistorySyncWorker : BackgroundService
         _tz = timeZone ?? TimeZoneInfo.Local;
     }
 
-    /// <summary>Legacy plugs (emeter daystat/monthstat) and, when a Tapo client is configured, KLAP/AES plugs.</summary>
+    /// <summary>
+    /// Legacy plugs (emeter daystat/monthstat), KLAP/AES plugs when a Tapo client is configured, and Shelly channels
+    /// when a Shelly client is configured (device history for em1 meters, own readings for the others).
+    /// </summary>
     public bool HasHistory(Plug p) =>
         PollingWorker.IsActive(p)
-        && (p.Protocol == PlugProtocols.Legacy || (_tapo is not null && _settings is not null && _tapo.SupportsProtocol(p.Protocol)));
+        && (p.Protocol == PlugProtocols.Legacy
+            || (p.Protocol == PlugProtocols.ShellyRpc && _shelly is not null && _settings is not null)
+            || (_tapo is not null && _settings is not null && _tapo.SupportsProtocol(p.Protocol)));
 
     public async Task SyncOneAsync(Guid plugId, CancellationToken ct)
     {
@@ -71,6 +83,11 @@ public sealed class HistorySyncWorker : BackgroundService
         var plug = (await plugRepo.ListAllAsync(ct)).FirstOrDefault(p => p.Id == plugId);
         if (plug is null) return;
 
+        if (plug.Protocol == PlugProtocols.ShellyRpc)
+        {
+            await SyncShellyAsync(plug, historyRepo, scope.ServiceProvider.GetRequiredService<ISampleRepository>(), ct);
+            return;
+        }
         if (plug.Protocol != PlugProtocols.Legacy)
         {
             await SyncTapoAsync(plug, historyRepo, ct);
@@ -152,6 +169,89 @@ public sealed class HistorySyncWorker : BackgroundService
     }
 
     private static DateOnly Min(DateOnly a, DateOnly b) => a < b ? a : b;
+
+    /// <summary>
+    /// Shelly: daily Wh per local day, from the last day already stored (re-read, it may have been partial) or
+    /// <see cref="ShellyHistoryDays"/> days back on the first sync, up to today. em1 meters (EM Gen3, Pro EM) keep
+    /// per-minute records: one <c>EM1Data.GetData</c> window per day (local midnight to midnight) for the days covered
+    /// by a block of <c>EM1Data.GetRecords</c>, summed per day.
+    /// Other Shelly devices (switch/pm1/em) keep no history: the day is the sum of the increases of our own readings
+    /// of the device counter (<c>aenergy.total</c>).
+    /// </summary>
+    private async Task SyncShellyAsync(Plug plug, IHistoryRepository historyRepo, ISampleRepository sampleRepo, CancellationToken ct)
+    {
+        if (_shelly is null || _settings is null) return;
+        var password = (await _settings.GetAsync(ct)).ShellyCredentials?.Password;
+        var today = DateOnly.FromDateTime(TimeZoneInfo.ConvertTimeFromUtc(DateTime.SpecifyKind(_nowProvider(), DateTimeKind.Utc), _tz));
+        var windowStart = today.AddDays(-(ShellyHistoryDays - 1));
+        try
+        {
+            var known = await historyRepo.GetDailyRangeAsync(plug.Id, windowStart, today, ct);
+            var start = known.Count > 0 ? known.Max(d => new DateOnly(d.Year, d.Month, d.Day)) : windowStart;
+            var stored = known.ToDictionary(d => new DateOnly(d.Year, d.Month, d.Day), d => d.EnergyWh);
+            // A re-read day never replaces a stored value with a smaller one (shorter device retention, partial read,
+            // purged samples): the larger of the two is kept.
+            List<DailyKwh> NotSmaller(IEnumerable<DailyKwh> days) =>
+                days.Where(d => !stored.TryGetValue(new DateOnly(d.Year, d.Month, d.Day), out var old) || d.EnergyWh > old).ToList();
+            var nowUtc = new DateTimeOffset(DateTime.SpecifyKind(_nowProvider(), DateTimeKind.Utc));
+
+            var readings = ShellyStatusParser.Parse(await _shelly.GetStatusAsync(plug.IpAddress, password, ct));
+            var total = 0;
+            if (readings.HasDeviceHistory && readings.For(plug.Channel) is not null)
+            {
+                var blocks = (await _shelly.GetEm1RecordsAsync(plug.IpAddress, password, plug.Channel, ct)).Where(b => b.Records > 0).ToList();
+                if (blocks.Count == 0)
+                {
+                    _log.LogInformation("History sync for {Alias} (shelly em1:{Channel}): the device has no records yet", plug.Alias, plug.Channel);
+                    return;
+                }
+                var firstDay = ShellyEnergyData.LocalDay(DateTimeOffset.FromUnixTimeSeconds(blocks.Min(b => b.Ts)), _tz);
+                if (firstDay > start) start = firstDay;
+                for (var day = start; day <= today; day = day.AddDays(1))
+                {
+                    var (from, to) = ShellyEnergyData.DayWindow(day, _tz);
+                    if (!blocks.Any(b => b.Ts <= to && b.Ts + (long)b.Records * b.Period > from)) continue;   // nothing stored that day
+                    IReadOnlyList<ShellyEnergyRow> rows;
+                    try
+                    {
+                        rows = await _shelly.GetEm1DataAsync(plug.IpAddress, password, plug.Channel, from, to, ct);
+                    }
+                    catch (ShellyIncompleteDataException ex)
+                    {
+                        _log.LogWarning("History sync for {Alias}: {Day} not stored, {Reason}", plug.Alias, day, ex.Message);
+                        continue;
+                    }
+                    // Records stamped in the future (device clock ahead, e.g. before its first time sync) are dropped.
+                    var maxTs = nowUtc.AddMinutes(5).ToUnixTimeSeconds();
+                    var daily = NotSmaller(ShellyEnergyData.DailyWh(rows.Where(r => r.Ts <= maxTs), _tz, today)
+                        .Where(d => new DateOnly(d.Year, d.Month, d.Day) == day));
+                    if (daily.Count == 0) continue;
+                    await historyRepo.UpsertDailyAsync(plug.Id, daily, ct);
+                    total += daily.Count;
+                }
+                _log.LogInformation("History sync for {Alias} (shelly em1:{Channel}): {Days} daily values from the device", plug.Alias, plug.Channel, total);
+                return;
+            }
+
+            for (var day = start; day <= today; day = day.AddDays(1))
+            {
+                // Start a little before midnight so the first increase of the day has a previous reading.
+                var from = ShellyEnergyData.LocalMidnightUtc(day, _tz).AddMinutes(-15);
+                var to = ShellyEnergyData.LocalMidnightUtc(day.AddDays(1), _tz).AddTicks(-1);
+                var samples = await sampleRepo.ListByPlugAsync(plug.Id, from, to, ct);
+                var points = samples.Where(s => s.Online && s.TotalWh is not null).Select(s => (s.TimestampUtc, s.TotalWh!.Value)).ToList();
+                var daily = NotSmaller(ShellyEnergyData.DailyFromCumulative(points, _tz).Where(d => new DateOnly(d.Year, d.Month, d.Day) == day));
+                if (daily.Count == 0) continue;
+                await historyRepo.UpsertDailyAsync(plug.Id, daily, ct);
+                total += daily.Count;
+            }
+            _log.LogInformation("History sync for {Alias} (shelly, own readings): {Days} daily values", plug.Alias, total);
+        }
+        catch (Exception ex) when (!ct.IsCancellationRequested)
+        {
+            _log.LogWarning(ex, "History sync failed for plug {Alias} ({Ip}, {PlugId})", plug.Alias, plug.IpAddress, plug.Id);
+        }
+    }
 
     /// <summary>Delay before the next periodic cycle: 1 minute while there is nothing to sync, otherwise 6 hours.</summary>
     public static TimeSpan NextCycleDelay(int plugsWithHistory) => plugsWithHistory == 0 ? EmptyRetryInterval : CycleInterval;

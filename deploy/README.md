@@ -33,10 +33,10 @@ stack has no repository directory. Keep `network_mode: host`.
 ## Local build & push to Docker Hub
 
 ```powershell
-docker build -t duobit/kasamonitor:latest -t duobit/kasamonitor:0.2.0 -f deploy/Dockerfile .
+docker build -t duobit/kasamonitor:latest -t duobit/kasamonitor:0.3.0 -f deploy/Dockerfile .
 docker login
 docker push duobit/kasamonitor:latest
-docker push duobit/kasamonitor:0.2.0
+docker push duobit/kasamonitor:0.3.0
 ```
 
 ## Configuration
@@ -52,6 +52,9 @@ the environment variables are only initial values (full list in `../README.md`).
 | `KasaMonitor__PollIntervalSeconds` | `10` | plug poll interval |
 | `KasaMonitor__DbPath` | `/data/kasa.db` | SQLite file location |
 | `KasaMonitor__TapoUsername` / `KasaMonitor__TapoPassword` | — | TP-Link account for Tapo plugs (better: `/settings`) |
+| `KasaMonitor__ShellyDiscoveryEnabled` | `true` | Shelly Gen2/Gen3 discovery (mDNS `_shelly._tcp`) |
+| `KasaMonitor__ShellyPassword` | — | admin password of Shelly devices with authentication (better: `/settings`) |
+| `KasaMonitor__ShellyProbeHosts` | — | IPs / ranges / CIDR probed with `Shelly.GetDeviceInfo` (mDNS fallback) |
 
 ## Troubleshooting
 

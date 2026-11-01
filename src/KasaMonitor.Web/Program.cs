@@ -1,5 +1,6 @@
 using KasaMonitor.Core.Abstractions;
 using KasaMonitor.Core.Protocol;
+using KasaMonitor.Core.Protocol.Shelly;
 using KasaMonitor.Core.Protocol.Tapo;
 using KasaMonitor.Data;
 using KasaMonitor.Web;
@@ -38,6 +39,8 @@ builder.Services.AddSingleton<IKasaClient, KasaClient>();
 builder.Services.AddSingleton<ISmartTransport>(_ => new KlapTransport(TimeSpan.FromSeconds(5)));
 builder.Services.AddSingleton<ISmartTransport>(_ => new AesTransport(TimeSpan.FromSeconds(5)));
 builder.Services.AddSingleton<ITapoClient>(sp => new TapoClient(sp.GetServices<ISmartTransport>()));
+// Shelly Gen2/Gen3 JSON-RPC over HTTP, read-only; 3 s per request (polling), 1 s for discovery probes.
+builder.Services.AddSingleton<IShellyClient>(_ => new ShellyClient(TimeSpan.FromSeconds(3)));
 builder.Services.AddKasaWorkers();
 
 // DataProtection protects the TP-Link password stored in the Settings table. The key ring lives next to the
@@ -60,7 +63,10 @@ builder.Services.AddSingleton(new KasaSettingsDefaults(
     TapoUsername: builder.Configuration["KasaMonitor:TapoUsername"],
     TapoPassword: builder.Configuration["KasaMonitor:TapoPassword"],
     ReadingsRetentionMonths: builder.Configuration.GetValue("KasaMonitor:ReadingsRetentionMonths", 0),
-    TariffRonPerKwh: tariff));
+    TariffRonPerKwh: tariff,
+    ShellyDiscoveryEnabled: builder.Configuration.GetValue("KasaMonitor:ShellyDiscoveryEnabled", true),
+    ShellyPassword: builder.Configuration["KasaMonitor:ShellyPassword"],
+    ShellyProbeHosts: builder.Configuration["KasaMonitor:ShellyProbeHosts"] ?? ""));
 
 var pollIntervalSec = builder.Configuration.GetValue("KasaMonitor:PollIntervalSeconds", 10);
 
@@ -71,7 +77,8 @@ builder.Services.AddSingleton(sp => new PlugDiscoveryService(
     sp.GetRequiredService<IKasaSettingsService>(),
     sp.GetRequiredService<IPlugDiscoveredChannel>(),
     TimeSpan.FromSeconds(2.5),
-    sp.GetRequiredService<ILogger<PlugDiscoveryService>>()));
+    sp.GetRequiredService<ILogger<PlugDiscoveryService>>(),
+    sp.GetRequiredService<IShellyClient>()));
 
 builder.Services.AddHostedService(sp => new DiscoveryWorker(
     sp.GetRequiredService<PlugDiscoveryService>(),
@@ -85,7 +92,8 @@ builder.Services.AddHostedService(sp => new PollingWorker(
     sp.GetRequiredService<IPlugStateBroadcaster>(),
     sp.GetRequiredService<IKasaSettingsService>(),
     TimeSpan.FromSeconds(pollIntervalSec),
-    sp.GetRequiredService<ILogger<PollingWorker>>()));
+    sp.GetRequiredService<ILogger<PollingWorker>>(),
+    shelly: sp.GetRequiredService<IShellyClient>()));
 
 builder.Services.AddHostedService(sp => new HistorySyncWorker(
     sp.GetRequiredService<IKasaClient>(),
@@ -94,7 +102,8 @@ builder.Services.AddHostedService(sp => new HistorySyncWorker(
     sp.GetRequiredService<ILogger<HistorySyncWorker>>(),
     sp.GetRequiredService<ITapoClient>(),
     sp.GetRequiredService<IKasaSettingsService>(),
-    discovered: sp.GetRequiredService<IPlugDiscoveredChannel>()));
+    discovered: sp.GetRequiredService<IPlugDiscoveredChannel>(),
+    shelly: sp.GetRequiredService<IShellyClient>()));
 
 builder.Services.AddHostedService(sp => new RollupWorker(
     sp.GetRequiredService<IServiceScopeFactory>(),
@@ -107,7 +116,8 @@ builder.Services.AddHostedService<KasaMetrics>();
 builder.Services.AddSingleton(sp => new DeviceDetailsService(
     sp.GetRequiredService<IKasaClient>(),
     sp.GetRequiredService<ITapoClient>(),
-    sp.GetRequiredService<IKasaSettingsService>()));
+    sp.GetRequiredService<IKasaSettingsService>(),
+    shelly: sp.GetRequiredService<IShellyClient>()));
 builder.Services.AddSingleton<MetricsScrapeLog>();
 builder.Services.AddSingleton<KasaMonitor.Web.Diagnostics.ClientErrorEndpoint>();
 builder.Services.AddSingleton<PrometheusTargetsChecker>();

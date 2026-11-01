@@ -1,0 +1,13 @@
+{
+  "name": null,
+  "id": "shellyemg3-d885ac0b743c",
+  "mac": "D885AC0B743C",
+  "slot": 1,
+  "model": "S3EM-002CXCEU",
+  "gen": 3,
+  "fw_id": "20250429-124852/1.6.99-emg3prod2-g70204e5",
+  "ver": "1.6.99-emg3prod2",
+  "app": "EMG3",
+  "auth_en": false,
+  "auth_domain": null
+}

@@ -1,0 +1,11 @@
+apiVersion: 1
+
+providers:
+  - name: kasamonitor
+    folder: KasaMonitor
+    type: file
+    disableDeletion: false
+    allowUiUpdates: true     # edits in the UI are allowed but are overwritten when the file changes
+    updateIntervalSeconds: 60
+    options:
+      path: /etc/grafana/provisioning/dashboards   # kasamonitor.json lives next to this file

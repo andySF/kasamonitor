@@ -1,154 +1,225 @@
 # KasaMonitor
 
-Monitorizare pentru prizele TP-Link cu contor de energie: Kasa (KP115, protocol legacy XOR pe 9999) și Tapo
-(P110/P115, protocoalele KLAP și AES „securePassthrough”). Aplicație Blazor Server (.NET 10) cu SQLite, interfață web pe portul 8910 și
-`/metrics` pentru Prometheus.
+Self-hosted monitoring for TP-Link smart plugs with energy metering: **Kasa** (e.g. KP115, legacy XOR protocol on
+port 9999) and **Tapo** (e.g. P110/P115, KLAP and AES "securePassthrough" protocols). Blazor Server app (.NET 10)
+with SQLite, a web UI on port 8910 and a Prometheus `/metrics` endpoint. An optional Prometheus + Grafana stack
+with a ready-made dashboard and alert rules is included.
 
-Versiune: **0.2.0** (`Directory.Build.props`).
+Version: **0.2.0** (`Directory.Build.props`). Docker image: `duobit/kasamonitor`.
 
-## Ce face
+## Quick start
 
-- **Descoperire automată** la fiecare N minute: broadcast UDP 9999 (Kasa legacy) și UDP 20002 (sonda TDP
-  folosită de Tapo / Kasa noi). Prizele noi se adaugă automat în baza de date (dacă „Adaugă automat” e pornit).
-- **Scanează acum** (`/plugs`): rulează descoperirea imediat și arată fiecare priză găsită ca `nouă`,
-  `nouă (adăugată)`, `cunoscută` sau `nesuportat: <model>, <motiv>`; cu adăugarea automată oprită, prizele noi
-  se adaugă cu un click („Adaugă”).
-- **Adaugă după IP** (`/plugs`): încearcă întâi legacy (TCP 9999), apoi sonda Tapo pe UDP 20002 + KLAP, apoi KLAP
-  direct, apoi AES direct (dacă sunt setate credențialele TP-Link). Util pentru prize din alt subnet, unde broadcastul nu ajunge.
-- **Retrage / Readu** (`/plugs`): o priză retrasă nu mai e interogată și dispare din `/metrics` și din
-  Dashboard (fără repornire). Bifa „Arată retrase” o face din nou vizibilă în listă; „Readu” o reactivează.
-  (Folosește coloana existentă `IsArchived`.)
-- **Prize nesuportate** (răspund la descoperire, dar nu pot fi interogate) apar în listă cu IP/MAC și motivul:
-  - `lipsesc credențialele TP-Link` – priză Tapo pe KLAP/AES, dar contul TP-Link nu e setat în `/settings`;
-  - `autentificare eșuată (...)` – credențiale greșite;
-  - `protocol TPAP` / ... – protocol pe care aplicația nu îl vorbește. Hint afișat în UI:
-    „În aplicația Tapo: Setări dispozitiv → Third-Party Compatibility: oprit, apoi pornit, și repornește priza;
-    de obicei revine pe KLAP.”
-  - `KLAP pe Kasa (IOT), neimplementat` – priză Kasa cu firmware nou pe KLAP v1.
+```bash
+git clone https://github.com/andySF/kasamonitor.git
+cd kasamonitor
+# edit deploy/docker-compose.yml: KasaMonitor__BroadcastNetworks = your LAN broadcast address (e.g. 192.168.1.255)
+docker compose -f deploy/docker-compose.yml up -d
+```
 
-  Când motivul dispare (ex. ai pus credențialele), următoarea descoperire o trece automat pe „activă”.
+Open `http://<host>:8910/`. Plugs on the same LAN are discovered within a few seconds; for Tapo plugs enter your
+TP-Link (Tapo app) account in `/settings` and press **Scanează acum** on `/plugs`.
 
-## Setări
+`network_mode: host` is required: discovery uses UDP broadcasts (9999 for Kasa, 20002 for Tapo) that do not leave
+a Docker bridge network. The database and the key ring live in `deploy/data/` (volume `./data:/data`).
 
-Setările de descoperire și contul TP-Link se editează în `/settings`, se salvează în tabela `Settings` din SQLite
-și se aplică fără repornire. Variabilele de mediu sunt doar **valori inițiale**: se folosesc cât timp cheia nu a
-fost salvată din `/settings`.
+## Features
 
-| Setare (`/settings`) | Variabilă de mediu (inițială) | Implicit | Note |
+- **Automatic discovery** every N minutes: UDP broadcast on 9999 (Kasa legacy) and the TP-Link discovery probe
+  on UDP 20002 (Tapo / newer Kasa). New plugs are added automatically (setting "Adaugă automat").
+- **Scan now** (`/plugs`, "Scanează acum"): runs discovery immediately and lists each plug as new / added / known /
+  unsupported; with auto-add off, new plugs are added with one click.
+- **Add by IP** (`/plugs`): tries legacy TCP 9999, then the UDP 20002 probe (+ KLAP/AES), then KLAP and AES
+  directly (with TP-Link credentials). Useful for plugs on another subnet, where broadcasts do not reach.
+- **Withdraw / restore** (`/plugs`, "Retrage" / "Readu"): a withdrawn plug is no longer polled and disappears from
+  `/metrics` and the dashboard immediately; "Arată retrase" shows it again in the list.
+- **Unsupported plugs** (they answer discovery but cannot be queried) are listed with IP/MAC and the reason:
+  missing TP-Link credentials, authentication failed, Kasa firmware on KLAP (not implemented), or an unknown
+  protocol such as TPAP. For TPAP the UI shows the usual fix: in the Tapo app, device settings → *Third-Party
+  Compatibility* off and on again, then restart the plug; it normally comes back on KLAP.
+
+The web UI texts are in Romanian.
+
+## Settings
+
+Discovery settings and the TP-Link account are edited in `/settings`, stored in the SQLite `Settings` table and
+applied without a restart. Environment variables are **initial values only**: they are used while the key has
+not been saved from `/settings`.
+
+| Setting (`/settings`) | Environment variable (initial value) | Default | Notes |
 |---|---|---|---|
-| Descoperire automată | `KasaMonitor__AutoDiscoveryEnabled` | `true` | |
-| Interval descoperire (minute) | `KasaMonitor__AutoDiscoveryIntervalMinutes` | `5` | 1–1440 |
-| Rețele broadcast | `KasaMonitor__BroadcastNetworks` | gol → `255.255.255.255` | IPv4 separate prin virgulă; valoare goală în DB = se folosește env |
-| Adaugă automat prizele găsite | `KasaMonitor__AutoAddDiscoveredPlugs` | `true` | |
-| Utilizator TP-Link | `KasaMonitor__TapoUsername` | — | e-mailul contului din aplicația Tapo |
-| Parolă TP-Link | `KasaMonitor__TapoPassword` | — | în DB criptată cu ASP.NET DataProtection; afișată mascată; aceeași pentru KLAP și AES |
-| Tarif (RON/kWh) | `KasaMonitor__TariffRonPerKwh` | `1.30` | citit la pornire din env |
-| Interval interogare (s) | `KasaMonitor__PollIntervalSeconds` | `10` | citit la pornire din env |
-| — | `KasaMonitor__DbPath` | `/data/kasa.db` (imagine) | |
+| Automatic discovery | `KasaMonitor__AutoDiscoveryEnabled` | `true` | |
+| Discovery interval (minutes) | `KasaMonitor__AutoDiscoveryIntervalMinutes` | `5` | 1–1440 |
+| Broadcast networks | `KasaMonitor__BroadcastNetworks` | empty → `255.255.255.255` | comma-separated IPv4, e.g. `192.168.1.255` |
+| Auto-add discovered plugs | `KasaMonitor__AutoAddDiscoveredPlugs` | `true` | |
+| TP-Link user | `KasaMonitor__TapoUsername` | — | Tapo app account e-mail |
+| TP-Link password | `KasaMonitor__TapoPassword` | — | stored encrypted (ASP.NET DataProtection), shown masked; used for KLAP and AES |
+| Tariff per kWh | `KasaMonitor__TariffRonPerKwh` | `1.30` | web UI cost; read at startup |
+| Poll interval (s) | `KasaMonitor__PollIntervalSeconds` | `10` | read at startup |
+| — | `KasaMonitor__DbPath` | `/data/kasa.db` (image) | |
 
-Cheile DataProtection stau lângă baza de date, în `<dir DB>/dp-keys` (în container `/data/dp-keys`, deci pe
-volumul persistent). Dacă directorul se pierde, parola salvată nu mai poate fi decriptată: se reintroduce în
-`/settings` (în log apare `Stored secret could not be decrypted`). Pe Linux cheile sunt în clar pe disc
-(ASP.NET loghează la pornire avertismentul „No XML encryptor configured”) — protecția e la nivelul volumului.
+The DataProtection keys are kept next to the database, in `<db dir>/dp-keys` (`/data/dp-keys` in the container,
+on the persistent volume). If that directory is lost, the stored password cannot be decrypted and must be entered
+again in `/settings` (the log shows `Stored secret could not be decrypted`). On Linux the keys are stored
+unencrypted on disk (ASP.NET logs "No XML encryptor configured" at startup); protect the volume.
 
-Nu pune credențiale în `docker-compose.yml` din repo; folosește `/settings` sau variabile setate doar în stack-ul
-Portainer.
+Do not commit credentials; prefer `/settings`.
 
-## Tapo / KLAP
+## Monitoring with Prometheus & Grafana
 
-Implementare proprie (fără pachet NuGet), după python-kasa `transports/klaptransport.py` (`KlapTransportV2`) și
-`protocols/smartprotocol.py`:
+### Quick start
 
-1. Descoperire: datagramă TDP pe UDP 20002 (antet 16 octeți `>BBHHBBII`, CRC32; se trimit ambele variante, cea
-   simplă de 16 octeți și cea cu cheie RSA). Răspunsul JSON dă `device_type`, `device_model`, `mac`, `ip`,
-   `mgt_encrypt_schm.encrypt_type` (`KLAP`, `AES`, `TPAP`, ...), `http_port`, `lv`.
-2. Handshake: `POST http://<ip>/app/handshake1` cu `local_seed` (16 octeți) → `remote_seed` (16) + hash (32) și
-   cookie `TP_SESSIONID`; `auth_hash = sha256(sha1(user) + sha1(parolă))` (v2; v1 = `md5(md5(user)+md5(parolă))`
-   e implementat dar folosit doar pentru Kasa IOT, nesuportat încă). Verificare `sha256(local + remote + auth)`,
-   apoi `POST /app/handshake2` cu `sha256(remote + local + auth)`.
-3. Cereri: `POST /app/request?seq=N`, AES-128-CBC cu cheie/IV/semnătură derivate din seed-uri
-   (`lsk`/`iv`/`ldk`), corp = `sha256(sig + seq + cipher) + cipher`. Sesiunea se refolosește per priză și se
-   renegociază la eroare.
-4. Metode: `get_device_info` (alias = `nickname` base64, model, firmware), `get_energy_usage`
-   (`current_power` mW, `month_energy` Wh) și `get_emeter_data` (`voltage_mv`, `current_ma`). Dacă priza nu
-   răspunde la `get_emeter_data`, tensiunea și curentul lipsesc pentru ea din `/metrics`.
+```bash
+docker compose -f deploy/docker-compose.yml up -d             # KasaMonitor (host network, port 8910)
+docker compose -f deploy/docker-compose.monitoring.yml up -d  # Prometheus (9090) + Grafana (3000)
+```
 
-### AES („securePassthrough”, firmware Tapo mai vechi)
+- Grafana: `http://<host>:3000`, user `admin`, password from `GRAFANA_ADMIN_PASSWORD` (default `admin`; set it
+  before the first start, e.g. `GRAFANA_ADMIN_PASSWORD=... docker compose -f deploy/docker-compose.monitoring.yml up -d`).
+  The **KasaMonitor** dashboard is provisioned (folder *KasaMonitor*, also the home dashboard), together with the
+  Prometheus data source (uid `prometheus`) and two alert rules.
+- Prometheus: `http://<host>:9090`, retention 10 years (`--storage.tsdb.retention.time=10y`, volume
+  `prometheus_data`). *Status → Targets* must show job `kasa` UP.
+- Image versions can be overridden with `PROMETHEUS_VERSION` / `GRAFANA_VERSION`.
 
-După python-kasa `transports/aestransport.py` (`AesTransport`): `POST http://<ip>/app`
-`{"method":"handshake","params":{"key":"<cheie publică RSA-1024, PEM>"}}` → `result.key` (base64, criptat RSA
-PKCS#1 v1.5) = cheie AES (16 B) + IV (16 B), cookie `TP_SESSIONID`. Apoi `login_device` prin
-`{"method":"securePassthrough","params":{"request":"<base64 AES-CBC>"}}`: `username = base64(hex(sha1(email)))`;
-login v2 `password2 = base64(hex(sha1(parolă)))`, v1 `password = base64(parolă)` → `result.token`. Cererile
-următoare merg la `/app?token=<token>`. Versiunea de login nu se salvează per priză: se încearcă v2, apoi v1, și se
-reține per priză cea care a mers. Aceleași metode SMART ca la KLAP.
+Files:
 
-Selecția transportului după `mgt_encrypt_schm.encrypt_type` din descoperire: `KLAP` → `klap`, `AES` → `aes`,
-altceva (TPAP etc.) → nesuportat cu hint. Transportul e o interfață per protocol (`ISmartTransport`); TPAP (SPAKE2+)
-se poate adăuga ca altă implementare. Istoricul zilnic/lunar (`HistorySyncWorker`) există doar pentru prizele legacy.
+| File | Purpose |
+|---|---|
+| `deploy/docker-compose.monitoring.yml` | Prometheus + Grafana services and volumes |
+| `deploy/prometheus/prometheus.yml` | scrape job `kasa` → `host.docker.internal:8910` |
+| `deploy/grafana/provisioning/datasources/prometheus.yml` | data source, fixed uid `prometheus` |
+| `deploy/grafana/provisioning/dashboards/dashboards.yml` + `kasamonitor.json` | dashboard provider and the dashboard |
+| `deploy/grafana/provisioning/alerting/rules.yml` | alert rules "plug offline" (15 min) and "no data" (10 min) |
 
-## Metrici (`/metrics`)
+**Reaching KasaMonitor from Prometheus.** KasaMonitor uses host networking, so it listens on the host's port 8910.
+The Prometheus container reaches the host as `host.docker.internal`: built into Docker Desktop, and mapped on Linux
+by `extra_hosts: host.docker.internal:host-gateway` (Docker 20.10+). If that does not work (old Docker, firewall on
+the Docker bridge) or KasaMonitor runs on another machine, put the host's LAN IP in `deploy/prometheus/prometheus.yml`,
+e.g. `targets: ["192.168.1.10:8910"]`, and restart Prometheus. An existing Prometheus only needs the same `kasa`
+job; import `kasamonitor.json` and choose your data source (or give it the uid `prometheus`).
 
-Toate seriile au etichetele `alias`, `mac`, `model` (ex. `KP115`, `P115`; fără sufixul de regiune) și
-`protocol` (`legacy` | `klap` | `aes`).
+### Dashboard
 
-| Metrică | Tip | Sursă legacy | Sursă Tapo (KLAP/AES) |
-|---|---|---|---|
-| `kasa_online` | gauge | 1/0 după ultimul poll | idem |
-| `kasa_power_load` | gauge, W | `emeter.get_realtime.power_mw` | `get_energy_usage.current_power` |
-| `kasa_voltage` | gauge, V | `voltage_mv` | `get_emeter_data.voltage_mv` (lipsește dacă nu e raportat) |
-| `kasa_current` | gauge, A | `current_ma` | `get_emeter_data.current_ma` (lipsește dacă nu e raportat) |
-| `kasa_relay_state` | gauge | 1 când poll-ul reușește | idem |
-| `kasa_power_total` | counter, Wh | `total_wh` (cumulat pe priză) | `month_energy` (resetat lunar de priză; contorul Prometheus ignoră scăderea, deci rămâne monoton) |
-| `kasa_rssi` | gauge | declarată, nesetată | idem |
+Stat panels (power now, plugs online/total, energy and cost for 24 h and 30 days), a table per plug (online, relay,
+W, V, A, kWh 24 h / 30 d, cost, last online, `model`, `protocol`), and per-plug time series for power, energy per day,
+online/offline, relay, voltage and current (legend `{{alias}}`). Dashboard variables at the top: `tariff` (price per
+kWh, default 1.11) and `currency` (only used in titles).
 
-Prizele retrase sau nesuportate nu au serii. Redenumirea unei prize șterge seriile cu aliasul vechi. Dashboard-ul
-Grafana existent (`{{alias}}`) funcționează neschimbat; etichetele noi creează serii noi în Prometheus (cele vechi,
-fără `model`/`protocol`, devin „stale” după update).
+Energy is computed as the **sum of the counter's 5-minute increases, clamped at 0**:
+`sum_over_time(clamp_min(kasa_power_total - kasa_power_total offset 5m, 0)[<range>:5m]) / 1000`, not with
+`increase()`. `kasa_power_total` is re-seeded from the plug's own total when KasaMonitor restarts (and Tapo plugs
+report month-to-date energy), so the series can go down a little; `increase()` treats any decrease as a counter
+reset and would count the whole cumulative value as new consumption. The trade-off: a scrape gap longer than
+5 minutes loses the energy of that gap.
 
-## Loguri
+### Metrics (`/metrics`)
 
-- `Discovery on <rețele>: found N, new N, unsupported N (auto-add on|off)` – Information, la fiecare scanare.
-- `Discovered new plug <mac> (<alias>, <model>, <protocol>) at <ip> -> Id <id>` – Information.
-- `Poll failed for plug <alias> (<ip>, <protocol>), N consecutive failures: <motiv>` – Warning, prima dată, apoi
-  după încă 10 eșecuri consecutive sau după 10 minute (ce vine întâi), per priză.
-- `Plug <alias> (<ip>) is responding again after N failed polls` – Information.
-- `History sync failed for plug <alias> (<ip>, <id>)` – Warning.
+Every series has the labels `alias` (plug name, MAC if empty), `mac`, `model` (e.g. `KP115`, `P115`, without the
+region suffix) and `protocol` (`legacy` | `klap` | `aes`).
 
-## Build și teste
+| Metric | Type | Unit | Legacy (Kasa) source | Tapo (KLAP/AES) source |
+|---|---|---|---|---|
+| `kasa_online` | gauge | 0/1 | 1 when the last poll succeeded | same |
+| `kasa_power_load` | gauge | W | `emeter.get_realtime.power_mw` | `get_energy_usage.current_power` |
+| `kasa_voltage` | gauge | V | `voltage_mv` | `get_emeter_data.voltage_mv` (absent if not reported) |
+| `kasa_current` | gauge | A | `current_ma` | `get_emeter_data.current_ma` (absent if not reported) |
+| `kasa_relay_state` | gauge | 0/1 | 1 when the poll succeeds | same |
+| `kasa_power_total` | counter | Wh, cumulative | `total_wh` (plug lifetime total) | `month_energy` (resets monthly on the plug) |
+| `kasa_rssi` | gauge | dBm | declared, not set yet | same |
 
-```powershell
+Note on `kasa_power_total`: it is exported as a Prometheus counter, but it is **not a strictly monotonic counter**
+across KasaMonitor restarts (it is re-seeded from the plug's total, which can be slightly lower). Use the 5-minute
+increase method above, not `rate()`/`increase()`, for energy.
+
+Withdrawn or unsupported plugs have no series. Renaming a plug removes the series with the old alias.
+
+### Alerts and notifications
+
+Two rules are provisioned in the folder *KasaMonitor* (Grafana → Alerting → Alert rules):
+
+- **KasaMonitor: plug offline** — `kasa_online < 1` for 15 minutes, one alert per plug.
+- **KasaMonitor: no data** — `count(kasa_online) or vector(0) < 1` for 10 minutes (KasaMonitor down, scrape failing,
+  or no plugs).
+
+No contact point is provisioned, so alerts are visible in Grafana but not sent anywhere. To get notifications:
+
+1. Grafana → Alerting → **Contact points** → *Add contact point*, e.g. type **Telegram** (bot token from
+   @BotFather and the chat ID), or e-mail (requires `GF_SMTP_*` settings), Slack, webhook, ...
+2. Alerting → **Notification policies** → set it as the default contact point (or add a policy matching
+   `severity=warning|critical`).
+
+You can also provision a contact point as a file (`deploy/grafana/provisioning/alerting/contactpoints.yml`); keep
+tokens out of git (use `$__env{TELEGRAM_BOT_TOKEN}` style environment references).
+
+Your own rules (e.g. "the UPS plug draws 0 W for 10 minutes": `kasa_power_load{alias="My UPS"} < 1`, for 10m) can
+be added in the UI or next to `rules.yml`; an example is commented at the end of that file.
+
+## Tapo protocols
+
+Implemented natively (no NuGet package), following python-kasa (`transports/klaptransport.py`,
+`transports/aestransport.py`, `protocols/smartprotocol.py`).
+
+- **Discovery** — TDP datagram on UDP 20002 (16-byte header `>BBHHBBII`, CRC32; both the plain 16-byte probe and
+  the RSA-key probe are sent). The JSON answer gives `device_type`, `device_model`, `mac`, `ip`,
+  `mgt_encrypt_schm.encrypt_type`, `http_port`, `lv`. Transport selection for `SMART.*` devices: `KLAP` → `klap`,
+  `AES` → `aes`, anything else (TPAP, ...) → unsupported, with the hint above.
+- **KLAP** — `POST /app/handshake1` with a 16-byte local seed → remote seed + hash and cookie `TP_SESSIONID`;
+  `auth_hash = sha256(sha1(user) + sha1(password))` (v2); check `sha256(local + remote + auth)`, then
+  `POST /app/handshake2` with `sha256(remote + local + auth)`. Requests: `POST /app/request?seq=N`, AES-128-CBC
+  with key/IV/signature derived from the seeds (`lsk` / `iv` / `ldk`), body = `sha256(sig + seq + cipher) + cipher`.
+- **AES (securePassthrough)** — `POST /app` `{"method":"handshake","params":{"key":"<RSA-1024 public key>"}}` →
+  RSA-encrypted AES key + IV and cookie `TP_SESSIONID`; `login_device` through `securePassthrough` with
+  `username = base64(hex(sha1(email)))` and, for login v2, `password2 = base64(hex(sha1(password)))` (v1:
+  `password = base64(password)`) → token; further requests go to `/app?token=<token>`. v2 is tried first, then v1.
+- **Methods** — `get_device_info` (alias = base64 `nickname`, model, firmware), `get_energy_usage` (`current_power`
+  mW, `month_energy` Wh), `get_emeter_data` (`voltage_mv`, `current_ma`).
+
+Transports implement `ISmartTransport`; TPAP (SPAKE2+) can be added as another implementation. Daily/monthly
+history (`HistorySyncWorker`) exists only for legacy plugs.
+
+## Logs
+
+- `Discovery on <networks>: found N, new N, unsupported N (auto-add on|off)` — Information, every scan.
+- `Discovered new plug <mac> (<alias>, <model>, <protocol>) at <ip> -> Id <id>` — Information.
+- `Poll failed for plug <alias> (<ip>, <protocol>), N consecutive failures: <reason>` — Warning, on the first
+  failure, then after 10 more consecutive failures or 10 minutes, whichever comes first, per plug.
+- `Plug <alias> (<ip>) is responding again after N failed polls` — Information.
+- `History sync failed for plug <alias> (<ip>, <id>)` — Warning.
+
+## Build and test
+
+```bash
 dotnet build KasaMonitor.sln
 dotnet test KasaMonitor.sln
 ```
 
-## Imagine Docker (Docker Hub `duobit/kasamonitor`)
+## Docker image
 
-Din rădăcina repo-ului, cu Docker Desktop pornit și `docker login` făcut o dată:
+From the repository root, with Docker running and `docker login` done once:
 
 ```powershell
-.\deploy\build-and-push.ps1 -Version 0.2.0          # build :0.2.0 + :latest și push pe ambele
-.\deploy\build-and-push.ps1 -Version 0.2.0 -NoPush  # doar build local
+.\deploy\build-and-push.ps1 -Version 0.2.0          # build :0.2.0 + :latest and push both
+.\deploy\build-and-push.ps1 -Version 0.2.0 -NoPush  # local build only
 ```
 
-Echivalent manual:
+or manually:
 
-```powershell
+```bash
 docker build -t duobit/kasamonitor:0.2.0 -t duobit/kasamonitor:latest -f deploy/Dockerfile .
 docker push duobit/kasamonitor:0.2.0
 docker push duobit/kasamonitor:latest
 ```
 
-## Update pe QNAP (Portainer, stack 28)
+To publish under your own Docker Hub account, change the image name (`-Repo` parameter of the script and
+`image:` in `deploy/docker-compose.yml`).
 
-1. Backup la baza de date înainte de prima pornire cu 0.2.0 (migrarea `AddPlugProtocol` adaugă coloanele
-   `Plugs.Protocol` și `Plugs.UnsupportedReason`; datele existente rămân, prizele existente devin `legacy`):
-   copie a `/share/Container/kasamonitor/data/kasa.db` (cu containerul oprit, sau `sqlite3 .backup`).
-2. Portainer → Stacks → stack-ul KasaMonitor (id 28) → Editor → „Update the stack” cu
-   **Re-pull image and redeploy** bifat (sau `docker compose pull && docker compose up -d` în directorul
-   stack-ului).
-3. Verificare: `http://<qnap>:8910/health`, `/plugs` (Scanează acum), `curl -s http://<qnap>:8910/metrics | grep kasa_online`,
-   `docker logs kasamonitor | grep -E "Discovery on|Poll failed"`.
-4. Pentru Tapo: `/settings` → cont TP-Link (utilizator + parolă) → Salvează → `/plugs` → Scanează acum.
+## Updating
 
-Vezi și `deploy/README.md` (compose, troubleshooting).
+1. Back up `deploy/data/kasa.db` (with the container stopped, or `sqlite3 kasa.db ".backup kasa.bak"`). Upgrading
+   from 0.1.0 runs the migration `AddPlugProtocol`, which only adds the columns `Plugs.Protocol` and
+   `Plugs.UnsupportedReason`; existing data stays and existing plugs become `legacy`.
+2. `docker compose -f deploy/docker-compose.yml pull && docker compose -f deploy/docker-compose.yml up -d`
+   (Portainer: *Update the stack* with *Re-pull image and redeploy*).
+3. Check `http://<host>:8910/health`, `/plugs` (Scan now) and `curl -s http://<host>:8910/metrics | grep kasa_online`.
+
+See also `deploy/README.md` (troubleshooting).

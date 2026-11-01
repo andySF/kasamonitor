@@ -1,0 +1,104 @@
+# Grafana alert rules for KasaMonitor (provisioned, read-only in the UI).
+# No contact point is provisioned: alerts show up in Grafana -> Alerting -> Alert rules and go to the default
+# notification policy. Add your own contact point (e-mail, Telegram, ...) in the UI or in a contactpoints.yml
+# file next to this one - see README.md, "Alerts and notifications".
+# Note: Grafana expands environment variables ($VAR) in provisioning files, so template variables are written $$labels.
+apiVersion: 1
+
+groups:
+  - orgId: 1
+    name: kasamonitor
+    folder: KasaMonitor
+    interval: 1m
+    rules:
+      # One alert instance per plug (labels alias, mac, model, protocol).
+      - uid: kasamonitor-plug-offline
+        title: "KasaMonitor: plug offline"
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 600
+              to: 0
+            datasourceUid: prometheus
+            model:
+              refId: A
+              expr: kasa_online
+              instant: true
+              intervalMs: 15000
+              maxDataPoints: 43200
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              refId: B
+              type: reduce
+              expression: A
+              reducer: last
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: B
+              conditions:
+                - evaluator:
+                    type: lt
+                    params: [1]
+        for: 15m
+        noDataState: OK          # no plugs at all is covered by the "no data" rule below
+        execErrState: Error
+        isPaused: false
+        labels:
+          severity: warning
+        annotations:
+          summary: "Plug {{ $$labels.alias }} ({{ $$labels.model }}) has not answered KasaMonitor for 15 minutes"
+          description: "kasa_online is 0: the plug is unplugged, off Wi-Fi or not reachable from KasaMonitor."
+
+      # Fires when Prometheus has no KasaMonitor samples: exporter down, scrape failing, or no plugs exported.
+      - uid: kasamonitor-no-data
+        title: "KasaMonitor: no data"
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 600
+              to: 0
+            datasourceUid: prometheus
+            model:
+              refId: A
+              expr: count(kasa_online) or vector(0)
+              instant: true
+              intervalMs: 15000
+              maxDataPoints: 43200
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              refId: B
+              type: reduce
+              expression: A
+              reducer: last
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: B
+              conditions:
+                - evaluator:
+                    type: lt
+                    params: [1]
+        for: 10m
+        noDataState: Alerting
+        execErrState: Error
+        isPaused: false
+        labels:
+          severity: critical
+        annotations:
+          summary: "No KasaMonitor metrics in Prometheus for 10 minutes"
+          description: "Check that KasaMonitor is running (http://<host>:8910/health) and that Prometheus can scrape it (Status -> Targets, job kasa)."
+
+      # Example of a per-plug rule (not provisioned): alert when a given plug draws no power for 10 minutes,
+      # e.g. a UPS or a fridge that must always be on. Copy the block above and use:
+      #   expr: kasa_power_load{alias="My UPS"}
+      #   evaluator: { type: lt, params: [1] }   # watts
+      #   for: 10m

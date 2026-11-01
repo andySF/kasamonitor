@@ -1,0 +1,17 @@
+# Prometheus configuration for the optional monitoring stack (deploy/docker-compose.monitoring.yml).
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: kasa
+    metrics_path: /metrics
+    static_configs:
+      # KasaMonitor runs with network_mode: host, so it listens on the Docker HOST's port 8910.
+      # From inside the Prometheus container the host is reachable as host.docker.internal
+      # (Docker Desktop: built in; Linux: mapped by `extra_hosts: host.docker.internal:host-gateway` in the compose file).
+      # If that does not work on your system (old Docker, firewall on the docker bridge), replace it with the
+      # host's LAN IP, e.g. "192.168.1.10:8910", or with the address of whichever machine runs KasaMonitor.
+      - targets: ["host.docker.internal:8910"]
+        labels:
+          instance: kasamonitor

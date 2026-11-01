@@ -1,16 +1,29 @@
+# KasaMonitor
+#
+#   docker compose -f deploy/docker-compose.yml up -d
+#
+# Web UI and Prometheus metrics: http://<host>:8910/  and  http://<host>:8910/metrics
+# Optional Prometheus + Grafana: deploy/docker-compose.monitoring.yml (see README.md).
+
 services:
   kasamonitor:
     image: duobit/kasamonitor:latest
     container_name: kasamonitor
-    network_mode: host          # REQUIRED for UDP broadcast discovery on the LAN
+    # REQUIRED. Plug discovery sends UDP broadcasts (port 9999 for Kasa, 20002 for Tapo) and listens for the
+    # answers; on a Docker bridge network the broadcast never reaches your LAN. With host networking the app
+    # also listens directly on the host's port 8910 (no "ports:" mapping needed or possible).
+    network_mode: host
     restart: unless-stopped
     volumes:
-      - /share/Container/kasamonitor/data:/data
+      # SQLite database (kasa.db) and the DataProtection keys (dp-keys/) that encrypt the stored TP-Link password.
+      # Relative to this file: deploy/data. Keep this directory in your backups.
+      - ./data:/data
     environment:
-      TZ: Europe/Bucharest
-      KasaMonitor__BroadcastNetworks: "192.168.254.255"
-      KasaMonitor__TariffRonPerKwh: "1.30"
+      TZ: "UTC"                                          # your time zone, e.g. Europe/Berlin
+      # Initial values only: everything below can be changed later in the web UI (/settings) and the value
+      # saved there wins. Leave TapoUsername / TapoPassword empty and enter them in /settings instead.
+      KasaMonitor__BroadcastNetworks: "192.168.1.255"    # broadcast address(es) of your LAN, comma-separated
+      KasaMonitor__TariffRonPerKwh: "1.11"               # price per kWh shown in the web UI
       KasaMonitor__PollIntervalSeconds: "10"
-      # Initial values only; whatever is saved in /settings (database) wins. See README.md.
-      # KasaMonitor__TapoUsername: "<email cont TP-Link>"
-      # KasaMonitor__TapoPassword: "<parola cont TP-Link>"
+      KasaMonitor__TapoUsername: ""                      # TP-Link / Tapo app account e-mail (Tapo plugs only)
+      KasaMonitor__TapoPassword: ""                      # TP-Link / Tapo app account password

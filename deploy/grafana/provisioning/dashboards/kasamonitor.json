@@ -36,7 +36,7 @@
     {
       "type": "stat",
       "title": "Power now",
-      "description": "Sum of instantaneous power (W) of all plugs: sum(kasa_power_load).",
+      "description": "Sum of instantaneous power (W) of all plugs: sum(sum by (alias) (kasa_power_load)).",
       "id": 2,
       "datasource": {
         "type": "prometheus",
@@ -55,7 +55,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum(kasa_power_load)",
+          "expr": "sum(sum by (alias) (kasa_power_load))",
           "instant": true,
           "range": false
         }
@@ -112,7 +112,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum(kasa_online)",
+          "expr": "sum(max by (alias) (kasa_online))",
           "instant": true,
           "range": false,
           "legendFormat": "online"
@@ -123,7 +123,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "count(kasa_online)",
+          "expr": "count(max by (alias) (kasa_online))",
           "instant": true,
           "range": false,
           "legendFormat": "total"
@@ -162,7 +162,7 @@
     {
       "type": "stat",
       "title": "Energy (24 h)",
-      "description": "kWh used by all plugs in the last 24 hours. Energy = sum of the counter's 5-minute increases, clamped at 0: sum_over_time(clamp_min(kasa_power_total - kasa_power_total offset 5m, 0)[RANGE:5m]). Not increase(): kasa_power_total is re-seeded from the plug's own total when KasaMonitor restarts (and Tapo plugs report month-to-date energy), so the series can drop a little; increase() treats any drop as a counter reset and would add the whole cumulative value as new consumption. A gap longer than 5 minutes loses the energy of that gap.",
+      "description": "kWh used by all plugs in the last 24 hours. Energy = sum of the counter's 5-minute increases, clamped at 0: sum_over_time(clamp_min(max by (alias) (kasa_power_total) - max by (alias) (kasa_power_total offset 5m), 0)[RANGE:5m]). Not increase(): kasa_power_total is re-seeded from the plug's own total when KasaMonitor restarts (and Tapo plugs report month-to-date energy), so the series can drop a little; increase() treats any drop as a counter reset and would add the whole cumulative value as new consumption. A gap longer than 5 minutes loses the energy of that gap.",
       "id": 4,
       "datasource": {
         "type": "prometheus",
@@ -181,7 +181,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum(sum_over_time(clamp_min(kasa_power_total - kasa_power_total offset 5m, 0)[24h:5m]) / 1000)",
+          "expr": "sum(sum_over_time(clamp_min(max by (alias) (kasa_power_total) - max by (alias) (kasa_power_total offset 5m), 0)[24h:5m]) / 1000)",
           "instant": true,
           "range": false
         }
@@ -238,7 +238,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum(sum_over_time(clamp_min(kasa_power_total - kasa_power_total offset 5m, 0)[24h:5m]) / 1000 * $tariff)",
+          "expr": "sum(sum_over_time(clamp_min(max by (alias) (kasa_power_total) - max by (alias) (kasa_power_total offset 5m), 0)[24h:5m]) / 1000 * $tariff)",
           "instant": true,
           "range": false
         }
@@ -276,7 +276,7 @@
     {
       "type": "stat",
       "title": "Energy (30 days)",
-      "description": "kWh used by all plugs in the last 30 days (complete only after 30 days of data). Energy = sum of the counter's 5-minute increases, clamped at 0: sum_over_time(clamp_min(kasa_power_total - kasa_power_total offset 5m, 0)[RANGE:5m]). Not increase(): kasa_power_total is re-seeded from the plug's own total when KasaMonitor restarts (and Tapo plugs report month-to-date energy), so the series can drop a little; increase() treats any drop as a counter reset and would add the whole cumulative value as new consumption. A gap longer than 5 minutes loses the energy of that gap.",
+      "description": "kWh used by all plugs in the last 30 days (complete only after 30 days of data). Energy = sum of the counter's 5-minute increases, clamped at 0: sum_over_time(clamp_min(max by (alias) (kasa_power_total) - max by (alias) (kasa_power_total offset 5m), 0)[RANGE:5m]). Not increase(): kasa_power_total is re-seeded from the plug's own total when KasaMonitor restarts (and Tapo plugs report month-to-date energy), so the series can drop a little; increase() treats any drop as a counter reset and would add the whole cumulative value as new consumption. A gap longer than 5 minutes loses the energy of that gap.",
       "id": 6,
       "datasource": {
         "type": "prometheus",
@@ -295,7 +295,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum(sum_over_time(clamp_min(kasa_power_total - kasa_power_total offset 5m, 0)[30d:5m]) / 1000)",
+          "expr": "sum(sum_over_time(clamp_min(max by (alias) (kasa_power_total) - max by (alias) (kasa_power_total offset 5m), 0)[30d:5m]) / 1000)",
           "instant": true,
           "range": false
         }
@@ -352,7 +352,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum(sum_over_time(clamp_min(kasa_power_total - kasa_power_total offset 5m, 0)[30d:5m]) / 1000 * $tariff)",
+          "expr": "sum(sum_over_time(clamp_min(max by (alias) (kasa_power_total) - max by (alias) (kasa_power_total offset 5m), 0)[30d:5m]) / 1000 * $tariff)",
           "instant": true,
           "range": false
         }
@@ -390,7 +390,7 @@
     {
       "type": "table",
       "title": "Plugs",
-      "description": "One row per plug. online = answered the last poll; relay = on/off (last good reading). W/V/A = last reading; kWh / cost = sum of the counter's 5-minute increases in the window. Last online: within 30 days, 5-minute resolution (empty = not online in 30 days). model / protocol come from KasaMonitor labels (protocol: legacy, klap, aes).",
+      "description": "One row per plug. online = answered the last poll; relay = on/off (last good reading). W/V/A = last reading; kWh / cost = sum of the counter's 5-minute increases in the window. Last online: within 30 days, 5-minute resolution (empty = not online in 30 days). model / protocol come from KasaMonitor labels (protocol: legacy, klap, aes). Every column is aggregated by alias, so a plug keeps one row when its labels change (e.g. after an upgrade that adds labels); model / protocol come from a separate query joined on alias.",
       "id": 8,
       "datasource": {
         "type": "prometheus",
@@ -409,7 +409,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum without () (kasa_online)",
+          "expr": "max by (alias) (kasa_online)",
           "instant": true,
           "range": false,
           "format": "table"
@@ -420,7 +420,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum without () (kasa_relay_state)",
+          "expr": "max by (alias) (kasa_relay_state)",
           "instant": true,
           "range": false,
           "format": "table"
@@ -431,7 +431,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum without () (kasa_power_load)",
+          "expr": "sum by (alias) (kasa_power_load)",
           "instant": true,
           "range": false,
           "format": "table"
@@ -442,7 +442,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum without () (kasa_voltage)",
+          "expr": "avg by (alias) (kasa_voltage)",
           "instant": true,
           "range": false,
           "format": "table"
@@ -453,7 +453,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum without () (kasa_current)",
+          "expr": "avg by (alias) (kasa_current)",
           "instant": true,
           "range": false,
           "format": "table"
@@ -464,7 +464,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum_over_time(clamp_min(kasa_power_total - kasa_power_total offset 5m, 0)[24h:5m]) / 1000",
+          "expr": "sum_over_time(clamp_min(max by (alias) (kasa_power_total) - max by (alias) (kasa_power_total offset 5m), 0)[24h:5m]) / 1000",
           "instant": true,
           "range": false,
           "format": "table"
@@ -475,7 +475,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum_over_time(clamp_min(kasa_power_total - kasa_power_total offset 5m, 0)[30d:5m]) / 1000",
+          "expr": "sum_over_time(clamp_min(max by (alias) (kasa_power_total) - max by (alias) (kasa_power_total offset 5m), 0)[30d:5m]) / 1000",
           "instant": true,
           "range": false,
           "format": "table"
@@ -486,7 +486,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum_over_time(clamp_min(kasa_power_total - kasa_power_total offset 5m, 0)[30d:5m]) / 1000 * $tariff",
+          "expr": "sum_over_time(clamp_min(max by (alias) (kasa_power_total) - max by (alias) (kasa_power_total offset 5m), 0)[30d:5m]) / 1000 * $tariff",
           "instant": true,
           "range": false,
           "format": "table"
@@ -497,7 +497,18 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "max_over_time(timestamp(kasa_online == 1)[30d:5m]) * 1000",
+          "expr": "max by (alias) (max_over_time(timestamp(kasa_online == 1)[30d:5m])) * 1000",
+          "instant": true,
+          "range": false,
+          "format": "table"
+        },
+        {
+          "refId": "J",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "max by (alias, model, protocol) (kasa_online{protocol!=\"\"})",
           "instant": true,
           "range": false,
           "format": "table"
@@ -523,7 +534,8 @@
             "excludeByName": {
               "Time": true,
               "instance": true,
-              "job": true
+              "job": true,
+              "Value #J": true
             },
             "indexByName": {
               "alias": 0,
@@ -761,7 +773,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "kasa_power_load",
+          "expr": "sum by (alias) (kasa_power_load)",
           "instant": false,
           "range": true,
           "legendFormat": "{{alias}}"
@@ -794,7 +806,7 @@
     {
       "type": "timeseries",
       "title": "Energy per day (30 days)",
-      "description": "kWh per plug and day (stacked bars = daily total). Each bar covers the 24 h before its timestamp; days are aligned to 00:00 UTC and the current day is not shown. Energy = sum of the counter's 5-minute increases, clamped at 0: sum_over_time(clamp_min(kasa_power_total - kasa_power_total offset 5m, 0)[RANGE:5m]). Not increase(): kasa_power_total is re-seeded from the plug's own total when KasaMonitor restarts (and Tapo plugs report month-to-date energy), so the series can drop a little; increase() treats any drop as a counter reset and would add the whole cumulative value as new consumption. A gap longer than 5 minutes loses the energy of that gap.",
+      "description": "kWh per plug and day (stacked bars = daily total). Each bar covers the 24 h before its timestamp; days are aligned to 00:00 UTC and the current day is not shown. Energy = sum of the counter's 5-minute increases, clamped at 0: sum_over_time(clamp_min(max by (alias) (kasa_power_total) - max by (alias) (kasa_power_total offset 5m), 0)[RANGE:5m]). Not increase(): kasa_power_total is re-seeded from the plug's own total when KasaMonitor restarts (and Tapo plugs report month-to-date energy), so the series can drop a little; increase() treats any drop as a counter reset and would add the whole cumulative value as new consumption. A gap longer than 5 minutes loses the energy of that gap.",
       "id": 10,
       "datasource": {
         "type": "prometheus",
@@ -813,7 +825,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum_over_time(clamp_min(kasa_power_total - kasa_power_total offset 5m, 0)[$__interval:5m]) / 1000",
+          "expr": "sum_over_time(clamp_min(max by (alias) (kasa_power_total) - max by (alias) (kasa_power_total offset 5m), 0)[$__interval:5m]) / 1000",
           "instant": false,
           "range": true,
           "legendFormat": "{{alias}}"
@@ -850,7 +862,7 @@
     {
       "type": "bargauge",
       "title": "Energy per plug (selected range)",
-      "description": "kWh per plug over the dashboard time range. Energy = sum of the counter's 5-minute increases, clamped at 0: sum_over_time(clamp_min(kasa_power_total - kasa_power_total offset 5m, 0)[RANGE:5m]). Not increase(): kasa_power_total is re-seeded from the plug's own total when KasaMonitor restarts (and Tapo plugs report month-to-date energy), so the series can drop a little; increase() treats any drop as a counter reset and would add the whole cumulative value as new consumption. A gap longer than 5 minutes loses the energy of that gap.",
+      "description": "kWh per plug over the dashboard time range. Energy = sum of the counter's 5-minute increases, clamped at 0: sum_over_time(clamp_min(max by (alias) (kasa_power_total) - max by (alias) (kasa_power_total offset 5m), 0)[RANGE:5m]). Not increase(): kasa_power_total is re-seeded from the plug's own total when KasaMonitor restarts (and Tapo plugs report month-to-date energy), so the series can drop a little; increase() treats any drop as a counter reset and would add the whole cumulative value as new consumption. A gap longer than 5 minutes loses the energy of that gap.",
       "id": 11,
       "datasource": {
         "type": "prometheus",
@@ -869,7 +881,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sort_desc(sum_over_time(clamp_min(kasa_power_total - kasa_power_total offset 5m, 0)[$__range:5m]) / 1000)",
+          "expr": "sort_desc(sum_over_time(clamp_min(max by (alias) (kasa_power_total) - max by (alias) (kasa_power_total offset 5m), 0)[$__range:5m]) / 1000)",
           "instant": true,
           "range": false,
           "legendFormat": "{{alias}}"
@@ -926,7 +938,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sort_desc(sum_over_time(clamp_min(kasa_power_total - kasa_power_total offset 5m, 0)[$__range:5m]) / 1000 * $tariff)",
+          "expr": "sort_desc(sum_over_time(clamp_min(max by (alias) (kasa_power_total) - max by (alias) (kasa_power_total offset 5m), 0)[$__range:5m]) / 1000 * $tariff)",
           "instant": true,
           "range": false,
           "legendFormat": "{{alias}}"
@@ -983,7 +995,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "kasa_online",
+          "expr": "max by (alias) (kasa_online)",
           "instant": false,
           "range": true,
           "legendFormat": "{{alias}}"
@@ -1068,7 +1080,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "kasa_relay_state",
+          "expr": "max by (alias) (kasa_relay_state)",
           "instant": false,
           "range": true,
           "legendFormat": "{{alias}}"
@@ -1153,7 +1165,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "kasa_voltage",
+          "expr": "avg by (alias) (kasa_voltage)",
           "instant": false,
           "range": true,
           "legendFormat": "{{alias}}"
@@ -1205,7 +1217,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "kasa_current",
+          "expr": "avg by (alias) (kasa_current)",
           "instant": false,
           "range": true,
           "legendFormat": "{{alias}}"

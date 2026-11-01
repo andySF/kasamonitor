@@ -116,6 +116,29 @@
             Starea se vede în Setări și pe <code>/metrics</code>: @foreach (var m in RemoteWriteMetrics.Catalog) { <code>@m.Name</code><span> </span> }.
             Dacă Prometheus nu răspunde, eșantioanele așteaptă în memorie cel mult 5 minute, apoi se pierd (contorul de pierderi).
         </p>
+        <h3>Centrala (Viessmann): metrici <code>heating_*</code></h3>
+        <p class="note">
+            Apar pe același <code>/metrics</code> după conectarea contului ViCare (pagina <a href="/centrala">Centrală</a>). Etichete: <code>device</code>
+            (ex. „Vitodens 050”), <code>model</code> (ex. <code>E3_Vitodens_050_0822</code>); consumurile au și <code>purpose</code> (<code>heating</code> = încălzire,
+            <code>dhw</code> = apă caldă) și <code>period</code> (<code>day</code>, <code>last7days</code>, <code>month</code>, <code>lastmonth</code>, <code>year</code>,
+            <code>lastyear</code>, valorile raportate de centrală). Valorile se reîmprospătează la fiecare citire (implicit 120 s). Ce nu are centrala nu are serie
+            (pe Vitodens 050-W: retur, exterior, cazan, presiune). Consumul de gaz e estimat de centrală, nu măsurat de un contor.
+        </p>
+        <table class="table table-sm align-middle int-table">
+            <thead><tr><th>Metrică</th><th>Tip</th><th>Unitate</th><th>Descriere</th></tr></thead>
+            <tbody>
+                @foreach (var m in HeatingMetrics.Catalog)
+                {
+                    <tr><td><code>@m.Name</code></td><td>@m.Type</td><td>@m.Unit</td><td>@m.Help</td></tr>
+                }
+            </tbody>
+        </table>
+        <ul class="note">
+            <li>gaz pe zi, apă caldă vs încălzire: <code>increase(heating_gas_consumption_m3_total[1d])</code> (contor construit de KasaMonitor: maximul zilelor încheiate + ultima valoare de azi, zi locală după ora citirii; nu scade niciodată)</li>
+            <li>gaz azi după centrală: <code>heating_gas_consumption_m3{period="day"}</code>; luna trecută: <code>{period="lastmonth"}</code></li>
+            <li>randament aparent luna trecută: <code>sum(heating_heat_production_kwh{period="lastmonth"}) / (sum(heating_gas_consumption_m3{period="lastmonth"}) * 10.55)</code></li>
+            <li>modul apei calde: <code>heating_dhw_mode_info</code> (=1, eticheta <code>mode</code>); programul: <code>heating_program_info</code></li>
+        </ul>
     }
 
     <h3>Prize care NU apar în metrici</h3>

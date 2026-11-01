@@ -33,6 +33,214 @@ namespace KasaMonitor.Data.Migrations
                     b.ToTable("DailyEnergy", (string)null);
                 });
 
+            modelBuilder.Entity("KasaMonitor.Data.Entities.HeatingDeviceEntity", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("DeviceId")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<bool>("Enabled")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("GatewaySerial")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("InstallationId")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("LastError")
+                        .HasColumnType("TEXT");
+
+                    b.Property<long?>("LastSeenUtc")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("ModelId")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("Provider")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("Provider", "InstallationId", "GatewaySerial", "DeviceId")
+                        .IsUnique();
+
+                    b.ToTable("HeatingDevices", (string)null);
+                });
+
+            modelBuilder.Entity("KasaMonitor.Data.Entities.HeatingEnergyDailyEntity", b =>
+                {
+                    b.Property<Guid>("DeviceId")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("Day")
+                        .HasColumnType("TEXT");
+
+                    b.Property<double?>("GasDhwLastM3")
+                        .HasColumnType("REAL");
+
+                    b.Property<double?>("GasDhwMaxM3")
+                        .HasColumnType("REAL");
+
+                    b.Property<double?>("GasHeatingLastM3")
+                        .HasColumnType("REAL");
+
+                    b.Property<double?>("GasHeatingMaxM3")
+                        .HasColumnType("REAL");
+
+                    b.Property<double?>("HeatDhwKwh")
+                        .HasColumnType("REAL");
+
+                    b.Property<double?>("HeatHeatingKwh")
+                        .HasColumnType("REAL");
+
+                    b.Property<double?>("PowerDhwKwh")
+                        .HasColumnType("REAL");
+
+                    b.Property<double?>("PowerHeatingKwh")
+                        .HasColumnType("REAL");
+
+                    b.Property<string>("Source")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<long>("UpdatedTs")
+                        .HasColumnType("INTEGER");
+
+                    b.HasKey("DeviceId", "Day");
+
+                    b.ToTable("HeatingEnergyDaily", (string)null);
+                });
+
+            modelBuilder.Entity("KasaMonitor.Data.Entities.HeatingEnergyPeriodEntity", b =>
+                {
+                    b.Property<Guid>("DeviceId")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("Kind")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("Purpose")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("Period")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("Unit")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<long>("UpdatedTs")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<double>("Value")
+                        .HasColumnType("REAL");
+
+                    b.HasKey("DeviceId", "Kind", "Purpose", "Period");
+
+                    b.ToTable("HeatingEnergyPeriods", (string)null);
+                });
+
+            modelBuilder.Entity("KasaMonitor.Data.Entities.HeatingRawFeaturesEntity", b =>
+                {
+                    b.Property<Guid>("DeviceId")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("Json")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<long>("Ts")
+                        .HasColumnType("INTEGER");
+
+                    b.HasKey("DeviceId");
+
+                    b.ToTable("HeatingRawFeatures", (string)null);
+                });
+
+            modelBuilder.Entity("KasaMonitor.Data.Entities.HeatingReadingEntity", b =>
+                {
+                    b.Property<Guid>("DeviceId")
+                        .HasColumnType("TEXT");
+
+                    b.Property<long>("Ts")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("ActiveError")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("ActiveProgram")
+                        .HasColumnType("TEXT");
+
+                    b.Property<double?>("BoilerTargetC")
+                        .HasColumnType("REAL");
+
+                    b.Property<double?>("BoilerTempC")
+                        .HasColumnType("REAL");
+
+                    b.Property<bool?>("BurnerActive")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<double?>("BurnerHours")
+                        .HasColumnType("REAL");
+
+                    b.Property<long?>("BurnerStarts")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("DhwMode")
+                        .HasColumnType("TEXT");
+
+                    b.Property<double?>("DhwTargetC")
+                        .HasColumnType("REAL");
+
+                    b.Property<double?>("DhwTempC")
+                        .HasColumnType("REAL");
+
+                    b.Property<double?>("ModulationPct")
+                        .HasColumnType("REAL");
+
+                    b.Property<string>("OperatingMode")
+                        .HasColumnType("TEXT");
+
+                    b.Property<double?>("OutsideTempC")
+                        .HasColumnType("REAL");
+
+                    b.Property<double?>("PressureBar")
+                        .HasColumnType("REAL");
+
+                    b.Property<double?>("PumpPct")
+                        .HasColumnType("REAL");
+
+                    b.Property<double?>("ReturnTempC")
+                        .HasColumnType("REAL");
+
+                    b.Property<double?>("RoomTempC")
+                        .HasColumnType("REAL");
+
+                    b.Property<string>("StatusCode")
+                        .HasColumnType("TEXT");
+
+                    b.Property<double?>("SupplyTempC")
+                        .HasColumnType("REAL");
+
+                    b.HasKey("DeviceId", "Ts");
+
+                    b.ToTable("HeatingReadings", (string)null);
+                });
+
             modelBuilder.Entity("KasaMonitor.Data.Entities.LiveMinuteAggregateEntity", b =>
                 {
                     b.Property<Guid>("PlugId")

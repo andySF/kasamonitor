@@ -1,0 +1,136 @@
+@using KasaMonitor.Workers
+@using KasaMonitor.Core.Heating
+@inject IHeatingSettingsService HeatingSettings
+@inject HeatingPollWorker HeatingWorker
+
+<div class="card h-100">
+    <div class="card-header fw-semibold"><i class="bi bi-fire me-2"></i>Centrală (Viessmann)</div>
+    <div class="card-body">
+        @if (_s is null)
+        {
+            <span class="text-secondary small">Se încarcă…</span>
+        }
+        else
+        {
+            <div class="form-check form-switch mb-2">
+                <input class="form-check-input" type="checkbox" id="heatingOn" @bind="_enabled" />
+                <label class="form-check-label" for="heatingOn">Citește centrala din contul ViCare (API-ul cloud Viessmann)</label>
+            </div>
+            <div class="mb-2">
+                <label class="form-label" for="vClient">Client ID (portalul de dezvoltator Viessmann)</label>
+                <input class="form-control" id="vClient" @bind="_clientId" autocomplete="off" spellcheck="false" />
+            </div>
+            <div class="mb-2 small">
+                <span class="me-1">Token:</span>
+                @if (_s.Token is { } t)
+                {
+                    <span class="badge text-bg-success">conectat</span>
+                    <span class="ms-1 text-secondary">acces •••••••• valabil până la @t.ExpiresAtUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm"); refresh @(string.IsNullOrEmpty(t.RefreshToken) ? "lipsă" : "••••••••")</span>
+                }
+                else
+                {
+                    <span class="badge text-bg-secondary">neconectat</span>
+                    @if (_s.AuthError is { } err) { <span class="ms-1 text-danger">@err</span> }
+                }
+                <div class="mt-1">
+                    <a class="btn btn-outline-primary btn-sm @(_s.HasClientId ? "" : "disabled")" href="/centrala/connect"><i class="bi bi-box-arrow-in-right me-1"></i>@(_s.Token is null ? "Conectează ViCare" : "Reconectează")</a>
+                    @if (_s.Token is not null)
+                    {
+                        <button class="btn btn-outline-secondary btn-sm ms-1" @onclick="DisconnectAsync"><i class="bi bi-x-circle me-1"></i>Deconectează</button>
+                    }
+                </div>
+            </div>
+            <div class="mb-2">
+                <label class="form-label" for="vInterval">Interval de citire (secunde, minim @ViessmannApi.MinPollIntervalSeconds)</label>
+                <input class="form-control" id="vInterval" @bind="_interval" type="number" min="@ViessmannApi.MinPollIntervalSeconds" max="@ViessmannApi.MaxPollIntervalSeconds" />
+                <div class="form-text">
+                    Un apel pe citire: @ViessmannApi.CallsPerDay(HeatingSettingsService.ClampInterval(_interval)).ToString("N0") apeluri pe zi din @ViessmannApi.DailyCallLimit.ToString("N0")
+                    (limita planului gratuit al clientului de pe portal; după o eroare, apelurile se răresc: 1×, 2×, 4× intervalul, cel mult 30 min).
+                </div>
+            </div>
+            <div class="mb-2">
+                <label class="form-label" for="hRetention">Păstrează citirile centralei (zile, 0 = nelimitat)</label>
+                <input class="form-control" id="hRetention" @bind="_retentionDays" type="number" min="0" max="@HeatingSettingsService.MaxReadingsRetentionDays" />
+            </div>
+            <div class="row g-2 mb-1">
+                <div class="col-sm-4">
+                    <label class="form-label" for="gasPrice">Preț gaz (RON / kWh)</label>
+                    <input class="form-control" id="gasPrice" @bind="_price" type="number" step="0.001" min="0" />
+                </div>
+                <div class="col-sm-4">
+                    <label class="form-label" for="gasFactor">kWh / m³</label>
+                    <input class="form-control" id="gasFactor" @bind="_factor" type="number" step="0.01" min="@HeatingSettingsService.MinKwhPerM3" max="@HeatingSettingsService.MaxKwhPerM3" />
+                </div>
+                <div class="col-sm-4">
+                    <label class="form-label" for="gasUnit">Unitate implicită</label>
+                    <select class="form-select" id="gasUnit" @bind="_unit">
+                        <option value="m3">m³</option>
+                        <option value="kWh">kWh</option>
+                    </select>
+                </div>
+            </div>
+            <div class="form-text">
+                Redirect URI de înregistrat pe portal: adresa aplicației + <code>@ViessmannApi.CallbackPath</code> (ex. <code>http://192.168.1.10:8910@(ViessmannApi.CallbackPath)</code>).
+                Consumul de gaz e estimat de centrală. Unitatea vine din răspunsul API (<code>unit</code>); cea de aici se folosește doar când lipsește.
+                Factorul transformă m³ în kWh pentru cost. Tokenurile se păstrează criptate și nu se afișează.
+            </div>
+            <div class="d-flex align-items-center gap-2 mt-2">
+                <button class="btn btn-primary btn-sm" @onclick="SaveAsync"><i class="bi bi-save me-1"></i>Salvează centrala</button>
+                @if (_saved) { <span class="text-success small"><i class="bi bi-check-circle me-1"></i>Salvat.</span> }
+                @if (_error is not null) { <span class="text-danger small">@_error</span> }
+            </div>
+        }
+    </div>
+</div>
+
+@code {
+    private HeatingRuntimeSettings? _s;
+    private bool _enabled;
+    private string _clientId = "";
+    private int _interval;
+    private decimal _price;
+    private double _factor;
+    private string _unit = "m3";
+    private int _retentionDays;
+    private bool _saved;
+    private string? _error;
+
+    protected override async Task OnInitializedAsync() => await LoadAsync();
+
+    private async Task LoadAsync()
+    {
+        _s = await HeatingSettings.GetAsync(CancellationToken.None);
+        _enabled = _s.HeatingEnabled;
+        _clientId = _s.ClientId;
+        _interval = _s.PollIntervalSeconds;
+        _price = _s.GasPricePerKwh;
+        _factor = _s.GasKwhPerM3;
+        _unit = _s.GasUnitText;
+        _retentionDays = _s.ReadingsRetentionDays;
+    }
+
+    private async Task SaveAsync()
+    {
+        _error = null;
+        try
+        {
+            await HeatingSettings.SaveAsync(new HeatingSettingsUpdate(_enabled, _clientId, _interval, _price, _unit, _factor, _retentionDays), CancellationToken.None);
+            HeatingWorker.Wake();
+            await LoadAsync();
+            _saved = true;
+            StateHasChanged();
+            await Task.Delay(2000);
+            _saved = false;
+        }
+        catch (FormatException ex)
+        {
+            _error = ex.Message;
+        }
+    }
+
+    private async Task DisconnectAsync()
+    {
+        await HeatingSettings.DisconnectAsync("Deconectat din Setări.", CancellationToken.None);
+        await LoadAsync();
+    }
+}

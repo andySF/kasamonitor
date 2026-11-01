@@ -25,5 +25,7 @@
   <ItemGroup>
     <!-- Shelly answers captured from a real EM Gen3 (owned by KasaMonitor.Core.Tests). -->
     <None Include="../KasaMonitor.Core.Tests/fixtures/shelly_*.json" Link="fixtures/%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
+    <!-- Viessmann answers (real B0KA dump with fictitious ids, synthetic installations), owned by KasaMonitor.Core.Tests. -->
+    <None Include="../KasaMonitor.Core.Tests/fixtures/vicare_*.json" Link="fixtures/%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>

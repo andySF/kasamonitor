@@ -1,0 +1,46 @@
+{
+  "data": [
+    {
+      "id": 1000001,
+      "description": "Test",
+      "address": { "street": "Strada Exemplu", "houseNumber": "1", "zip": "000000", "city": "Oras", "country": "ro" },
+      "gateways": [
+        {
+          "serial": "1111222233334444",
+          "version": "504.2244.48.0",
+          "aggregatedStatus": "WorksProperly",
+          "gatewayType": "WiFi_SA0041",
+          "installationId": 1000001,
+          "devices": [
+            {
+              "gatewaySerial": "1111222233334444",
+              "id": "0",
+              "boilerSerial": "7000000000000001",
+              "modelId": "E3_Vitodens_050_0822",
+              "status": "Online",
+              "deviceType": "heating",
+              "roles": [ "type:E3", "type:boiler", "type:product;Vitodens_050" ]
+            },
+            {
+              "gatewaySerial": "1111222233334444",
+              "id": "zigbee-0011223344556677",
+              "modelId": "E3_RoomSensor",
+              "status": "Online",
+              "deviceType": "zigbee",
+              "roles": [ "type:E3", "type:climateSensor" ]
+            },
+            {
+              "gatewaySerial": "1111222233334444",
+              "id": "TCU",
+              "modelId": "E3_TCU41_x04",
+              "status": "Online",
+              "deviceType": "tcu",
+              "roles": [ "type:gateway;TCU100" ]
+            }
+          ]
+        }
+      ],
+      "aggregatedStatus": "WorksProperly"
+    }
+  ]
+}

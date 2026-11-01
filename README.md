@@ -2,11 +2,12 @@
 
 Self-hosted monitoring for TP-Link smart plugs with energy metering: **Kasa** (e.g. KP115, legacy XOR protocol on
 port 9999) and **Tapo** (e.g. P110/P115, KLAP and AES "securePassthrough" protocols), plus **Shelly Gen2/Gen3**
-plugs and energy meters (e.g. Shelly EM Gen3, local JSON-RPC; the only write is the relay switch, after a confirmation). Blazor Server app (.NET 10)
+plugs and energy meters (e.g. Shelly EM Gen3, local JSON-RPC; the only write is the relay switch, after a confirmation), and a
+**Viessmann gas boiler** read through the ViCare cloud API (read-only). Blazor Server app (.NET 10)
 with SQLite, a web UI on port 8910 and a Prometheus `/metrics` endpoint. An optional Prometheus + Grafana stack
 with a ready-made dashboard and alert rules is included.
 
-Version: **0.4.0** (`Directory.Build.props`). Docker image: `duobit/kasamonitor`.
+Version: **0.6.0** (`Directory.Build.props`). Docker image: `duobit/kasamonitor`.
 
 ## Quick start
 
@@ -47,7 +48,10 @@ TP-Link (Tapo app) account in `/settings` and press **Scanează acum** on `/plug
 - **Live stream**: the main meter every second, plugs (Shelly, Kasa, Tapo) every 1–10 s (adaptive), raw rows only on
   change; minute aggregates from every reading.
 - **Contor page** (`/contor`): the house in real time (1 s), rest of the house, today per minute, energy per day, relay.
-- **Version in the menu**: „v0.4.0” at the right of the navigation bar; the tooltip shows the commit and the build time.
+- **Gas boiler** (`/centrala`, menu „Centrală”): a Viessmann boiler through the ViCare cloud API: burner, modulation,
+  temperatures, hot water, messages, gas per day for hot water vs heating with cost, raw features. See
+  [Gas boiler (Viessmann ViCare)](#gas-boiler-viessmann-vicare).
+- **Version in the menu**: „v0.6.0” at the right of the navigation bar; the tooltip shows the commit and the build time.
 - **Browser errors in the server log**: JavaScript errors and the Blazor error banner are reported to
   `POST /api/client-error` and logged at Warning (category `KasaMonitor.ClientErrors`), so `docker logs` shows them.
 
@@ -81,6 +85,13 @@ not been saved from `/settings`.
 | Remote write URL | `KasaMonitor__RemoteWriteUrl` | — | e.g. `http://192.168.1.10:9090/api/v1/write` |
 | Remote write user / password | `KasaMonitor__RemoteWriteUser`, `KasaMonitor__RemoteWritePassword` | — | optional basic auth; stored encrypted |
 | Keep raw readings (months) | `KasaMonitor__ReadingsRetentionMonths` | `0` = unlimited | raw 10-second readings only; daily history and minute aggregates are never deleted. Saving a value that would delete existing readings asks for confirmation with the exact row count |
+| Gas boiler | `KasaMonitor__HeatingEnabled` | `true` | reads the Viessmann boiler once the ViCare account is connected (`/centrala`) |
+| Viessmann Client ID | `KasaMonitor__ViessmannClientId` | — | client of the Viessmann developer portal; the OAuth tokens are never configured, they come from „Conectează ViCare” and are stored encrypted |
+| Boiler poll interval (s) | `KasaMonitor__ViessmannPollIntervalSeconds` | `120` | minimum 60; one API call per poll (120 s = 720 of the 1450 daily calls) |
+| Gas price (RON / kWh) | `KasaMonitor__GasPricePerKwh` | `0.31` | cost = m³ × kWh/m³ × price |
+| Gas calorific factor (kWh / m³) | `KasaMonitor__GasKwhPerM3` | `10.55` | converts the boiler's m³ to kWh |
+| Gas unit fallback | `KasaMonitor__GasUnit` | `m3` | `m3` or `kWh`; only used when the API sends a gas value without `unit` |
+| Keep boiler readings (days) | `KasaMonitor__HeatingReadingsRetentionDays` | `0` = unlimited | `HeatingReadings` older than this are deleted once a day; daily gas history is never deleted |
 | — | `KasaMonitor__DbPath` | `/data/kasa.db` (image) | |
 
 The DataProtection keys are kept next to the database, in `<db dir>/dp-keys` (`/data/dp-keys` in the container,
@@ -202,6 +213,8 @@ across KasaMonitor restarts (it is re-seeded from the plug's total, which can be
 increase method above, not `rate()`/`increase()`, for energy.
 
 Withdrawn or unsupported plugs have no series. Renaming a plug removes the series with the old alias.
+
+The gas boiler has its own `heating_*` family, see [Gas boiler (Viessmann ViCare)](#gas-boiler-viessmann-vicare).
 
 ### Live samples via remote write (`kasa_live_*`)
 
@@ -382,6 +395,108 @@ can switch the contactor (the confirmation only prevents mistakes). Expose KasaM
 through a port forward or a reverse proxy without authentication), or turn relay control off. TODO: Kasa/Tapo relay
 commands (different protocols; not in this version).
 
+## Gas boiler (Viessmann ViCare)
+
+KasaMonitor reads a Viessmann boiler (mapping built on a Vitodens 050-W B0KA, model `E3_Vitodens_050_0822`, Wi-Fi
+built in) through the **ViCare cloud API**; there is no local API. It never sends a command to the boiler.
+
+**One-time setup**
+
+1. Log in at the [Viessmann developer portal](https://developer.viessmann-climatesolutions.com) with the ViCare
+   account → *Your clients* → *+ Add*: any name, reCAPTCHA **off**, redirect URI = the address you open KasaMonitor
+   with + `/centrala/callback`, e.g. `http://192.168.1.10:8910/centrala/callback` (add one per address you use, e.g.
+   also `http://localhost:8910/centrala/callback`). A new client can take up to an hour to become active.
+2. `/settings` → *Centrală (Viessmann)*: paste the Client ID, save.
+3. `/centrala` → **Conectează ViCare**: KasaMonitor redirects to Viessmann (OAuth 2.0 authorization code with PKCE
+   S256, scope `IoT User offline_access`, random `state`); after you approve, Viessmann redirects to
+   `/centrala/callback`, which checks the `state` (unknown, expired after 10 minutes or reused → rejected; it must also
+   match the `vicare_oauth` cookie — HttpOnly, SameSite=Lax, a hash of the state — set by `/centrala/connect` in the
+   same browser; at most 10 pending requests) and exchanges the code for the tokens. Access and refresh tokens are stored encrypted (DataProtection, like the TP-Link password)
+   and shown masked; nothing secret is logged. The access token (1 h) is refreshed 5 minutes before it expires. Only a
+   refused grant (HTTP 400/401/403 with `invalid_grant` or `invalid_token`) disconnects the account (the page then shows
+   **Reconectează**); any other token-endpoint error (429, 5xx, network) is temporary and retried with the backoff below.
+
+**Polling and limits.** After connecting, one call to `GET /iot/v2/equipment/installations?includeGateways=true`
+finds the installation, gateway and boiler; then every `ViessmannPollIntervalSeconds` (default 120 s, minimum 60 s)
+**one** bulk call `GET /iot/v2/features/installations/{id}/gateways/{serial}/features?includeDevicesFeatures=true`
+returns every feature (about 70 KB). The limits belong to the client registered on the developer portal (free plan:
+1450 calls per sliding 24 h and 120 per 10 minutes); KasaMonitor keeps its API calls inside both windows (in memory),
+but the API's HTTP 429 stays the authority: KasaMonitor then stops until the reset time the API gives (or at least
+10 minutes) and logs a warning. After any failed call (5xx, network error, gateway offline, a repeated 401, no boiler
+found, a token refresh answered with 5xx/429) the next call waits 1×, 2×, 4× … the interval, at most 30 minutes (never
+less than the interval), until the first success. An HTTP 401 triggers one token refresh and one retry.
+`heating_api_calls_today` counts the HTTP requests actually made (API and token endpoint) during the local calendar
+day; it resets at midnight and when KasaMonitor restarts.
+
+**What is mapped** (Vitodens 050-W): supply temperature (`heating.boiler.sensors.temperature.commonSupply`, same as
+circuit 0 supply), boiler target (`heating.boiler.temperature`, 20 °C when idle: a target, not a sensor, exported as
+`heating_boiler_target_c`), room
+temperature from the Zigbee room sensor, hot water temperature and target, burner on/off, modulation, starts and hours,
+internal pump target, circuit 0 mode/program and program targets, the heating schedule (shown only), hot water mode,
+comfort/one-time charge/scald protection, frost protection, messages (`device.messages.status|service|info.raw`:
+status code such as `S.6`; an entry whose priority is not `status`, or the malfunction lock, is the active error; the
+API's message times are UTC and shown in local time),
+gateway Wi-Fi, room-sensor battery and Zigbee link, gas type. Sensors the model lacks (outside, return, boiler
+temperature, pressure: `heating.sensors.pressure.supply` is `notConnected`) stay empty and are neither shown nor
+exported; boilers that have them (PyViCare names) fill them. Every other feature is kept in the raw dump and listed
+under *Nemapate* on `/centrala`; unknown features are not an error.
+
+**Gas, heat and electricity.** The boiler reports `heating.gas.consumption.summary.dhw|heating` (today, last 7 days,
+this/last month, this/last year) in **m³** (other models: kWh; the unit comes from the answer, `GasUnit` is only a
+fallback), plus heat produced (`heating.heat.production.summary.*`, kWh) and its own electricity
+(`heating.power.consumption.summary.*`, kWh). The Vitodens 050-W has no `day[]` series, so **the daily history is built
+by KasaMonitor**: every poll writes the boiler's "today" value on the **local day of KasaMonitor's reading** (the
+container's `TZ`; the feature's timestamp is not used, the gateway re-sends features in bulk) into `HeatingEnergyDaily`,
+which keeps per purpose the day's highest value (`GasHeatingMaxM3`, `GasDhwMaxM3`) and the last value seen
+(`…LastM3`). A closed day counts with its highest value, the current day with its last value; a value lower than the
+stored highest in the same local day (e.g. the boiler resetting its counter some time after midnight) is logged at
+Information with both values, so the first nights show how the boiler behaves. Boilers with a `day[]` series (day[0] =
+today) fill every day of the series. The period values are stored as they come (`HeatingEnergyPeriods`). The page shows hot water
+vs heating for today / 7 days / month / last month / year with the cost, a stacked bar chart of the last 30 days and
+the apparent efficiency of last month (heat produced / gas × kWh/m³). **The consumption is estimated by the boiler's
+controller, not measured by a gas meter**: compare it with the gas bill before relying on it.
+
+**Storage.** `HeatingDevices`, `HeatingReadings` (one row per poll: about 720 rows a day at 120 s; kept forever unless
+`HeatingReadingsRetentionDays` > 0),
+`HeatingEnergyDaily`, `HeatingEnergyPeriods` and `HeatingRawFeatures` (only the latest raw answer, overwritten).
+
+**Metrics** (`/metrics`, labels `device` = e.g. `Vitodens 050`, `model` = e.g. `E3_Vitodens_050_0822`; a value the
+boiler does not report has no series):
+
+| Metric | Type | Unit | Source |
+|---|---|---|---|
+| `heating_burner_active` | gauge | 0/1 | `heating.burners.0.active` |
+| `heating_burner_modulation_percent` | gauge | % | `heating.burners.0.modulation` |
+| `heating_boiler_temperature_c` | gauge | °C | `heating.boiler.sensors.temperature.main` (not on 050-W) |
+| `heating_boiler_target_c` | gauge | °C | `heating.boiler.temperature` (target; 20 °C when idle on a 050-W) |
+| `heating_supply_temperature_c` | gauge | °C | `…commonSupply` / `heating.circuits.0.sensors.temperature.supply` |
+| `heating_return_temperature_c`, `heating_outside_temperature_c` | gauge | °C | `heating.sensors.temperature.return` / `.outside` (not on 050-W) |
+| `heating_dhw_temperature_c`, `heating_dhw_target_c` | gauge | °C | `heating.dhw.sensors.temperature.*`, `heating.dhw.temperature.main` |
+| `heating_room_temperature_c` | gauge | °C | `heating.circuits.0.sensors.temperature.room` |
+| `heating_pump_percent` | gauge | % | `heating.boiler.pumps.internal.target` |
+| `heating_pressure_bar` | gauge | bar | `heating.sensors.pressure.supply` (only when connected) |
+| `heating_burner_starts_total`, `heating_burner_hours_total` | counter | starts, h | `heating.burners.0.statistics` |
+| `heating_gas_consumption_m3{purpose,period}` | gauge | m³ | summary values; `purpose` = `heating` / `dhw`, `period` = `day` / `last7days` / `month` / `lastmonth` / `year` / `lastyear` |
+| `heating_gas_consumption_m3_total{purpose}` | counter | m³ | built by KasaMonitor: Σ highest value of the closed days + last value of today; exported as a counter that never goes down (a lower sum, e.g. a stale value replaced by a late reset, holds the counter until the sum passes it again) |
+| `heating_heat_production_kwh{purpose,period}`, `heating_heat_production_kwh_total{purpose}` | gauge, counter | kWh | `heating.heat.production.summary.*` |
+| `heating_power_consumption_kwh{purpose,period}`, `heating_power_consumption_kwh_total{purpose}` | gauge, counter | kWh | `heating.power.consumption.summary.*` |
+| `heating_dhw_mode_info{mode}`, `heating_program_info{program}` | gauge | 1 | hot water mode, active program of circuit 0 |
+| `heating_gateway_wifi_dbm` | gauge | dBm | `gateway.wifi` / `tcu.wifi` |
+| `heating_room_sensor_battery_percent` | gauge | % | `device.power.battery` of the Zigbee room sensor |
+| `heating_error_active` | gauge | 0/1 | an error message or the malfunction lock |
+| `heating_api_calls_today` | gauge | calls | HTTP requests to Viessmann (API + token endpoint) actually made today, local calendar day; resets at midnight and at a restart |
+| `heating_api_last_success_timestamp_seconds` | gauge | s | last successful read |
+| `heating_online` | gauge | 0/1 | last read succeeded within three poll intervals |
+
+```promql
+increase(heating_gas_consumption_m3_total[1d])                     # gas per day, hot water vs heating
+heating_gas_consumption_m3{period="lastmonth"}                     # the boiler's own value for last month
+sum(heating_heat_production_kwh{period="lastmonth"}) / (sum(heating_gas_consumption_m3{period="lastmonth"}) * 10.55)  # apparent efficiency
+```
+
+The Grafana dashboard `kasamonitor` has a row **Centrală**: burner, modulation, gas today (hot water vs heating),
+online/API calls, temperatures, modulation over time and gas per day for 30 days (stacked bars).
+
 ## Data retention
 
 | Data | Table | Written | Deleted |
@@ -420,15 +535,15 @@ dotnet test KasaMonitor.sln
 From the repository root, with Docker running and `docker login` done once:
 
 ```powershell
-.\deploy\build-and-push.ps1 -Version 0.4.0          # build :0.4.0 + :latest and push both
-.\deploy\build-and-push.ps1 -Version 0.4.0 -NoPush  # local build only
+.\deploy\build-and-push.ps1 -Version 0.6.0          # build :0.4.0 + :latest and push both
+.\deploy\build-and-push.ps1 -Version 0.6.0 -NoPush  # local build only
 ```
 
 or manually:
 
 ```bash
-docker build -t duobit/kasamonitor:0.4.0 -t duobit/kasamonitor:latest -f deploy/Dockerfile .
-docker push duobit/kasamonitor:0.4.0
+docker build -t duobit/kasamonitor:0.6.0 -t duobit/kasamonitor:latest -f deploy/Dockerfile .
+docker push duobit/kasamonitor:0.6.0
 docker push duobit/kasamonitor:latest
 ```
 

@@ -1870,6 +1870,496 @@
       },
       "interval": "1d",
       "timeFrom": "30d"
+    },
+    {
+      "type": "row",
+      "title": "Centrală",
+      "id": 29,
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 76
+      },
+      "panels": []
+    },
+    {
+      "type": "stat",
+      "title": "Burner",
+      "description": "Burner on/off and modulation of the Viessmann boiler (heating_burner_active, heating_burner_modulation_percent). Read from the ViCare cloud every 120 s by default.",
+      "id": 30,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 0,
+        "y": 77
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "max by (device) (heating_burner_active)",
+          "instant": true,
+          "range": false,
+          "legendFormat": "{{device}}"
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "value_and_name"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "decimals": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "blue",
+                "value": null
+              }
+            ]
+          },
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": {
+                  "text": "off",
+                  "color": "green"
+                },
+                "1": {
+                  "text": "on",
+                  "color": "red"
+                }
+              }
+            }
+          ]
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Burner modulation",
+      "description": "heating_burner_modulation_percent (0 when the burner is off).",
+      "id": 31,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 6,
+        "y": 77
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "max by (device) (heating_burner_modulation_percent)",
+          "instant": true,
+          "range": false,
+          "legendFormat": "{{device}}"
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "value_and_name"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "decimals": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "blue",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Gas today: hot water vs heating",
+      "description": "heating_gas_consumption_m3{period=\"day\"}: the boiler's own estimate for today (not a gas meter), per purpose.",
+      "id": 32,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 12,
+        "y": 77
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (purpose) (heating_gas_consumption_m3{period=\"day\"})",
+          "instant": true,
+          "range": false,
+          "legendFormat": "{{purpose}}"
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "value_and_name"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "m3",
+          "decimals": 2,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "orange",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Boiler online / API calls today",
+      "description": "heating_online (last read within three poll intervals) and heating_api_calls_today (HTTP calls to Viessmann, API and token endpoint, made today by KasaMonitor; local calendar day, resets at midnight and at a restart). The free plan limit is 1450 calls per sliding 24 h.",
+      "id": 33,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 18,
+        "y": 77
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "max(heating_online)",
+          "instant": true,
+          "range": false,
+          "legendFormat": "online"
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "max(heating_api_calls_today)",
+          "instant": true,
+          "range": false,
+          "legendFormat": "calls"
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "value_and_name"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "decimals": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "blue",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Boiler temperatures",
+      "description": "Supply, hot water (and its target), boiler target (20 °C when idle), room; outside/return/boiler only on boilers with those sensors (not on a Vitodens 050-W).",
+      "id": 34,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 81
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "max by (device) (heating_supply_temperature_c)",
+          "instant": false,
+          "range": true,
+          "legendFormat": "supply"
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "max by (device) (heating_dhw_temperature_c)",
+          "instant": false,
+          "range": true,
+          "legendFormat": "hot water"
+        },
+        {
+          "refId": "C",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "max by (device) (heating_dhw_target_c)",
+          "instant": false,
+          "range": true,
+          "legendFormat": "hot water target"
+        },
+        {
+          "refId": "G",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "max by (device) (heating_boiler_target_c)",
+          "instant": false,
+          "range": true,
+          "legendFormat": "boiler target"
+        },
+        {
+          "refId": "D",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "max by (device) (heating_room_temperature_c)",
+          "instant": false,
+          "range": true,
+          "legendFormat": "room"
+        },
+        {
+          "refId": "E",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "max by (device) (heating_outside_temperature_c)",
+          "instant": false,
+          "range": true,
+          "legendFormat": "outside"
+        },
+        {
+          "refId": "F",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "max by (device) (heating_return_temperature_c)",
+          "instant": false,
+          "range": true,
+          "legendFormat": "return"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "celsius",
+          "decimals": 1,
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 0
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Burner modulation",
+      "description": "heating_burner_modulation_percent over time (stepped: one value per poll).",
+      "id": 35,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 81
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "max by (device) (heating_burner_modulation_percent)",
+          "instant": false,
+          "range": true,
+          "legendFormat": "modulation"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "decimals": 0,
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "stepAfter",
+            "lineWidth": 1,
+            "fillOpacity": 30
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Gas per day (30 days): hot water vs heating",
+      "description": "m³ per day and purpose from KasaMonitor's cumulative counter heating_gas_consumption_m3_total (sum of the 5-minute increases, days aligned to 00:00 UTC, like the other daily panels). KasaMonitor's Centrală page shows local days.",
+      "id": 36,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 89
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum_over_time(clamp_min(max by (purpose) (heating_gas_consumption_m3_total) - max by (purpose) (heating_gas_consumption_m3_total offset 5m), 0)[$__interval:5m])",
+          "instant": false,
+          "range": true,
+          "legendFormat": "{{purpose}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "m3",
+          "decimals": 2,
+          "custom": {
+            "drawStyle": "bars",
+            "fillOpacity": 70,
+            "lineWidth": 1,
+            "stacking": {
+              "mode": "normal"
+            },
+            "barAlignment": -1
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "interval": "1d",
+      "timeFrom": "30d"
     }
   ],
   "links": [],

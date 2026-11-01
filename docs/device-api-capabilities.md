@@ -1,6 +1,6 @@
 # What the plugs' local APIs offer
 
-Reference for deciding what KasaMonitor can show or do next. Three local protocols are covered:
+Reference for deciding what KasaMonitor can show or do next. Three local protocols are covered (and, at the end, the Viessmann ViCare cloud API of the gas boiler):
 
 - **Kasa legacy** (e.g. KP115): JSON on TCP/UDP port 9999, XOR-obfuscated. No authentication.
 - **Tapo SMART** (e.g. P110/P115): JSON `{"method": …, "params": …}` over KLAP or AES "securePassthrough" on HTTP port 80. Needs the TP-Link account.
@@ -120,6 +120,48 @@ Notes:
   today and sums the rest by the application's local day.
 - Discovery: Gen2+ devices announce `_shelly._tcp.local` with TXT `gen`, `app`, `ver`; `sys.device.discoverable =
   false` hides them from mDNS — use *Shelly probe hosts* or add by IP.
+
+## Viessmann ViCare (gas boiler, cloud API)
+
+Not a local API: the boiler's gateway talks only to the Viessmann cloud, and KasaMonitor reads it through the
+**IoT API v2** (`https://api.viessmann-climatesolutions.com/iot/v2`) with an OAuth 2.0 token of the ViCare account
+(authorization code + PKCE S256 at `https://iam.viessmann-climatesolutions.com/idp/v3/authorize|token`, scope
+`IoT User offline_access`, access token 3600 s, refresh token lifetime not documented). Free plan of the portal client:
+1450 calls per sliding 24 h, 120 per 10 minutes; HTTP 429 `RATE_LIMIT_EXCEEDED` carries
+`extendedPayload.limitReset` (unix ms). Sources: the Viessmann developer portal FAQ and PyViCare
+(`PyViCareAbstractOAuthManager.py`, `PyViCare.py`, `PyViCareGazBoiler.py`).
+
+Calls used: `GET /equipment/installations?includeGateways=true` (once, discovery) and the bulk
+`GET /features/installations/{id}/gateways/{serial}/features?includeDevicesFeatures=true` (one call per poll, every
+feature of the gateway and the devices behind it: `deviceId` "0" = boiler, "zigbee-…" = room sensor, "TCU" or none
+= gateway). Each feature has `properties{name:{type,value,unit}}`, a `timestamp` and `commands`.
+
+What a **Vitodens 050-W B0KA** (`E3_Vitodens_050_0822`, 73 features, dump of 2026-11-01) offers:
+
+| Feature(s) | Content | KasaMonitor |
+|---|---|---|
+| `heating.boiler.sensors.temperature.commonSupply`, `heating.circuits.0.sensors.temperature.supply` | supply °C (same sensor) | **used** |
+| `heating.boiler.temperature` | boiler target °C (20 when idle) | **used** (shown as target) |
+| `heating.circuits.0.sensors.temperature.room` | room °C (Zigbee room sensor) | **used** |
+| `heating.dhw.sensors.temperature.dhwCylinder\|hotWaterStorage\|outlet`, `heating.dhw.temperature.main` | hot water °C (same value), target | **used** |
+| `heating.burners.0`, `.modulation`, `.statistics` | on/off, %, hours, starts | **used** |
+| `heating.boiler.pumps.internal.target` | internal pump % | **used** |
+| `heating.circuits.0.operating.modes.active`, `.programs.active`, `.programs.normal\|comfort\|reduced` | mode, program, room targets | **used** |
+| `heating.circuits.0.name`, `heating.circuits.0` | circuit name | **used** |
+| `heating.circuits.0.heating.schedule` | schedule (commands `setSchedule`, `resetSchedule`) | **shown**; commands not used |
+| `heating.circuits.0.frostprotection`, `heating.dhw`, `heating.dhw.operating.modes.active`, `heating.dhw.comfort\|oneTimeCharge\|scaldProtection` | states | **used** |
+| `device.messages.status\|service\|info.raw`, `device.lock.malfunction` | status codes (e.g. `S.6`), messages, lock | **used** |
+| `heating.gas.consumption.summary.dhw\|heating` | m³: currentDay, lastSevenDays, currentMonth, lastMonth, currentYear, lastYear | **used** |
+| `heating.heat.production.summary.dhw\|heating`, `heating.power.consumption.summary.dhw\|heating` | kWh, same periods | **used** |
+| `gateway.wifi`, `tcu.wifi`, `device.power.battery`, `device.zigbee.lqi` (zigbee) | dBm, battery %, link % | **used** |
+| `heating.configuration.gasType`, `device.time.daylightSaving` | `EGas`, DST | **used** |
+| `heating.sensors.pressure.supply` | `status: notConnected` (no value) | read; no value on this model |
+| `device.serial`, `device.etn`, `heating.boiler.serial`, `gateway.devices`, `heating.configuration.*` (sizes, location, pumps), `heating.circuits.0.operating.programs.*EnergySaving`, `…forcedLastFromSchedule`, `…modes.heating\|standby`, `heating.circuits.0.temperature(.levels)`, `heating.circuits.0.zone.mode`, `device.zigbee.active`, `device.identification`, `tcu.features.wirelessRemoteController`, `device.setDefaultValues` | identity, configuration | in the raw dump, listed as *Nemapate* |
+
+Not present on this model: outside, return and boiler-water temperature sensors, pressure value, `day[]/week[]`
+consumption series (`heating.gas.consumption.heating|dhw`). KasaMonitor reads them when another boiler has them
+(PyViCare names) and otherwise builds the daily history itself from `currentDay`. The gas consumption is the
+controller's estimate, not a gas meter.
 
 ## Limitations
 

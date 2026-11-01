@@ -16,6 +16,11 @@ public sealed class KasaDbContext : DbContext
     public DbSet<LiveSampleEntity> LiveSamples => Set<LiveSampleEntity>();
     public DbSet<LiveMinuteAggregateEntity> LiveMinuteAggregates => Set<LiveMinuteAggregateEntity>();
     public DbSet<RelayCommandEntity> RelayCommands => Set<RelayCommandEntity>();
+    public DbSet<HeatingDeviceEntity> HeatingDevices => Set<HeatingDeviceEntity>();
+    public DbSet<HeatingReadingEntity> HeatingReadings => Set<HeatingReadingEntity>();
+    public DbSet<HeatingEnergyDailyEntity> HeatingEnergyDaily => Set<HeatingEnergyDailyEntity>();
+    public DbSet<HeatingEnergyPeriodEntity> HeatingEnergyPeriods => Set<HeatingEnergyPeriodEntity>();
+    public DbSet<HeatingRawFeaturesEntity> HeatingRawFeatures => Set<HeatingRawFeaturesEntity>();
 
     public KasaDbContext(DbContextOptions<KasaDbContext> options) : base(options) { }
 
@@ -100,6 +105,38 @@ public sealed class KasaDbContext : DbContext
             e.HasKey(r => r.Id);
             e.Property(r => r.Id).ValueGeneratedOnAdd();
             e.HasIndex(r => new { r.PlugId, r.Ts });
+        });
+
+        // Heating (Viessmann boiler through the cloud API).
+        mb.Entity<HeatingDeviceEntity>(e =>
+        {
+            e.ToTable("HeatingDevices");
+            e.HasKey(d => d.Id);
+            e.HasIndex(d => new { d.Provider, d.InstallationId, d.GatewaySerial, d.DeviceId }).IsUnique();
+        });
+
+        mb.Entity<HeatingReadingEntity>(e =>
+        {
+            e.ToTable("HeatingReadings");
+            e.HasKey(r => new { r.DeviceId, r.Ts });
+        });
+
+        mb.Entity<HeatingEnergyDailyEntity>(e =>
+        {
+            e.ToTable("HeatingEnergyDaily");
+            e.HasKey(d => new { d.DeviceId, d.Day });
+        });
+
+        mb.Entity<HeatingEnergyPeriodEntity>(e =>
+        {
+            e.ToTable("HeatingEnergyPeriods");
+            e.HasKey(p => new { p.DeviceId, p.Kind, p.Purpose, p.Period });
+        });
+
+        mb.Entity<HeatingRawFeaturesEntity>(e =>
+        {
+            e.ToTable("HeatingRawFeatures");
+            e.HasKey(r => r.DeviceId);
         });
     }
 }

@@ -30,6 +30,7 @@ internal sealed class TestScopeFactory : IServiceScopeFactory
             if (serviceType == typeof(IHistoryRepository)) return new HistoryRepository(_ctx);
             if (serviceType == typeof(ISettingsRepository)) return new SettingsRepository(_ctx);
             if (serviceType == typeof(ILiveRepository)) return new LiveRepository(_ctx);
+            if (serviceType == typeof(IHeatingRepository)) return new HeatingRepository(_ctx);
             return null;
         }
 

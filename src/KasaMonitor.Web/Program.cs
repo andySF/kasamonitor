@@ -142,6 +142,32 @@ builder.Services.AddHostedService(sp => sp.GetRequiredService<PrometheusRemoteWr
 
 builder.Services.AddHostedService<KasaMetrics>();
 
+// Gas boiler (Viessmann ViCare cloud API): OAuth PKCE connection from /centrala, one bulk features call per interval.
+builder.Services.AddSingleton(new HeatingSettingsDefaults(
+    HeatingEnabled: builder.Configuration.GetValue("KasaMonitor:HeatingEnabled", true),
+    ViessmannClientId: builder.Configuration["KasaMonitor:ViessmannClientId"] ?? "",
+    ViessmannPollIntervalSeconds: builder.Configuration.GetValue("KasaMonitor:ViessmannPollIntervalSeconds", KasaMonitor.Core.Heating.ViessmannApi.DefaultPollIntervalSeconds),
+    GasPricePerKwh: builder.Configuration.GetValue("KasaMonitor:GasPricePerKwh", 0.31m),
+    GasUnit: builder.Configuration["KasaMonitor:GasUnit"] ?? KasaMonitor.Core.Heating.HeatingKinds.UnitM3,
+    GasKwhPerM3: builder.Configuration.GetValue("KasaMonitor:GasKwhPerM3", KasaMonitor.Core.Heating.ViessmannApi.DefaultKwhPerM3),
+    HeatingReadingsRetentionDays: builder.Configuration.GetValue("KasaMonitor:HeatingReadingsRetentionDays", 0)));
+builder.Services.AddSingleton<IHeatingSettingsService, HeatingSettingsService>();
+builder.Services.AddSingleton<KasaMonitor.Core.Heating.IViessmannClient>(_ => new KasaMonitor.Core.Heating.ViessmannClient(TimeSpan.FromSeconds(20)));
+builder.Services.AddSingleton<HeatingState>();
+builder.Services.AddSingleton(sp => new ViessmannAuthService(
+    sp.GetRequiredService<IHeatingSettingsService>(),
+    sp.GetRequiredService<KasaMonitor.Core.Heating.IViessmannClient>(),
+    sp.GetRequiredService<ILogger<ViessmannAuthService>>(),
+    calls: sp.GetRequiredService<HeatingState>().Calls));
+builder.Services.AddSingleton(sp => new HeatingPollWorker(
+    sp.GetRequiredService<IServiceScopeFactory>(),
+    sp.GetRequiredService<IHeatingSettingsService>(),
+    sp.GetRequiredService<ViessmannAuthService>(),
+    sp.GetRequiredService<KasaMonitor.Core.Heating.IViessmannClient>(),
+    sp.GetRequiredService<HeatingState>(),
+    sp.GetRequiredService<ILogger<HeatingPollWorker>>()));
+builder.Services.AddHostedService(sp => sp.GetRequiredService<HeatingPollWorker>());
+
 // The only write to a device: Shelly Switch.Set, after a confirmation in the UI (setting AllowRelayControl).
 builder.Services.AddSingleton(sp => new RelayControlService(
     sp.GetRequiredService<IShellyClient>(),
@@ -162,6 +188,7 @@ builder.Services.AddSingleton<PrometheusTargetsChecker>();
 
 var app = builder.Build();
 RemoteWriteMetrics.Register(app.Services.GetRequiredService<PrometheusRemoteWriter>());
+HeatingMetrics.Register(app.Services.GetRequiredService<HeatingState>());
 
 using (var scope = app.Services.CreateScope())
 {
@@ -189,6 +216,39 @@ app.MapPost("/api/client-error", (KasaMonitor.Web.Diagnostics.ClientErrorReport 
         KasaMonitor.Web.Diagnostics.ClientErrorEndpoint endpoint) => endpoint.Handle(report, ctx))
     .DisableAntiforgery();
 
+// ViCare OAuth: /centrala/connect redirects to Viessmann (PKCE + state); Viessmann redirects back to /centrala/callback.
+// The redirect URI is this app's own address + /centrala/callback and must be registered on the developer portal.
+// A cookie with the hash of the state ties the callback to the browser that started the flow.
+app.MapGet("/centrala/connect", async (HttpContext ctx, ViessmannAuthService auth) =>
+{
+    if (await auth.BeginAuthorizeAsync(CallbackUri(ctx.Request), ctx.RequestAborted) is not { } start)
+        return Results.Redirect("/centrala?auth=noclient");
+    ctx.Response.Cookies.Append(ViessmannAuthService.StateCookieName, ViessmannAuthService.StateCookieValue(start.State), new CookieOptions
+    {
+        HttpOnly = true,
+        SameSite = SameSiteMode.Lax,
+        Path = "/centrala",
+        MaxAge = ViessmannAuthService.PendingLifetime,
+        Secure = ctx.Request.IsHttps,
+    });
+    return Results.Redirect(start.Url);
+});
+app.MapGet(KasaMonitor.Core.Heating.ViessmannApi.CallbackPath, async (HttpContext ctx, ViessmannAuthService auth, HeatingState heating) =>
+{
+    var q = ctx.Request.Query;
+    var state = q["state"].FirstOrDefault();
+    var cookie = ctx.Request.Cookies[ViessmannAuthService.StateCookieName];
+    ctx.Response.Cookies.Delete(ViessmannAuthService.StateCookieName, new CookieOptions { Path = "/centrala" });
+    if (!ViessmannAuthService.CookieMatches(state, cookie))
+        return Results.Text("Cererea de autorizare nu vine din acest browser (cookie lipsă sau diferit). Reia conectarea din /centrala.", "text/plain; charset=utf-8", statusCode: 400);
+    var (result, detail) = await auth.CompleteAsync(state, q["code"].FirstOrDefault(), q["error"].FirstOrDefault(), ctx.RequestAborted);
+    if (result is ViessmannCallbackResult.ExchangeFailed or ViessmannCallbackResult.Denied && detail is not null)
+        heating.SetStatus("Conectarea ViCare a eșuat: " + detail);
+    return result == ViessmannCallbackResult.InvalidState
+        ? Results.Text("Cerere de autorizare necunoscută sau expirată (state invalid). Reia conectarea din /centrala.", "text/plain; charset=utf-8", statusCode: 400)
+        : Results.Redirect("/centrala?auth=" + result.ToString().ToLowerInvariant());
+});
+
 // Downloads for /integration (generated from the embedded deploy/ files; no secrets involved).
 var integration = app.MapGroup("/integration/files");
 integration.MapGet("/prometheus.yml", (string? target) =>
@@ -201,6 +261,8 @@ integration.MapGet("/kasamonitor-monitoring.zip", (string? target) =>
     WithTarget(target, t => Results.File(IntegrationConfigGenerator.MonitoringBundle(t), "application/zip", "kasamonitor-monitoring.zip")));
 
 app.Run();
+
+static string CallbackUri(HttpRequest r) => $"{r.Scheme}://{r.Host}{KasaMonitor.Core.Heating.ViessmannApi.CallbackPath}";
 
 static IResult WithTarget(string? target, Func<string, IResult> make)
 {

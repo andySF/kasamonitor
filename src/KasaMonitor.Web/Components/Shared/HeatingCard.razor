@@ -1,0 +1,55 @@
+@using KasaMonitor.Workers
+@using KasaMonitor.Core.Heating
+@using KasaMonitor.Web.Ui
+@inject HeatingState State
+@inject IHeatingSettingsService HeatingSettings
+@implements IDisposable
+
+@if (State.Current is { } live)
+{
+    var s = live.Snapshot;
+    var online = State.IsOnline(DateTimeOffset.UtcNow);
+    var gasToday = HeatingFormat.GasRows(live.Periods ?? Array.Empty<HeatingEnergyPeriod>()).FirstOrDefault(r => r.Period == "day");
+    <div class="card mb-3 border-start border-4 @(online ? (s?.BurnerActive == true ? "border-danger" : "border-warning") : "border-secondary")">
+        <div class="card-body d-flex flex-wrap align-items-center gap-4">
+            <div>
+                <a class="h5 text-decoration-none text-body mb-0" href="/centrala" title="Pagina Centrală"><i class="bi bi-fire me-2"></i>Centrală</a>
+                <div class="small text-secondary">@live.Device.Name@(online ? "" : " · offline")</div>
+            </div>
+            <div>
+                <div class="small text-secondary">Arzător</div>
+                <div class="fs-5 fw-semibold">@(s?.BurnerActive is { } on ? (on ? $"pornit {HeatingFormat.Number(s.ModulationPct, 0)} %" : "oprit") : "—")</div>
+            </div>
+            <div>
+                <div class="small text-secondary">Apă caldă</div>
+                <div class="fs-5 fw-semibold">@HeatingFormat.Temp(s?.DhwTempC)</div>
+            </div>
+            <div title="Apă caldă + încălzire, estimat de centrală">
+                <div class="small text-secondary">Gaz azi</div>
+                <div class="fs-5 fw-semibold">@(gasToday is null ? "—" : HeatingFormat.M3(gasToday.TotalM3))</div>
+                @if (gasToday is not null && _settings is not null)
+                {
+                    <div class="small text-secondary">@EnergyFormat.Lei(HeatingFormat.GasCost(gasToday.TotalM3, _settings.GasKwhPerM3, _settings.GasPricePerKwh))</div>
+                }
+            </div>
+            @if (s?.ActiveError is { } err)
+            {
+                <span class="badge text-bg-danger ms-auto">Eroare @err</span>
+            }
+        </div>
+    </div>
+}
+
+@code {
+    private HeatingRuntimeSettings? _settings;
+
+    protected override async Task OnInitializedAsync()
+    {
+        _settings = await HeatingSettings.GetAsync(CancellationToken.None);
+        State.Changed += OnChanged;
+    }
+
+    private void OnChanged() => InvokeAsync(StateHasChanged);
+
+    public void Dispose() => State.Changed -= OnChanged;
+}

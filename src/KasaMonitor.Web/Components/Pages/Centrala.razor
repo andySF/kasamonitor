@@ -1,0 +1,507 @@
+@page "/centrala"
+@rendermode InteractiveServer
+@using KasaMonitor.Workers
+@using KasaMonitor.Core.Heating
+@using KasaMonitor.Web.Ui
+@inject IServiceScopeFactory ScopeFactory
+@inject IHeatingSettingsService HeatingSettings
+@inject HeatingState State
+@inject NavigationManager Nav
+@implements IDisposable
+
+<PageTitle>KasaMonitor — Centrală</PageTitle>
+
+<div class="d-flex flex-wrap align-items-center justify-content-between gap-2 mb-3">
+    <h1 class="h3 mb-0"><i class="bi bi-fire me-2"></i>Centrală@(_live is { } hl ? " — " + hl.Device.Name : "")</h1>
+    @if (_live is { } h)
+    {
+        <div class="d-flex flex-wrap align-items-center gap-2 small text-secondary">
+            @if (h.Snapshot?.CircuitName is { } cn) { <span>@cn</span><span>·</span> }
+            <span>@h.Device.ModelId</span>
+            <span class="badge @(_online ? "text-bg-success" : "text-bg-danger")">@(_online ? "online" : "offline")</span>
+        </div>
+    }
+</div>
+
+@if (_loadError is { } loadErr)
+{
+    <div class="alert alert-warning">Datele centralei nu au putut fi încărcate: @loadErr</div>
+}
+
+@if (_authMessage is { } am)
+{
+    <div class="alert @(am.Ok ? "alert-success" : "alert-warning")">@am.Text</div>
+}
+
+@if (_settings is null)
+{
+    <p class="text-secondary"><span class="spinner-border spinner-border-sm me-2"></span>Se încarcă…</p>
+}
+else if (!_settings.HasClientId || _settings.Token is null)
+{
+    <div class="alert alert-secondary">
+        <p class="mb-2"><b>Contul ViCare nu e conectat.</b> @(_settings.AuthError ?? State.Status)</p>
+        <ol class="mb-2 small">
+            <li>Pe <a href="https://developer.viessmann-climatesolutions.com" target="_blank" rel="noopener">portalul de dezvoltator Viessmann</a> (cu contul ViCare): „Your clients” → „+ Add”, reCAPTCHA dezactivat,
+                redirect URI <code>@CallbackExample</code>. Activarea clientului poate dura până la o oră.</li>
+            <li>Client ID-ul se pune în <a href="/settings">Setări → Centrală (Viessmann)</a>.</li>
+            <li>Apasă „Conectează ViCare” și autorizează accesul în pagina Viessmann.</li>
+        </ol>
+        @if (_settings.HasClientId)
+        {
+            <a class="btn btn-primary btn-sm" href="/centrala/connect"><i class="bi bi-box-arrow-in-right me-1"></i>@(_settings.AuthError is null ? "Conectează ViCare" : "Reconectează")</a>
+        }
+        else
+        {
+            <a class="btn btn-outline-primary btn-sm" href="/settings"><i class="bi bi-gear me-1"></i>Setări</a>
+        }
+    </div>
+}
+
+@if (_settings is not null && _live is null && _settings.Token is not null)
+{
+    <div class="alert alert-secondary">@(State.Status ?? "Se caută centrala în contul ViCare…")</div>
+}
+
+@if (_live is { } live)
+{
+    var s = live.Snapshot;
+    <div class="row g-3">
+        <div class="col-lg-5">
+            <div class="card h-100 border-start border-4 @(s?.BurnerActive == true ? "border-danger" : "border-secondary")">
+                <div class="card-body">
+                    <h2 class="h6 text-secondary">Stare</h2>
+                    <div class="d-flex flex-wrap gap-4 mb-2">
+                        <div>
+                            <div class="small text-secondary">Arzător</div>
+                            <div class="fs-4 fw-semibold">@(s?.BurnerActive is { } on ? (on ? "pornit" : "oprit") : "—")</div>
+                        </div>
+                        <div>
+                            <div class="small text-secondary">Modulație</div>
+                            <div class="fs-4 fw-semibold">@(s?.ModulationPct is { } mod ? HeatingFormat.Number(mod, 0) + " %" : "—")</div>
+                        </div>
+                        <div>
+                            <div class="small text-secondary">Mod / program</div>
+                            <div class="fs-6 fw-semibold">@HeatingFormat.Mode(s?.OperatingMode) / @HeatingFormat.Program(s?.ActiveProgram)</div>
+                        </div>
+                    </div>
+                    <div class="small">
+                        <div>Eroare: @if (s?.ActiveError is { } err) { <span class="badge text-bg-danger">@err</span> } else { <span class="text-success">niciuna</span> }
+                            · cod de stare: <code>@(s?.StatusCode ?? "—")</code></div>
+                        <div>Apă caldă: @HeatingFormat.DhwMode(s?.DhwMode)@(s?.DhwStatus is { } ds ? $" ({ds})" : "")@(s?.DhwOneTimeCharge == true ? " · încărcare unică activă" : "")@(s?.DhwComfort == true ? " · confort" : "")@(s?.DhwScaldProtection == true ? " · protecție opărire" : "")</div>
+                        <div>Ultima citire: @(live.LastSuccessUtc is { } ls ? UiFormat.RelativeRo(ls, DateTimeOffset.UtcNow) + " (" + UiFormat.FullLocal(ls) + ")" : "—")
+                            · interval @(_settings?.PollIntervalSeconds) s</div>
+                        <div title="Cereri HTTP spre Viessmann (API și token) făcute azi, zi calendaristică locală; limita de 1.450 e pe 24 h glisant">Apeluri azi: <b>@State.Calls.Today.ToString("N0")</b>
+                            (ultimele 24 h: @State.Budget.CallsLast24h.ToString("N0") / @ViessmannApi.DailyCallLimit.ToString("N0"))
+                            · la intervalul ales ≈ @ViessmannApi.CallsPerDay(_settings?.PollIntervalSeconds ?? ViessmannApi.DefaultPollIntervalSeconds).ToString("N0")/zi
+                            @if (State.Budget.BlockedUntil is { } bu) { <span class="text-danger"> · pauză până la @bu.ToLocalTime().ToString("HH:mm")</span> }</div>
+                        @if (live.LastError is { } le) { <div class="text-danger mt-1">@le</div> }
+                        else if (State.Status is { } st) { <div class="text-warning-emphasis mt-1">@st</div> }
+                    </div>
+                </div>
+            </div>
+        </div>
+        <div class="col-lg-7">
+            <div class="card h-100">
+                <div class="card-body">
+                    <h2 class="h6 text-secondary">Temperaturi</h2>
+                    <div class="row row-cols-2 row-cols-md-3 g-2">
+                        @foreach (var (label, value, title) in Temperatures(s))
+                        {
+                            <div class="col">
+                                <div class="border rounded px-2 py-1 h-100" title="@title">
+                                    <div class="small text-secondary">@label</div>
+                                    <div class="fs-5 fw-semibold">@value</div>
+                                </div>
+                            </div>
+                        }
+                    </div>
+                    @if (s?.ProgramTemps is { Count: > 0 } pt)
+                    {
+                        <div class="small text-secondary mt-2">Ținte cameră pe program: @string.Join(" · ", pt.Select(kv => $"{HeatingFormat.Program(kv.Key)} {HeatingFormat.Temp(kv.Value)}"))</div>
+                    }
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="row g-3 mt-0">
+        <div class="col-xl-5">
+            <div class="card h-100">
+                <div class="card-body">
+                    <h2 class="h6 text-secondary" title="Valorile raportate de centrală (estimate de centrală, nu de un contor de gaz)">Consum gaz: apă caldă vs încălzire</h2>
+                    @if (_gasRows.Count == 0)
+                    {
+                        <div class="small text-secondary">Centrala nu raportează consum de gaz.</div>
+                    }
+                    else
+                    {
+                        <div class="table-responsive">
+                            <table class="table table-sm align-middle mb-1">
+                                <thead class="table-light"><tr><th>Perioadă</th><th class="text-end">Apă caldă</th><th class="text-end">Încălzire</th><th class="text-end">Total</th><th class="text-end">Cost</th></tr></thead>
+                                <tbody>
+                                    @foreach (var r in _gasRows)
+                                    {
+                                        <tr>
+                                            <td>@HeatingFormat.Period(r.Period)</td>
+                                            <td class="text-end">@HeatingFormat.M3(r.DhwM3)</td>
+                                            <td class="text-end">@HeatingFormat.M3(r.HeatingM3)</td>
+                                            <td class="text-end fw-semibold">@HeatingFormat.M3(r.TotalM3)</td>
+                                            <td class="text-end">@EnergyFormat.Lei(HeatingFormat.GasCost(r.TotalM3, _settings!.GasKwhPerM3, _settings.GasPricePerKwh))</td>
+                                        </tr>
+                                    }
+                                </tbody>
+                            </table>
+                        </div>
+                        <div class="small text-secondary">
+                            Cost = m³ × @HeatingFormat.Number(_settings!.GasKwhPerM3, 2) kWh/m³ × @_settings.GasPricePerKwh.ToString("0.000") RON/kWh.
+                            @if (EfficiencyText() is { } eff) { <span>@eff</span> }
+                        </div>
+                    }
+                </div>
+            </div>
+        </div>
+        <div class="col-xl-7">
+            <div class="card h-100">
+                <div class="card-body">
+                    <h2 class="h6 text-secondary" title="Construit de KasaMonitor din valoarea „azi” a centralei, salvată la fiecare citire">Gaz pe zi, 30 de zile (m³)</h2>
+                    @if (_days.Count == 0)
+                    {
+                        <div class="small text-secondary">Încă nu există zile salvate (prima apare la prima citire).</div>
+                    }
+                    else
+                    {
+                        <ApexChart @key="_daysKey" TItem="GasDay" Options="_daysOptions" Height="260">
+                            <ApexPointSeries TItem="GasDay" Items="_days" Name="Apă caldă" Color="#0072B2" SeriesType="SeriesType.Bar" XValue="@(d => d.Date)" YValue="@(d => d.DhwM3)" />
+                            <ApexPointSeries TItem="GasDay" Items="_days" Name="Încălzire" Color="#D55E00" SeriesType="SeriesType.Bar" XValue="@(d => d.Date)" YValue="@(d => d.HeatingM3)" />
+                        </ApexChart>
+                        <div class="small text-secondary">Total 30 de zile: @HeatingFormat.M3((double)_days.Sum(d => d.DhwM3 + d.HeatingM3)) · @EnergyFormat.Lei(HeatingFormat.GasCost((double)_days.Sum(d => d.DhwM3 + d.HeatingM3), _settings!.GasKwhPerM3, _settings.GasPricePerKwh))</div>
+                    }
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="row g-3 mt-0">
+        <div class="col-xl-8">
+            <div class="card h-100">
+                <div class="card-body">
+                    <h2 class="h6 text-secondary">Ultimele 24 de ore</h2>
+                    @if (_temps.Count == 0)
+                    {
+                        <div class="small text-secondary">Încă nu există citiri.</div>
+                    }
+                    else
+                    {
+                        <ApexChart @key="_readingsKey" TItem="TempPoint" Options="_tempOptions" Height="240" XAxisType="XAxisType.Datetime">
+                            <ApexPointSeries TItem="TempPoint" Items="_temps" Name="Tur (°C)" Color="#D55E00" SeriesType="SeriesType.Line" XValue="@(p => p.TimeUtc)" YValue="@(p => p.SupplyC)" />
+                            <ApexPointSeries TItem="TempPoint" Items="_temps" Name="Apă caldă (°C)" Color="#0072B2" SeriesType="SeriesType.Line" XValue="@(p => p.TimeUtc)" YValue="@(p => p.DhwC)" />
+                            <ApexPointSeries TItem="TempPoint" Items="_temps" Name="Cameră (°C)" Color="#009E73" SeriesType="SeriesType.Line" XValue="@(p => p.TimeUtc)" YValue="@(p => p.RoomC)" />
+                        </ApexChart>
+                        <ApexChart @key="(_readingsKey + 100000)" TItem="TempPoint" Options="_modOptions" Height="140" XAxisType="XAxisType.Datetime">
+                            <ApexPointSeries TItem="TempPoint" Items="_temps" Name="Modulație (%)" Color="#CC79A7" SeriesType="SeriesType.Area" XValue="@(p => p.TimeUtc)" YValue="@(p => p.ModulationPct)" />
+                        </ApexChart>
+                    }
+                </div>
+            </div>
+        </div>
+        <div class="col-xl-4">
+            <div class="card h-100">
+                <div class="card-body small">
+                    <h2 class="h6 text-secondary">Arzător și conectare</h2>
+                    <div>Porniri: <b>@(s?.BurnerStarts is { } st2 ? st2.ToString("N0") : "—")</b>@(_startsToday is { } sd ? $" (azi +{sd:N0})" : "")</div>
+                    <div>Ore de funcționare: <b>@HeatingFormat.Number(s?.BurnerHours, 0)</b>@(_hoursToday is { } hd ? $" (azi +{HeatingFormat.Number(hd, 1)})" : "")</div>
+                    <div>Pompă internă: @(s?.PumpPct is { } pp ? HeatingFormat.Number(pp, 0) + " %" : "—")</div>
+                    <div>Protecție la îngheț: @(s?.FrostProtection ?? "—")</div>
+                    <hr class="my-2" />
+                    <div>Wi-Fi gateway: @(s?.WifiDbm is { } w ? HeatingFormat.Number(w, 0) + " dBm" : "—")</div>
+                    <div>Senzor cameră: baterie @(s?.RoomSensorBatteryPct is { } b ? HeatingFormat.Number(b, 0) + " %" : "—"), semnal Zigbee @(s?.RoomSensorLqiPct is { } q ? HeatingFormat.Number(q, 0) + " %" : "—")</div>
+                    <div>Tip gaz: @(s?.GasType ?? "—") · ora de vară: @(s?.DaylightSaving is { } dst ? (dst ? "da" : "nu") : "—")</div>
+                    @if (s?.Schedule is { Count: > 0 } sch)
+                    {
+                        <hr class="my-2" />
+                        <div class="text-secondary mb-1">Orar încălzire (doar afișat)</div>
+                        @foreach (var g in sch.GroupBy(x => x.Day))
+                        {
+                            <div>@HeatingFormat.Day(g.Key): @string.Join(", ", g.Select(x => $"{x.Start}–{x.End} {HeatingFormat.Program(x.Mode)}"))</div>
+                        }
+                    }
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="card mt-3">
+        <div class="card-header fw-semibold"><i class="bi bi-chat-square-text me-2"></i>Mesaje centrală</div>
+        @if (s is null || s.Messages.Count == 0)
+        {
+            <div class="card-body small text-secondary">Niciun mesaj.</div>
+        }
+        else
+        {
+            <div class="table-responsive">
+                <table class="table table-sm align-middle mb-0">
+                    <thead class="table-light"><tr><th>Ora</th><th>Sursă</th><th>Cod</th><th>Prioritate</th></tr></thead>
+                    <tbody>
+                        @foreach (var m in s.Messages)
+                        {
+                            <tr class="@(m.Priority == "status" || m.Source == "info" ? "" : "table-danger")">
+                                <td class="text-nowrap">@(m.Ts is { } mt ? UiFormat.FullLocal(mt) : "—")</td>
+                                <td>@m.Source</td>
+                                <td><code>@m.Code</code></td>
+                                <td>@m.Priority</td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+        }
+    </div>
+
+    <div class="card mt-3">
+        <div class="card-header fw-semibold d-flex flex-wrap align-items-center gap-2">
+            <span><i class="bi bi-braces me-2"></i>Caracteristici brute</span>
+            <span class="small text-secondary fw-normal">@(s?.FeatureCount ?? 0) caracteristici · @(_rawTs is { } rt ? "dump " + UiFormat.FullLocal(rt) : "fără dump")</span>
+            <button class="btn btn-outline-secondary btn-sm ms-auto" @onclick="ToggleRawAsync">@(_showRaw ? "Ascunde" : "Arată")</button>
+        </div>
+        @if (_showRaw)
+        {
+            <div class="card-body">
+                <input class="form-control form-control-sm mb-2" placeholder="Filtru (nume sau valoare), ex. gas, temperature, zigbee" @bind="_rawFilter" @bind:event="oninput" />
+                @if (_rawFeatures.Count == 0)
+                {
+                    <div class="small text-secondary">Nu există un dump salvat încă.</div>
+                }
+                else
+                {
+                    var shown = FilteredRaw();
+                    <div class="small text-secondary mb-1">@shown.Count din @_rawFeatures.Count</div>
+                    @foreach (var f in shown)
+                    {
+                        <details class="mb-1">
+                            <summary><code>@f.Name</code> <span class="text-secondary">@(f.DeviceId is null ? "gateway" : "device " + f.DeviceId)</span></summary>
+                            <pre class="small bg-body-tertiary p-2 mb-0" style="white-space: pre-wrap;">@f.Json</pre>
+                        </details>
+                    }
+                }
+            </div>
+        }
+    </div>
+
+    <div class="card mt-3 mb-3">
+        <div class="card-header fw-semibold"><i class="bi bi-question-square me-2"></i>Nemapate (@(s?.Unmapped.Count ?? 0))</div>
+        <div class="card-body small">
+            @if (s is null || s.Unmapped.Count == 0)
+            {
+                <span class="text-secondary">—</span>
+            }
+            else
+            {
+                <div class="text-secondary mb-1">Caracteristici prezente în răspuns pe care KasaMonitor nu le folosește (rămân în dump-ul de mai sus).</div>
+                @foreach (var u in s.Unmapped)
+                {
+                    <code class="me-2 d-inline-block">@u.Name@(u.DeviceId is null || u.DeviceId == "0" ? "" : " [" + u.DeviceId + "]")</code>
+                }
+            }
+        </div>
+    </div>
+}
+
+@code {
+    public record GasDay(string Date, decimal DhwM3, decimal HeatingM3);
+    public record TempPoint(DateTime TimeUtc, decimal? SupplyC, decimal? DhwC, decimal? RoomC, decimal? ModulationPct);
+    private sealed record RawFeature(string Name, string? DeviceId, string Json);
+
+    [SupplyParameterFromQuery(Name = "auth")] public string? Auth { get; set; }
+
+    private HeatingRuntimeSettings? _settings;
+    private HeatingLive? _live;
+    private bool _online;
+    private (bool Ok, string Text)? _authMessage;
+    private IReadOnlyList<HeatingFormat.GasRow> _gasRows = Array.Empty<HeatingFormat.GasRow>();
+    private IReadOnlyList<HeatingEnergyPeriod> _periods = Array.Empty<HeatingEnergyPeriod>();
+    private List<GasDay> _days = new();
+    private List<TempPoint> _temps = new();
+    private long? _startsToday;
+    private double? _hoursToday;
+    private int _daysKey, _readingsKey;
+    private bool _showRaw;
+    private string _rawFilter = "";
+    private DateTimeOffset? _rawTs;
+    private List<RawFeature> _rawFeatures = new();
+    private System.Threading.Timer? _timer;
+    private string? _loadError;
+
+    private string CallbackExample => Nav.BaseUri.TrimEnd('/') + ViessmannApi.CallbackPath;
+
+    private readonly ApexChartOptions<GasDay> _daysOptions = new()
+    {
+        Chart = new Chart { Stacked = true, Toolbar = new Toolbar { Show = false } },
+        PlotOptions = new PlotOptions { Bar = new PlotOptionsBar { Horizontal = false } },
+        DataLabels = new DataLabels { Enabled = false },
+        Tooltip = new Tooltip { Shared = true, Intersect = false, Y = new TooltipY { Formatter = "function(v) { return v == null ? '' : v.toFixed(2) + ' m³'; }" } },
+    };
+
+    private readonly ApexChartOptions<TempPoint> _tempOptions = new()
+    {
+        Chart = new Chart { Toolbar = new Toolbar { Show = false }, Animations = new Animations { Enabled = false } },
+        Stroke = new Stroke { Width = 2, Curve = Curve.Straight },
+        DataLabels = new DataLabels { Enabled = false },
+        Xaxis = new XAxis { Labels = new XAxisLabels { DatetimeUTC = false } },
+        Yaxis = new List<YAxis> { new() { DecimalsInFloat = 0 } },
+        Tooltip = new Tooltip { Shared = true, X = new TooltipX { Format = "HH:mm" } },
+    };
+
+    private readonly ApexChartOptions<TempPoint> _modOptions = new()
+    {
+        Chart = new Chart { Toolbar = new Toolbar { Show = false }, Animations = new Animations { Enabled = false } },
+        Stroke = new Stroke { Width = 1, Curve = Curve.Stepline },
+        DataLabels = new DataLabels { Enabled = false },
+        Xaxis = new XAxis { Labels = new XAxisLabels { DatetimeUTC = false } },
+        Yaxis = new List<YAxis> { new() { Min = 0, Max = 100, DecimalsInFloat = 0 } },
+        Tooltip = new Tooltip { X = new TooltipX { Format = "HH:mm" } },
+    };
+
+    protected override async Task OnInitializedAsync()
+    {
+        _authMessage = Auth switch
+        {
+            "connected" => (true, "Contul ViCare e conectat. Prima citire pornește acum."),
+            "denied" => (false, "Autorizarea a fost refuzată sau anulată în pagina Viessmann."),
+            "exchangefailed" => (false, "Codul de autorizare nu a putut fi schimbat pe token (vezi logul; codul expiră în ~20 s, reia conectarea)."),
+            "noclientid" or "noclient" => (false, "Setează întâi Client ID-ul Viessmann în Setări."),
+            _ => null,
+        };
+        await LoadAsync();
+        State.Changed += OnStateChanged;
+        // Charts and tables follow the poll (every ≥ 60 s); the relative times refresh every 30 s.
+        _timer = new System.Threading.Timer(_ => InvokeAsync(StateHasChanged), null, 30_000, 30_000);
+    }
+
+    private void OnStateChanged() => InvokeAsync(async () => { await LoadAsync(); StateHasChanged(); });
+
+    /// <summary>Never throws: an error (database, odd dump) is shown on the page instead of breaking the circuit.</summary>
+    private async Task LoadAsync()
+    {
+        try
+        {
+            await LoadCoreAsync();
+            _loadError = null;
+        }
+        catch (Exception ex)
+        {
+            _loadError = ex.Message;
+        }
+    }
+
+    private async Task LoadCoreAsync()
+    {
+        _settings = await HeatingSettings.GetAsync(CancellationToken.None);
+        _live = State.Current;
+        _online = State.IsOnline(DateTimeOffset.UtcNow);
+        if (_live is null) return;
+
+        using var scope = ScopeFactory.CreateScope();
+        var repo = scope.ServiceProvider.GetRequiredService<KasaMonitor.Core.Abstractions.IHeatingRepository>();
+        var id = _live.Device.Id;
+        _periods = _live.Periods ?? await repo.ListPeriodsAsync(id, CancellationToken.None);
+        _gasRows = HeatingFormat.GasRows(_periods);
+
+        var to = DateOnly.FromDateTime(DateTime.Today);
+        var days = await repo.ListDailyAsync(id, to.AddDays(-29), to, CancellationToken.None);
+        // Closed days: the day's highest value; today: the last value seen.
+        _days = days.Select(d => new GasDay(d.Day.ToString("yyyy-MM-dd"), Math.Round((decimal)(d.GasDhwFor(to) ?? 0), 2), Math.Round((decimal)(d.GasHeatingFor(to) ?? 0), 2))).ToList();
+        _daysKey++;
+
+        var readings = await repo.ListReadingsAsync(id, DateTimeOffset.UtcNow.AddHours(-24), DateTimeOffset.UtcNow, CancellationToken.None);
+        _temps = readings.Select(r => new TempPoint(r.TsUtc.UtcDateTime, Dec(r.SupplyTempC), Dec(r.DhwTempC), Dec(r.RoomTempC), Dec(r.ModulationPct))).ToList();
+        var localMidnight = new DateTimeOffset(DateTime.Today, TimeZoneInfo.Local.GetUtcOffset(DateTime.Today));
+        var today = readings.Where(r => r.TsUtc >= localMidnight).ToList();
+        _startsToday = today.Count >= 2 && today[0].BurnerStarts is { } s0 && today[^1].BurnerStarts is { } s1 ? s1 - s0 : null;
+        _hoursToday = today.Count >= 2 && today[0].BurnerHours is { } h0 && today[^1].BurnerHours is { } h1 ? h1 - h0 : null;
+        _readingsKey++;
+
+        if (_showRaw) await LoadRawAsync(repo, id);
+    }
+
+    private static decimal? Dec(double? v) => v is { } x ? Math.Round((decimal)x, 1) : null;
+
+    private IEnumerable<(string Label, string Value, string Title)> Temperatures(HeatingSnapshot? s)
+    {
+        if (s is null) yield break;
+        yield return ("Tur", HeatingFormat.Temp(s.SupplyTempC), "heating.boiler.sensors.temperature.commonSupply");
+        if (s.RoomTempC is not null) yield return ("Cameră", HeatingFormat.Temp(s.RoomTempC), "Senzorul de cameră (circuitul 0)");
+        yield return ("Apă caldă", HeatingFormat.Temp(s.DhwTempC) + (s.DhwTargetC is { } t ? " / " + HeatingFormat.Temp(t) : ""), "Temperatura apei calde / ținta");
+        if (s.BoilerTargetC is not null) yield return ("Țintă cazan", HeatingFormat.Temp(s.BoilerTargetC), "heating.boiler.temperature: ținta (20 °C când nu încălzește), nu o măsurătoare");
+        if (s.BoilerTempC is not null) yield return ("Cazan", HeatingFormat.Temp(s.BoilerTempC), "heating.boiler.sensors.temperature.main");
+        if (s.ReturnTempC is not null) yield return ("Retur", HeatingFormat.Temp(s.ReturnTempC), "heating.sensors.temperature.return");
+        if (s.OutsideTempC is not null) yield return ("Exterior", HeatingFormat.Temp(s.OutsideTempC), "heating.sensors.temperature.outside");
+        if (s.PressureBar is not null) yield return ("Presiune", HeatingFormat.Number(s.PressureBar, 1) + " bar", "heating.sensors.pressure.supply");
+    }
+
+    private string? EfficiencyText()
+    {
+        var gasM3 = _periods.Where(p => p.Kind == HeatingKinds.Gas && p.Period == "lastmonth").Sum(p => (double?)p.Value);
+        var heat = HeatingFormat.Sum(_periods, HeatingKinds.Heat, "lastmonth");
+        var power = HeatingFormat.Sum(_periods, HeatingKinds.Power, "lastmonth");
+        var eff = HeatingEnergy.Efficiency(heat, gasM3 is { } g ? g * _settings!.GasKwhPerM3 : null);
+        if (eff is null && power is null) return null;
+        return " Luna trecută: căldură produsă " + HeatingFormat.Number(heat, 1) + " kWh"
+               + (eff is { } e ? ", randament aparent " + HeatingFormat.Number(e * 100, 0) + " %" : "")
+               + (power is { } p ? ", electricitate centrală " + HeatingFormat.Number(p, 1) + " kWh." : ".");
+    }
+
+    private async Task ToggleRawAsync()
+    {
+        _showRaw = !_showRaw;
+        if (_showRaw && _live is { } live)
+        {
+            try
+            {
+                using var scope = ScopeFactory.CreateScope();
+                await LoadRawAsync(scope.ServiceProvider.GetRequiredService<KasaMonitor.Core.Abstractions.IHeatingRepository>(), live.Device.Id);
+            }
+            catch (Exception ex)
+            {
+                _loadError = ex.Message;
+            }
+        }
+    }
+
+    private async Task LoadRawAsync(KasaMonitor.Core.Abstractions.IHeatingRepository repo, Guid id)
+    {
+        _rawFeatures = new();
+        _rawTs = null;
+        if (await repo.GetRawAsync(id, CancellationToken.None) is not { } raw) return;
+        _rawTs = raw.TsUtc;
+        try
+        {
+            using var doc = System.Text.Json.JsonDocument.Parse(raw.Json);
+            if (!doc.RootElement.TryGetProperty("data", out var data)) return;
+            var opts = new System.Text.Json.JsonSerializerOptions { WriteIndented = true, Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping };
+            foreach (var f in data.EnumerateArray())
+            {
+                var name = f.TryGetProperty("feature", out var n) ? n.GetString() ?? "" : "";
+                var dev = f.TryGetProperty("deviceId", out var d) && d.ValueKind == System.Text.Json.JsonValueKind.String ? d.GetString() : null;
+                _rawFeatures.Add(new RawFeature(name, dev, System.Text.Json.JsonSerializer.Serialize(f, opts)));
+            }
+            _rawFeatures.Sort((a, b) => string.CompareOrdinal(a.Name, b.Name));
+        }
+        catch (Exception ex) when (ex is System.Text.Json.JsonException or InvalidOperationException)
+        {
+            // Unexpected shape (data not an array, feature not a string): show what was read so far.
+            _loadError = "dump-ul brut are o formă neașteptată (" + ex.Message + ")";
+        }
+    }
+
+    private List<RawFeature> FilteredRaw() =>
+        string.IsNullOrWhiteSpace(_rawFilter)
+            ? _rawFeatures
+            : _rawFeatures.Where(f => f.Json.Contains(_rawFilter.Trim(), StringComparison.OrdinalIgnoreCase)).ToList();
+
+    public void Dispose()
+    {
+        State.Changed -= OnStateChanged;
+        _timer?.Dispose();
+    }
+}

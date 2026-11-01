@@ -1,50 +1,118 @@
 @page "/plugs"
 @rendermode InteractiveServer
+@using KasaMonitor.Workers
+@using KasaMonitor.Core.Protocol.Tapo
 @inject IServiceScopeFactory ScopeFactory
+@inject PlugDiscoveryService Discovery
 @implements IDisposable
 
-<PageTitle>KasaMonitor — Plugs</PageTitle>
-<h1>Plugs</h1>
+<PageTitle>KasaMonitor — Prize</PageTitle>
+<h1>Prize</h1>
+
+<section class="discovery">
+    <div class="discovery-actions">
+        <button @onclick="ScanNowAsync" disabled="@_scanning">@(_scanning ? "Se scanează…" : "Scanează acum")</button>
+        <span class="add-ip">
+            <input @bind="_manualIp" placeholder="IP, ex. 192.168.254.146" />
+            <button @onclick="AddByIpAsync" disabled="@_adding">@(_adding ? "Se încearcă…" : "Adaugă după IP")</button>
+        </span>
+    </div>
+    @if (_message is not null)
+    {
+        <p class="message">@_message</p>
+    }
+
+    @if (Discovery.LastScan is { } scan)
+    {
+        <h3>Ultima scanare: @scan.AtUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss") — @scan.Items.Count găsite, @scan.NewCount noi, @scan.UnsupportedCount nesuportate (adăugare automată @(scan.AutoAdd ? "pornită" : "oprită"))</h3>
+        @if (scan.Items.Count > 0)
+        {
+            <table class="plugs-table">
+                <thead><tr><th>Stare</th><th>Alias</th><th>Model</th><th>MAC</th><th>IP</th><th>Protocol</th><th></th></tr></thead>
+                <tbody>
+                    @foreach (var i in scan.Items.OrderBy(i => i.Status).ThenBy(i => i.Plug.Info.Alias))
+                    {
+                        <tr>
+                            <td>
+                                @StatusText(i)
+                                @if (!i.Plug.IsSupported && TapoSupport.IsUnknownProtocolReason(i.Plug.UnsupportedReason))
+                                {
+                                    <div class="hint">@TapoSupport.ThirdPartyCompatibilityHint</div>
+                                }
+                            </td>
+                            <td>@i.Plug.Info.Alias</td>
+                            <td>@i.Plug.Info.Model</td>
+                            <td><code>@i.Plug.Info.Mac</code></td>
+                            <td>@i.Plug.IpAddress</td>
+                            <td>@i.Plug.Protocol</td>
+                            <td>
+                                @if (i.PlugId is null)
+                                {
+                                    <button @onclick="() => AddDiscoveredAsync(i)">Adaugă</button>
+                                }
+                            </td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        }
+    }
+</section>
+
+<label class="show-archived"><input type="checkbox" @bind="_showArchived" /> Arată retrase</label>
 
 @if (_plugs is null)
 {
-    <p><em>Loading…</em></p>
+    <p><em>Se încarcă…</em></p>
 }
 else if (_plugs.Count == 0)
 {
-    <p><em>No plugs in the database yet. Run discovery first.</em></p>
+    <p><em>Nicio priză în baza de date. Apasă „Scanează acum” sau adaugă una după IP.</em></p>
 }
 else
 {
     <table class="plugs-table">
         <thead>
-            <tr><th>Alias</th><th>MAC</th><th>IP</th><th>Model</th><th>SwVer</th><th>First seen</th><th>Last seen</th><th>Archived</th><th></th></tr>
+            <tr><th>Alias</th><th>MAC</th><th>IP</th><th>Model</th><th>Protocol</th><th>SwVer</th><th>Prima dată</th><th>Ultima dată</th><th>Stare</th><th></th></tr>
         </thead>
         <tbody>
-            @foreach (var p in _plugs.OrderBy(p => p.Alias))
+            @foreach (var p in _plugs.Where(p => _showArchived || !p.IsArchived).OrderBy(p => p.Alias))
             {
-                <tr class="@(p.IsArchived ? "archived" : "")">
+                <tr class="@(p.IsArchived ? "archived" : "") @(p.IsSupported ? "" : "unsupported")">
                     <td>
                         @if (_editingId == p.Id)
                         {
                             <input @bind="_editAlias" />
-                            <button @onclick="() => SaveAlias(p.Id)">Save</button>
-                            <button @onclick="CancelEdit">Cancel</button>
+                            <button @onclick="() => SaveAlias(p.Id)">Salvează</button>
+                            <button @onclick="CancelEdit">Renunță</button>
                         }
                         else
                         {
-                            <span>@p.Alias</span> @if (p.AliasIsCustom) { <small>(custom)</small> }
-                            <button @onclick="() => StartEdit(p)">Edit</button>
+                            <span>@p.Alias</span> @if (p.AliasIsCustom) { <small>(personalizat)</small> }
+                            <button @onclick="() => StartEdit(p)">Editează</button>
                         }
                     </td>
                     <td><code>@p.Mac</code></td>
                     <td>@p.IpAddress</td>
                     <td>@p.Model</td>
+                    <td>@p.Protocol</td>
                     <td>@p.SwVer</td>
                     <td>@p.FirstSeenUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm")</td>
                     <td>@p.LastSeenUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm")</td>
                     <td>
-                        <button @onclick="() => ToggleArchive(p)">@(p.IsArchived ? "Unarchive" : "Archive")</button>
+                        @if (p.IsArchived) { <span>retrasă</span> }
+                        else if (!p.IsSupported)
+                        {
+                            <span>@TapoSupport.Describe(p.Model, p.UnsupportedReason!)</span>
+                            @if (TapoSupport.IsUnknownProtocolReason(p.UnsupportedReason))
+                            {
+                                <div class="hint">@TapoSupport.ThirdPartyCompatibilityHint</div>
+                            }
+                        }
+                        else { <span>activă</span> }
+                    </td>
+                    <td>
+                        <button @onclick="() => ToggleArchive(p)" title="O priză retrasă nu mai e interogată și nu mai apare în /metrics">@(p.IsArchived ? "Readu" : "Retrage")</button>
                     </td>
                 </tr>
             }
@@ -53,9 +121,17 @@ else
 }
 
 <style>
+    .discovery { margin-bottom: 1.5em; }
+    .discovery-actions { display: flex; flex-wrap: wrap; gap: 1em; align-items: center; }
+    .discovery-actions button { padding: 0.4em 1em; }
+    .add-ip input { padding: 0.3em 0.5em; width: 16em; }
+    .message { margin: 0.6em 0; }
+    .hint { color: #a60; font-size: 0.85em; max-width: 40em; }
+    .show-archived { display: block; margin: 0.5em 0; }
     .plugs-table { width: 100%; border-collapse: collapse; }
-    .plugs-table th, .plugs-table td { padding: 0.4em 0.6em; border-bottom: 1px solid #eee; text-align: left; }
+    .plugs-table th, .plugs-table td { padding: 0.4em 0.6em; border-bottom: 1px solid #eee; text-align: left; vertical-align: top; }
     .plugs-table tr.archived { opacity: 0.5; }
+    .plugs-table tr.unsupported { background: #fff8e8; }
     .plugs-table button { margin-left: 0.4em; }
     .plugs-table input { padding: 0.2em 0.4em; }
 </style>
@@ -65,6 +141,11 @@ else
     private Guid? _editingId;
     private string _editAlias = "";
     private System.Threading.Timer? _refresh;
+    private bool _showArchived;
+    private bool _scanning;
+    private bool _adding;
+    private string _manualIp = "";
+    private string? _message;
 
     protected override async Task OnInitializedAsync()
     {
@@ -78,6 +159,68 @@ else
         var repo = scope.ServiceProvider.GetRequiredService<IPlugRepository>();
         _plugs = (await repo.ListAllAsync(CancellationToken.None)).ToList();
         StateHasChanged();
+    }
+
+    private static string StatusText(DiscoveryResultItem i) => i.Status switch
+    {
+        DiscoveryStatus.New => "nouă",
+        DiscoveryStatus.Added => "nouă (adăugată)",
+        DiscoveryStatus.Known => "cunoscută",
+        _ => TapoSupport.Describe(i.Plug.Info.Model, i.Plug.UnsupportedReason ?? ""),
+    };
+
+    private async Task ScanNowAsync()
+    {
+        _scanning = true;
+        _message = null;
+        StateHasChanged();
+        try
+        {
+            var scan = await Discovery.ScanAsync(CancellationToken.None);
+            _message = $"Scanare terminată: {scan.Items.Count} găsite.";
+        }
+        catch (Exception ex)
+        {
+            _message = $"Scanarea a eșuat: {ex.Message}";
+        }
+        finally
+        {
+            _scanning = false;
+        }
+        await ReloadAsync();
+    }
+
+    private async Task AddDiscoveredAsync(DiscoveryResultItem item)
+    {
+        await Discovery.AddAsync(item.Plug, CancellationToken.None);
+        _message = $"Adăugată: {item.Plug.Info.Alias} ({item.Plug.IpAddress}).";
+        await ReloadAsync();
+    }
+
+    private async Task AddByIpAsync()
+    {
+        if (!System.Net.IPAddress.TryParse(_manualIp.Trim(), out var ip) || ip.AddressFamily != System.Net.Sockets.AddressFamily.InterNetwork)
+        {
+            _message = $"„{_manualIp}” nu e o adresă IPv4 validă.";
+            return;
+        }
+        _adding = true;
+        _message = null;
+        StateHasChanged();
+        try
+        {
+            var result = await Discovery.AddByIpAsync(ip, CancellationToken.None);
+            _message = result.Message;
+        }
+        catch (Exception ex)
+        {
+            _message = $"Adăugarea a eșuat: {ex.Message}";
+        }
+        finally
+        {
+            _adding = false;
+        }
+        await ReloadAsync();
     }
 
     private void StartEdit(Plug p)

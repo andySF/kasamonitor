@@ -1,10 +1,10 @@
 # Build and push KasaMonitor image to Docker Hub.
-# Usage:  .\deploy\build-and-push.ps1 [-Version 0.1.0] [-NoPush]
+# Usage:  .\deploy\build-and-push.ps1 [-Version 0.2.0] [-NoPush]
 #
 # Run from repo root. Assumes Docker is running and you've done `docker login` once.
 
 param(
-    [string]$Version = "0.1.0",
+    [string]$Version = "0.2.0",
     [string]$Repo = "duobit/kasamonitor",
     [switch]$NoPush
 )

@@ -29,7 +29,10 @@ else
                 @if (s.LastReading is not null)
                 {
                     <p>@((s.LastReading.PowerMw / 1000.0).ToString("0.0")) W</p>
-                    <p>@((s.LastReading.VoltageMv / 1000.0).ToString("0.0")) V · @s.LastReading.CurrentMa mA</p>
+                    @if (s.LastReading.VoltageMv is { } mv)
+                    {
+                        <p>@((mv / 1000.0).ToString("0.0")) V · @s.LastReading.CurrentMa mA</p>
+                    }
                     <p>Total: @((s.LastReading.TotalWh / 1000.0).ToString("0.000")) kWh</p>
                 }
                 <p class="age">last sample @((_now - s.LastSampleUtc).TotalSeconds.ToString("0")) s ago</p>
@@ -67,6 +70,7 @@ else
     {
         _states = Broadcaster.Snapshot().ToDictionary(kv => kv.Key, kv => kv.Value);
         Broadcaster.StateChanged += OnStateChanged;
+        Broadcaster.StateRemoved += OnStateRemoved;
         _refreshTimer = new System.Threading.Timer(_ =>
             InvokeAsync(() => { _now = DateTimeOffset.UtcNow; StateHasChanged(); }),
             null, 1000, 1000);
@@ -82,9 +86,19 @@ else
         });
     }
 
+    private void OnStateRemoved(Guid plugId)
+    {
+        InvokeAsync(() =>
+        {
+            _states.Remove(plugId);
+            StateHasChanged();
+        });
+    }
+
     public void Dispose()
     {
         Broadcaster.StateChanged -= OnStateChanged;
+        Broadcaster.StateRemoved -= OnStateRemoved;
         _refreshTimer?.Dispose();
     }
 }

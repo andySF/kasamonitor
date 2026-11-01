@@ -23,6 +23,7 @@ public sealed class KasaDbContext : DbContext
             e.ToTable("Plugs");
             e.HasKey(p => p.Id);
             e.HasIndex(p => p.Mac).IsUnique();
+            e.Property(p => p.Protocol).HasDefaultValue("legacy");
         });
 
         var dateTimeOffsetConverter = new ValueConverter<DateTimeOffset, long>(

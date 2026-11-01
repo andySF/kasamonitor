@@ -15,5 +15,10 @@ public sealed record Plug(
     DateTimeOffset FirstSeenUtc,
     DateTimeOffset LastSeenUtc,
     bool IsArchived,
-    string? Notes
-);
+    string? Notes,
+    string Protocol = PlugProtocols.Legacy,
+    string? UnsupportedReason = null
+)
+{
+    public bool IsSupported => UnsupportedReason is null;
+}

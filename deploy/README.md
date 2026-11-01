@@ -3,10 +3,10 @@
 ## Local build & push to Docker Hub
 
 ```powershell
-docker build -t duobit/kasamonitor:latest -t duobit/kasamonitor:0.1.0 -f deploy/Dockerfile .
+docker build -t duobit/kasamonitor:latest -t duobit/kasamonitor:0.2.0 -f deploy/Dockerfile .
 docker login
 docker push duobit/kasamonitor:latest
-docker push duobit/kasamonitor:0.1.0
+docker push duobit/kasamonitor:0.2.0
 ```
 
 ## QNAP / Portainer deployment
@@ -19,6 +19,10 @@ docker push duobit/kasamonitor:0.1.0
 ## Configuration overrides
 
 All `KasaMonitor__*` env vars are read on startup. The DB at `/data/kasa.db` persists across container restarts.
+Since 0.2.0 the discovery settings and the TP-Link account are edited in `/settings` and stored in the DB; the env
+vars below are only initial values. Full list (incl. `AutoDiscoveryEnabled`, `AutoDiscoveryIntervalMinutes`,
+`AutoAddDiscoveredPlugs`, `TapoUsername`, `TapoPassword`), Tapo/KLAP notes, metrics and the QNAP update procedure:
+see `../README.md`.
 
 | Var | Default | Notes |
 |---|---|---|

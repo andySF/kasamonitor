@@ -29,7 +29,9 @@ public sealed class PlugRepository : IPlugRepository
                 OemId = discovered.Info.OemId,
                 FirstSeenUtc = utcNow,
                 LastSeenUtc = utcNow,
-                IsArchived = false
+                IsArchived = false,
+                Protocol = discovered.Protocol,
+                UnsupportedReason = discovered.UnsupportedReason
             };
             _db.Plugs.Add(entity);
             await _db.SaveChangesAsync(ct);
@@ -37,11 +39,20 @@ public sealed class PlugRepository : IPlugRepository
         }
 
         existing.IpAddress = discovered.IpAddress.ToString();
+        existing.LastSeenUtc = utcNow;
+        if (existing.UnsupportedReason is null && !discovered.IsSupported)
+        {
+            // An unsupported answer (e.g. a stray UDP 20002 reply) never downgrades a plug that is being polled.
+            await _db.SaveChangesAsync(ct);
+            return existing.Id;
+        }
+
+        existing.Protocol = discovered.Protocol;
+        existing.UnsupportedReason = discovered.UnsupportedReason;
         existing.Model = discovered.Info.Model;
         existing.HwVer = discovered.Info.HwVer;
         existing.SwVer = discovered.Info.SwVer;
         existing.OemId = discovered.Info.OemId;
-        existing.LastSeenUtc = utcNow;
         if (!existing.AliasIsCustom)
             existing.Alias = discovered.Info.Alias;
         await _db.SaveChangesAsync(ct);
@@ -95,5 +106,7 @@ public sealed class PlugRepository : IPlugRepository
         FirstSeenUtc: e.FirstSeenUtc,
         LastSeenUtc: e.LastSeenUtc,
         IsArchived: e.IsArchived,
-        Notes: e.Notes);
+        Notes: e.Notes,
+        Protocol: e.Protocol,
+        UnsupportedReason: e.UnsupportedReason);
 }

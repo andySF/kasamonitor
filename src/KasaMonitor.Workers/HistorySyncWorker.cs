@@ -1,4 +1,5 @@
 using KasaMonitor.Core.Abstractions;
+using KasaMonitor.Core.Models;
 using KasaMonitor.Core.Protocol;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -50,7 +51,7 @@ public sealed class HistorySyncWorker : BackgroundService
         }
         catch (Exception ex)
         {
-            _log.LogWarning(ex, "History sync failed for {PlugId}", plugId);
+            _log.LogWarning(ex, "History sync failed for plug {Alias} ({Ip}, {PlugId})", plug.Alias, plug.IpAddress, plugId);
         }
     }
 
@@ -63,7 +64,8 @@ public sealed class HistorySyncWorker : BackgroundService
                 using var scope = _scopeFactory.CreateScope();
                 var plugRepo = scope.ServiceProvider.GetRequiredService<IPlugRepository>();
                 var plugs = await plugRepo.ListAllAsync(stoppingToken);
-                foreach (var p in plugs.Where(p => !p.IsArchived))
+                // Daily/monthly history exists only on the legacy protocol (emeter get_daystat/get_monthstat).
+                foreach (var p in plugs.Where(p => PollingWorker.IsActive(p) && p.Protocol == PlugProtocols.Legacy))
                     await SyncOneAsync(p.Id, stoppingToken);
             }
             catch (Exception ex) when (!stoppingToken.IsCancellationRequested) { _log.LogError(ex, "History sync cycle failed"); }

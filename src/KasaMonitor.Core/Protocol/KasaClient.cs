@@ -102,7 +102,7 @@ public sealed partial class KasaClient : IKasaClient
     private static PlugInfo MapSysInfo(SysInfoDto dto)
     {
         var alias = dto.Alias ?? throw new KasaProtocolException("sysinfo missing alias", operation: "get_sysinfo");
-        var mac   = NormalizeMac(dto.Mac ?? throw new KasaProtocolException("sysinfo missing mac", operation: "get_sysinfo"));
+        var mac   = MacFormat.Normalize(dto.Mac ?? throw new KasaProtocolException("sysinfo missing mac", operation: "get_sysinfo"));
         return new PlugInfo(
             Mac:     mac,
             Alias:   alias,
@@ -114,7 +114,4 @@ public sealed partial class KasaClient : IKasaClient
             RssiDbm: dto.Rssi,
             OnTime:  TimeSpan.FromSeconds(dto.OnTime));
     }
-
-    private static string NormalizeMac(string raw) =>
-        new string(raw.Where(c => c != ':' && c != '-').ToArray()).ToLowerInvariant();
 }

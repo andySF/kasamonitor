@@ -15,7 +15,7 @@ namespace KasaMonitor.Data.Migrations
         protected override void BuildModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
-            modelBuilder.HasAnnotation("ProductVersion", "10.0.7");
+            modelBuilder.HasAnnotation("ProductVersion", "10.0.14");
 
             modelBuilder.Entity("KasaMonitor.Data.Entities.DailyEnergyEntity", b =>
                 {
@@ -150,8 +150,17 @@ namespace KasaMonitor.Data.Migrations
                         .IsRequired()
                         .HasColumnType("TEXT");
 
+                    b.Property<string>("Protocol")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("TEXT")
+                        .HasDefaultValue("legacy");
+
                     b.Property<string>("SwVer")
                         .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("UnsupportedReason")
                         .HasColumnType("TEXT");
 
                     b.HasKey("Id");

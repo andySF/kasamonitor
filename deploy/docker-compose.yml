@@ -11,3 +11,6 @@ services:
       KasaMonitor__BroadcastNetworks: "192.168.254.255"
       KasaMonitor__TariffRonPerKwh: "1.30"
       KasaMonitor__PollIntervalSeconds: "10"
+      # Initial values only; whatever is saved in /settings (database) wins. See README.md.
+      # KasaMonitor__TapoUsername: "<email cont TP-Link>"
+      # KasaMonitor__TapoPassword: "<parola cont TP-Link>"

@@ -1,50 +1,99 @@
 @page "/settings"
 @rendermode InteractiveServer
+@using KasaMonitor.Workers
 @inject IServiceScopeFactory ScopeFactory
+@inject IKasaSettingsService KasaSettings
 
-<PageTitle>KasaMonitor — Settings</PageTitle>
-<h1>Settings</h1>
+<PageTitle>KasaMonitor — Setări</PageTitle>
+<h1>Setări</h1>
 
 @if (_loading)
 {
-    <p><em>Loading…</em></p>
+    <p><em>Se încarcă…</em></p>
 }
 else
 {
     <div class="settings-form">
-        <label>Tariff (RON / kWh)</label>
+        <h3>Descoperire</h3>
+
+        <label>Descoperire automată</label>
+        <input type="checkbox" @bind="_autoDiscovery" />
+
+        <label>Interval descoperire (minute)</label>
+        <input @bind="_intervalMin" type="number" min="@KasaSettingsService.MinIntervalMinutes" max="@KasaSettingsService.MaxIntervalMinutes" />
+
+        <label>Rețele broadcast (separate prin virgulă)</label>
+        <input @bind="_broadcast" placeholder="192.168.254.255" />
+
+        <label>Adaugă automat prizele găsite</label>
+        <input type="checkbox" @bind="_autoAdd" />
+
+        <h3>Cont TP-Link (prize Tapo, KLAP)</h3>
+
+        <label>Utilizator (e-mail)</label>
+        <input @bind="_tapoUser" autocomplete="off" />
+
+        <label>Parolă</label>
+        <span>
+            <input @bind="_tapoPassword" type="password" autocomplete="new-password"
+                   placeholder="@(_hasTapoPassword ? "•••••••• (setată; lasă gol ca să rămână)" : "nesetată")" />
+            @if (_hasTapoPassword)
+            {
+                <label class="inline"><input type="checkbox" @bind="_clearTapoPassword" /> Șterge parola</label>
+            }
+        </span>
+
+        <h3>Altele</h3>
+
+        <label>Tarif (RON / kWh)</label>
         <input @bind="_tariff" type="number" step="0.01" />
 
-        <label>Poll interval (seconds)</label>
+        <label>Interval interogare (secunde)</label>
         <input @bind="_pollSec" type="number" min="5" max="300" />
 
-        <label>Broadcast networks (comma-separated)</label>
-        <input @bind="_broadcast" />
-
         <div class="actions">
-            <button @onclick="SaveAsync">Save</button>
-            @if (_saved) { <span class="saved-msg">Saved.</span> }
+            <button @onclick="SaveAsync">Salvează</button>
+            @if (_saved) { <span class="saved-msg">Salvat.</span> }
+            @if (_error is not null) { <span class="error-msg">@_error</span> }
         </div>
-        <p class="note"><em>Note: poll interval and broadcast networks are read at startup. Restart the container for them to take effect. Tariff updates live on next page load.</em></p>
+        <p class="note"><em>Setările de descoperire și contul TP-Link se aplică fără repornire (la următorul ciclu). Tariful și intervalul de interogare se citesc la pornire din variabilele de mediu.</em></p>
     </div>
 }
 
 <style>
-    .settings-form { display: grid; grid-template-columns: max-content 1fr; gap: 0.6em; max-width: 600px; align-items: center; }
+    .settings-form { display: grid; grid-template-columns: max-content 1fr; gap: 0.6em; max-width: 700px; align-items: center; }
+    .settings-form h3 { grid-column: 1 / -1; margin: 1em 0 0 0; }
+    .settings-form input[type=checkbox] { justify-self: start; }
+    .settings-form label.inline { margin-left: 1em; }
     .settings-form .actions { grid-column: 1 / -1; margin-top: 1em; }
     .settings-form .actions button { padding: 0.4em 1em; }
     .settings-form .saved-msg { margin-left: 1em; color: #4a4; }
+    .settings-form .error-msg { margin-left: 1em; color: #a33; }
     .settings-form .note { grid-column: 1 / -1; color: #888; font-size: 0.85em; }
 </style>
 
 @code {
     private bool _loading = true;
     private bool _saved;
+    private string? _error;
     private decimal _tariff;
     private int _pollSec;
+    private bool _autoDiscovery;
+    private int _intervalMin;
     private string _broadcast = "";
+    private bool _autoAdd;
+    private string _tapoUser = "";
+    private string _tapoPassword = "";
+    private bool _hasTapoPassword;
+    private bool _clearTapoPassword;
 
     protected override async Task OnInitializedAsync()
+    {
+        await LoadAsync();
+        _loading = false;
+    }
+
+    private async Task LoadAsync()
     {
         using var scope = ScopeFactory.CreateScope();
         var repo = scope.ServiceProvider.GetRequiredService<ISettingsRepository>();
@@ -55,18 +104,40 @@ else
         var pollStr = await repo.GetAsync("PollIntervalSeconds", CancellationToken.None);
         _pollSec = int.TryParse(pollStr, out var p) ? p : 10;
 
-        _broadcast = await repo.GetAsync("BroadcastNetworks", CancellationToken.None) ?? "";
-
-        _loading = false;
+        var s = await KasaSettings.GetAsync(CancellationToken.None);
+        _autoDiscovery = s.AutoDiscoveryEnabled;
+        _intervalMin = s.AutoDiscoveryIntervalMinutes;
+        _broadcast = s.BroadcastNetworks;
+        _autoAdd = s.AutoAddDiscoveredPlugs;
+        _tapoUser = s.TapoUsername;
+        _hasTapoPassword = s.HasTapoPassword;
+        _tapoPassword = "";
+        _clearTapoPassword = false;
     }
 
     private async Task SaveAsync()
     {
-        using var scope = ScopeFactory.CreateScope();
-        var repo = scope.ServiceProvider.GetRequiredService<ISettingsRepository>();
-        await repo.SetAsync("TariffRonPerKwh", _tariff.ToString(System.Globalization.CultureInfo.InvariantCulture), CancellationToken.None);
-        await repo.SetAsync("PollIntervalSeconds", _pollSec.ToString(), CancellationToken.None);
-        await repo.SetAsync("BroadcastNetworks", _broadcast, CancellationToken.None);
+        _error = null;
+        try
+        {
+            await KasaSettings.SaveAsync(new KasaSettingsUpdate(
+                _autoDiscovery, _intervalMin, _broadcast, _autoAdd, _tapoUser,
+                NewTapoPassword: _tapoPassword, ClearTapoPassword: _clearTapoPassword), CancellationToken.None);
+        }
+        catch (FormatException ex)
+        {
+            _error = ex.Message;
+            return;
+        }
+
+        using (var scope = ScopeFactory.CreateScope())
+        {
+            var repo = scope.ServiceProvider.GetRequiredService<ISettingsRepository>();
+            await repo.SetAsync("TariffRonPerKwh", _tariff.ToString(System.Globalization.CultureInfo.InvariantCulture), CancellationToken.None);
+            await repo.SetAsync("PollIntervalSeconds", _pollSec.ToString(), CancellationToken.None);
+        }
+
+        await LoadAsync();
         _saved = true;
         StateHasChanged();
         await Task.Delay(2000);

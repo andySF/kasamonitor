@@ -123,4 +123,59 @@ public class PlugRepositoryTests
         plug.LastSeenUtc.Should().Be(t1);
         plug.FirstSeenUtc.Should().Be(t0);
     }
+
+    [Fact]
+    public async Task UpsertFromDiscovery_StoresProtocolAndUnsupportedReason()
+    {
+        using var f = new TestDbFactory();
+        using var ctx = f.CreateContext();
+        var repo = new PlugRepository(ctx);
+        var dp = MakeDiscovered(mac: "b01921c4c028") with { Protocol = PlugProtocols.Unsupported, UnsupportedReason = "protocol TPAP" };
+
+        await repo.UpsertFromDiscoveryAsync(dp, DateTimeOffset.UtcNow, CancellationToken.None);
+
+        var plug = (await repo.ListAllAsync(CancellationToken.None)).Single();
+        plug.Protocol.Should().Be(PlugProtocols.Unsupported);
+        plug.UnsupportedReason.Should().Be("protocol TPAP");
+        plug.IsSupported.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task UpsertFromDiscovery_SupportedAnswer_ClearsUnsupportedReason()
+    {
+        using var f = new TestDbFactory();
+        using var ctx = f.CreateContext();
+        var repo = new PlugRepository(ctx);
+        var unsupported = MakeDiscovered(mac: "b01921c4c028") with { Protocol = PlugProtocols.Klap, UnsupportedReason = "lipsesc credențialele TP-Link" };
+        await repo.UpsertFromDiscoveryAsync(unsupported, DateTimeOffset.UtcNow, CancellationToken.None);
+
+        await repo.UpsertFromDiscoveryAsync(MakeDiscovered(mac: "b01921c4c028", alias: "Frigider") with { Protocol = PlugProtocols.Klap },
+            DateTimeOffset.UtcNow, CancellationToken.None);
+
+        var plug = (await repo.ListAllAsync(CancellationToken.None)).Single();
+        plug.IsSupported.Should().BeTrue();
+        plug.Protocol.Should().Be(PlugProtocols.Klap);
+        plug.Alias.Should().Be("Frigider");
+    }
+
+    [Fact]
+    public async Task UpsertFromDiscovery_UnsupportedAnswer_DoesNotDowngradeSupportedPlug()
+    {
+        using var f = new TestDbFactory();
+        using var ctx = f.CreateContext();
+        var repo = new PlugRepository(ctx);
+        await repo.UpsertFromDiscoveryAsync(MakeDiscovered(ip: "192.168.254.105"), DateTimeOffset.UtcNow, CancellationToken.None);
+
+        var stray = MakeDiscovered(ip: "192.168.254.106", alias: "placeholder") with
+        {
+            Protocol = PlugProtocols.Unsupported, UnsupportedReason = "protocol AES"
+        };
+        await repo.UpsertFromDiscoveryAsync(stray, DateTimeOffset.UtcNow, CancellationToken.None);
+
+        var plug = (await repo.ListAllAsync(CancellationToken.None)).Single();
+        plug.Protocol.Should().Be(PlugProtocols.Legacy);
+        plug.IsSupported.Should().BeTrue();
+        plug.Alias.Should().Be("Birou");
+        plug.IpAddress.ToString().Should().Be("192.168.254.106");
+    }
 }

@@ -6,5 +6,7 @@ public sealed record PlugLiveState(
     string Alias,
     bool IsOnline,
     EmeterReading? LastReading,
-    DateTimeOffset LastSampleUtc
+    DateTimeOffset LastSampleUtc,
+    string Model = "",
+    string Protocol = PlugProtocols.Legacy
 );

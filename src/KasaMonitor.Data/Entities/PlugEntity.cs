@@ -15,4 +15,10 @@ public sealed class PlugEntity
     public DateTimeOffset LastSeenUtc { get; set; }
     public bool IsArchived { get; set; }
     public string? Notes { get; set; }
+
+    /// <summary>legacy | klap | aes | unsupported (KasaMonitor.Core.Models.PlugProtocols). Existing rows migrate to legacy.</summary>
+    public string Protocol { get; set; } = "legacy";
+
+    /// <summary>Non-null: the plug answered discovery but cannot be queried; it is listed, never polled.</summary>
+    public string? UnsupportedReason { get; set; }
 }

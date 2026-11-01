@@ -60,7 +60,7 @@
     }
 
     <h3>Metrici <code>kasa_*</code></h3>
-    <p class="note">Etichete pe toate seriile: @foreach (var l in KasaMetrics.LabelNames) { <code>@l</code><span> </span> } (protocol: legacy, klap, aes, shelly-rpc; pentru canalele ≥ 1 ale unui contor Shelly <code>mac</code> = <code>&lt;mac&gt;-&lt;canal&gt;</code>). Valorile se actualizează la fiecare citire a prizelor (implicit 10 s).</p>
+    <p class="note">Etichete pe toate seriile: @foreach (var l in KasaMetrics.LabelNames) { <code>@l</code><span> </span> } (protocol: legacy, klap, aes, shelly-rpc; <code>role</code>: <code>plug</code> = priză, <code>main</code> = contorul general al casei, <code>sub</code> = sub-contor, setat în pagina Prize; pentru canalele ≥ 1 ale unui contor Shelly <code>mac</code> = <code>&lt;mac&gt;-&lt;canal&gt;</code>). Valorile se actualizează la fiecare citire a prizelor (implicit 10 s); fluxul live (1–10 s, pagina Contor) nu ajunge în /metrics.</p>
     @if (_families is null)
     {
         <p><em>Se încarcă…</em></p>
@@ -92,7 +92,30 @@
                 }
             </tbody>
         </table>
-        <p class="note"><code>kasa_power_total</code> e în Wh cumulativ și poate scădea puțin la repornirea aplicației; energia se calculează ca sumă a creșterilor la 5 minute (așa face dashboard-ul), nu cu <code>increase()</code>. <code>kasa_voltage</code>/<code>kasa_current</code> există doar pentru prizele care le raportează; <code>kasa_power_factor</code>, <code>kasa_apparent_power_va</code>, <code>kasa_frequency_hz</code>, <code>kasa_energy_returned_wh_total</code> și <code>kasa_device_temperature_c</code> doar pentru dispozitivele Shelly care le raportează; <code>kasa_rssi</code> nu e încă populată. Contoarele (model <code>S3EM…</code>/<code>SPEM…</code>) includ consumul prizelor din spatele lor: dashboard-ul le exclude din totaluri cu <code>model!~"@PlugChannel.MeterModelRegex"</code>.</p>
+        <p class="note"><code>kasa_power_total</code> e în Wh cumulativ și poate scădea puțin la repornirea aplicației; energia se calculează ca sumă a creșterilor la 5 minute (așa face dashboard-ul), nu cu <code>increase()</code>. <code>kasa_voltage</code>/<code>kasa_current</code> există doar pentru prizele care le raportează; <code>kasa_power_factor</code>, <code>kasa_apparent_power_va</code>, <code>kasa_frequency_hz</code>, <code>kasa_energy_returned_wh_total</code> și <code>kasa_device_temperature_c</code> doar pentru dispozitivele Shelly care le raportează; <code>kasa_rssi</code> nu e încă populată. Contoarele includ consumul prizelor din spatele lor, deci totalurile se fac doar pe <code>role="plug"</code>; /metrics exportă toate seriile, filtrarea se face în interogare.</p>
+        <p class="note mb-1">Exemple PromQL:</p>
+        <ul class="note">
+            <li>total prize: <code>sum(kasa_power_load{role="plug"})</code></li>
+            <li>casa (contorul general): <code>kasa_power_load{role="main"}</code></li>
+            <li>restul casei = casă − prize: <code>sum(kasa_power_load{role="main"}) - sum(kasa_power_load{role="plug"})</code></li>
+            <li>tensiunea rețelei: <code>kasa_voltage{role="main"}</code>; sub-contoarele: <code>kasa_power_load{role="sub"}</code></li>
+        </ul>
+        <h3>Fluxul live în Prometheus (remote write)</h3>
+        <p class="note">
+            Două familii de metrici: <code>kasa_*</code> de mai sus sunt citite de Prometheus de pe <code>/metrics</code> (scrape, de obicei la 15 s:
+            ultima valoare a fiecărei prize la acel moment). <code>kasa_live_*</code> (<code>kasa_live_power_w</code> și, unde există,
+            <code>kasa_live_voltage_v</code>, <code>kasa_live_current_a</code>, <code>kasa_live_power_factor</code>) sunt trimise de KasaMonitor
+            prin <b>Prometheus remote write</b>, cu ora reală a fiecărui eșantion al fluxului live: contorul general la secundă, prizele 1–10 s, doar când
+            puterea se schimbă (&gt; 1 W și &gt; 1 %) sau o dată pe minut, aceleași eșantioane care se scriu în baza de date. Așa fluctuațiile la secundă
+            ajung în Grafana fără ca scrape-ul să coboare la 1 s. Aceleași etichete: alias, mac, model, protocol, role. Exemplu:
+            <code>kasa_live_power_w{role="main"}</code>.
+        </p>
+        <p class="note">
+            Activare: Setări → „Integrare: Prometheus remote write” (adresa, ex. <code>http://&lt;prometheus&gt;:9090/api/v1/write</code>, basic auth opțional).
+            Prometheus trebuie pornit cu <code>--web.enable-remote-write-receiver</code> (în <code>docker-compose.monitoring.yml</code> din pachet e deja pus).
+            Starea se vede în Setări și pe <code>/metrics</code>: @foreach (var m in RemoteWriteMetrics.Catalog) { <code>@m.Name</code><span> </span> }.
+            Dacă Prometheus nu răspunde, eșantioanele așteaptă în memorie cel mult 5 minute, apoi se pierd (contorul de pierderi).
+        </p>
     }
 
     <h3>Prize care NU apar în metrici</h3>

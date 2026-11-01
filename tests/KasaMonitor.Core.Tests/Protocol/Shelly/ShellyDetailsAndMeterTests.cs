@@ -51,18 +51,22 @@ public class ShellyDetailsAndMeterTests
     }
 
     [Theory]
-    [InlineData("S3EM-002CXCEU", true)]
-    [InlineData("SPEM-003CEBEU", true)]
-    [InlineData("s3em-002cxceu", true)]
-    [InlineData("KP115(EU)", false)]
-    [InlineData("P115", false)]
-    [InlineData("SNPL-00112EU", false)]   // Shelly Plus Plug S: a plug, counts in totals
-    [InlineData("", false)]
-    public void Meters_AreExcludedFromTotals(string model, bool meter)
+    [InlineData(PlugRole.Plug, true, "plug")]
+    [InlineData(PlugRole.MainMeter, false, "main")]
+    [InlineData(PlugRole.SubMeter, false, "sub")]
+    public void Roles_DecideTotals_AndTheMetricLabel(PlugRole role, bool counts, string label)
     {
-        PlugChannel.IsMeter(model).Should().Be(meter);
-        PlugChannel.CountsInTotals(model).Should().Be(!meter);
+        PlugRoles.CountsInTotals(role).Should().Be(counts);
+        PlugRoles.IsMeter(role).Should().Be(!counts);
+        PlugRoles.Label(role).Should().Be(label);
     }
+
+    [Theory]
+    [InlineData(0, PlugRole.Plug)]
+    [InlineData(1, PlugRole.MainMeter)]
+    [InlineData(2, PlugRole.SubMeter)]
+    [InlineData(7, PlugRole.Plug)]   // unknown stored value (newer version) reads as a plug
+    public void Roles_FromStoredInt(int value, PlugRole role) => PlugRoles.FromInt(value).Should().Be(role);
 
     [Fact]
     public void MacLabel_PerChannel()
@@ -72,25 +76,45 @@ public class ShellyDetailsAndMeterTests
     }
 
     [Fact]
-    public void AllPlugsHistory_LeavesMetersOut()
+    public void AllPlugsHistory_LeavesMetersOut_AndShowsTheHouseSeparately()
     {
-        Plug Make(string mac, string alias, string model, int channel = 0) => new(Guid.NewGuid(), mac, IPAddress.Loopback, alias, false, model,
-            "", "", "", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, false, null, PlugProtocols.Legacy, null, channel);
+        Plug Make(string mac, string alias, string model, int channel = 0, PlugRole role = PlugRole.Plug) => new(Guid.NewGuid(), mac, IPAddress.Loopback, alias, false, model,
+            "", "", "", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, false, null, PlugProtocols.Legacy, null, channel, role);
         var plug = Make("aa", "Birou", "KP115(EU)");
-        var meter0 = Make("d885ac0b743c", "Tablou ch0", "S3EM-002CXCEU") with { Protocol = PlugProtocols.ShellyRpc };
-        var meter1 = Make("d885ac0b743c", "Tablou ch1", "S3EM-002CXCEU", 1) with { Protocol = PlugProtocols.ShellyRpc };
+        var shellyPlug = Make("bb", "Frigider", "SNPL-00112EU") with { Protocol = PlugProtocols.ShellyRpc };   // a Shelly plug counts
+        var meter0 = Make("d885ac0b743c", "Tablou ch0", "S3EM-002CXCEU", 0, PlugRole.MainMeter) with { Protocol = PlugProtocols.ShellyRpc };
+        var meter1 = Make("d885ac0b743c", "Tablou ch1", "S3EM-002CXCEU", 1, PlugRole.SubMeter) with { Protocol = PlugProtocols.ShellyRpc };
         var rows = new[]
         {
             new PlugDailyKwh(plug.Id, new DailyKwh(2026, 11, 1, 500)),
+            new PlugDailyKwh(shellyPlug.Id, new DailyKwh(2026, 11, 1, 200)),
             new PlugDailyKwh(meter0.Id, new DailyKwh(2026, 11, 1, 9000)),
+            new PlugDailyKwh(meter0.Id, new DailyKwh(2026, 11, 2, 8000)),   // a day with only the house
             new PlugDailyKwh(meter1.Id, new DailyKwh(2026, 11, 1, 100)),
         };
 
-        var all = AllPlugsDailyEnergy.Build(new[] { plug, meter0, meter1 }, rows);
+        var all = AllPlugsDailyEnergy.Build(new[] { plug, shellyPlug, meter0, meter1 }, rows);
 
-        all.Series.Should().ContainSingle().Which.Alias.Should().Be("Birou");
-        all.TotalWh.Should().Be(500);
+        all.Series.Select(s => s.Alias).Should().Equal("Birou", "Frigider");
+        all.Days.Should().Equal(new DateOnly(2026, 11, 1), new DateOnly(2026, 11, 2));
+        all.DayTotalsWh.Should().Equal(700, 0);
+        all.TotalWh.Should().Be(700);
+        all.House.Should().NotBeNull();
+        all.House!.Alias.Should().Be("Casă");
+        all.House.DailyWh.Should().Equal(9000, 8000);
+        all.House.TotalWh.Should().Be(17000);
     }
+
+    [Fact]
+    public void AllPlugsHistory_WithoutMainMeter_HasNoHouse()
+    {
+        var meter = new Plug(Guid.NewGuid(), "cc", IPAddress.Loopback, "EM", false, "S3EM-002CXCEU", "", "", "",
+            DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, false, null, PlugProtocols.ShellyRpc, null, 0, PlugRole.SubMeter);
+        var all = AllPlugsDailyEnergy.Build(new[] { meter }, new[] { new PlugDailyKwh(meter.Id, new DailyKwh(2026, 11, 1, 100)) });
+        all.House.Should().BeNull();
+        all.Series.Should().BeEmpty();
+    }
+
     [Fact]
     public void Details_MeteredSwitches_UseTheChannelsOwnRelay()
     {

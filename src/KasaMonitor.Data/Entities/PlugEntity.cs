@@ -24,4 +24,10 @@ public sealed class PlugEntity
 
     /// <summary>Measured channel of a multi-channel device (Shelly EM: 0/1); 0 for plugs. Unique together with <see cref="Mac"/>.</summary>
     public int Channel { get; set; }
+
+    /// <summary>KasaMonitor.Core.Models.PlugRole: 0 = plug, 1 = main meter (at most one), 2 = sub-meter.</summary>
+    public int Role { get; set; }
+
+    /// <summary>Live stream (1–10 s) for this channel; default true, false for sub-meters.</summary>
+    public bool StreamEnabled { get; set; } = true;
 }

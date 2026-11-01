@@ -1,0 +1,236 @@
+@page "/contor"
+@rendermode InteractiveServer
+@using KasaMonitor.Workers
+@using KasaMonitor.Web.Ui
+@inject IServiceScopeFactory ScopeFactory
+@inject IKasaSettingsService KasaSettings
+@inject KasaMonitor.Core.Costing.TariffCalculator DefaultTariff
+@inject ILiveStreamBroadcaster Stream
+@inject IPlugStateBroadcaster States
+@inject RelayControlService Relay
+@implements IDisposable
+
+<PageTitle>KasaMonitor — Contor</PageTitle>
+
+@if (_loading)
+{
+    <p class="text-secondary"><span class="spinner-border spinner-border-sm me-2"></span>Se încarcă…</p>
+}
+else if (_main is null)
+{
+    <h1 class="h3 mb-3"><i class="bi bi-house-door me-2"></i>Contor</h1>
+    <div class="alert alert-secondary">
+        Nu e setat niciun contor general. Alege canalul care măsoară alimentarea casei în <a href="/plugs">Prize</a>
+        (butonul <i class="bi bi-house-door"></i> sau „Setează ca contor general”).
+    </div>
+}
+else
+{
+    <div class="d-flex flex-wrap align-items-center justify-content-between gap-2 mb-3">
+        <h1 class="h3 mb-0"><i class="bi bi-house-door me-2"></i>@_main.Alias</h1>
+        <div class="d-flex flex-wrap align-items-center gap-3">
+            <span class="small text-secondary">@PlugModelName.Short(_main.Model) · @_main.IpAddress · canal @_main.Channel</span>
+            <RelaySwitch PlugId="_main.Id" OnCommand="OnRelayCommandAsync" />
+        </div>
+    </div>
+
+    <MeterReadout PlugId="_main.Id" />
+
+    <div class="card mt-3">
+        <div class="card-body">
+            <div class="d-flex flex-wrap align-items-center justify-content-between gap-2">
+                <h2 class="h6 text-secondary mb-0" title="Contorul general: o valoare pe secundă (fluxul live), fereastră glisantă de 10 minute">Ultimele 10 minute (1 s)</h2>
+                <label class="d-flex align-items-center gap-2 small text-secondary">Suprapune o priză
+                    <select class="form-select form-select-sm w-auto" value="@(_overlayId?.ToString() ?? "")" @onchange="OnOverlayChanged">
+                        <option value="">(niciuna)</option>
+                        @foreach (var p in _overlayCandidates)
+                        {
+                            <option value="@p.Id">@p.Alias</option>
+                        }
+                    </select>
+                </label>
+            </div>
+            @if (!_streamEnabled)
+            {
+                <div class="small text-warning-emphasis"><i class="bi bi-info-circle me-1"></i>Fluxul la 1 s e oprit în Setări; graficul nu primește date.</div>
+            }
+            <LiveMeterChart @key="(_overlayId ?? Guid.Empty)" PlugId="_main.Id" MainName="@($"{_main.Alias} (W)")"
+                            OverlayPlugId="_overlayId" OverlayName="@($"{_overlayCandidates.FirstOrDefault(p => p.Id == _overlayId)?.Alias} (W)")" />
+            <div class="small text-secondary">Prizele sunt citite adaptiv (1 s cât timp puterea se schimbă, până la 10 s când stau liniștite), deci linia prizei are pași mai rari.</div>
+        </div>
+    </div>
+
+    <div class="row g-3 mt-0">
+        <div class="col-xl-7">
+            <div class="card h-100">
+                <div class="card-body">
+                    <h2 class="h6 text-secondary" title="Din mediile pe minut ale fluxului la 1 s (min / medie / max)">Azi, pe minut (W)</h2>
+                    @if (_today.Count == 0)
+                    {
+                        <div class="text-secondary small">Încă nu există minute agregate azi (primul apare la un minut după pornirea fluxului).</div>
+                    }
+                    else
+                    {
+                        <ApexChart @key="_todayKey" TItem="MinutePoint" Options="_todayOptions" Height="280" XAxisType="XAxisType.Datetime">
+                            <ApexPointSeries TItem="MinutePoint" Items="_today" Name="max" Color="#D55E00" SeriesType="SeriesType.Line" XValue="@(p => p.TimeUtc)" YValue="@(p => p.MaxW)" />
+                            <ApexPointSeries TItem="MinutePoint" Items="_today" Name="medie" Color="#0072B2" SeriesType="SeriesType.Line" XValue="@(p => p.TimeUtc)" YValue="@(p => p.AvgW)" />
+                            <ApexPointSeries TItem="MinutePoint" Items="_today" Name="min" Color="#009E73" SeriesType="SeriesType.Line" XValue="@(p => p.TimeUtc)" YValue="@(p => p.MinW)" />
+                        </ApexChart>
+                        <div class="small text-secondary">Energie azi din flux: @EnergyFormat.Kwh((long)Math.Round(_todayWh)) kWh · @EnergyFormat.Lei(_tariff.CostFromWh((long)Math.Round(_todayWh))) (doar minutele primite).</div>
+                    }
+                </div>
+            </div>
+        </div>
+        <div class="col-xl-5">
+            <div class="card h-100">
+                <div class="card-body">
+                    <h2 class="h6 text-secondary" title="Istoricul zilnic al contorului (EM1Data din dispozitiv / eșantioanele proprii)">Energie pe zi, 30 de zile (kWh)</h2>
+                    @if (_daily.Count == 0)
+                    {
+                        <div class="text-secondary small">Fără istoric zilnic încă (se citește la 6 h și imediat după adăugare).</div>
+                    }
+                    else
+                    {
+                        <ApexChart @key="_dailyKey" TItem="DayPoint" Options="_dailyOptions" Height="280">
+                            <ApexPointSeries TItem="DayPoint" Items="_daily" Name="kWh" Color="#6C757D" SeriesType="SeriesType.Bar" XValue="@(d => d.Date)" YValue="@(d => d.Kwh)" />
+                        </ApexChart>
+                        <div class="small text-secondary">Total 30 de zile: @EnergyFormat.Kwh(_dailyTotalWh) kWh · @EnergyFormat.Lei(_tariff.CostFromWh(_dailyTotalWh)) (tarif @_tariff.RonPerKwh.ToString("0.00") RON/kWh).</div>
+                    }
+                </div>
+            </div>
+        </div>
+    </div>
+
+    @if (_subMeters.Count > 0)
+    {
+        <SubMetersCard Meters="_subMeters" />
+    }
+
+    @if (_relayAllowed)
+    {
+        <div class="card mt-3">
+            <div class="card-header fw-semibold"><i class="bi bi-journal-text me-2"></i>Comenzi releu (ultimele 20)</div>
+            @if (_commands.Count == 0)
+            {
+                <div class="card-body small text-secondary">Nicio comandă trimisă.</div>
+            }
+            else
+            {
+                <div class="table-responsive">
+                    <table class="table table-sm align-middle mb-0">
+                        <thead class="table-light"><tr><th>Ora</th><th>Canal</th><th>Comandă</th><th>Sursa</th><th>Rezultat</th></tr></thead>
+                        <tbody>
+                            @foreach (var c in _commands)
+                            {
+                                <tr>
+                                    <td class="text-nowrap" title="@UiFormat.FullLocal(c.TsUtc)">@UiFormat.FullLocal(c.TsUtc)</td>
+                                    <td>@(_aliases.GetValueOrDefault(c.PlugId) ?? c.PlugId.ToString()[..8])</td>
+                                    <td>@(c.On ? "pornește" : "oprește")</td>
+                                    <td>@c.Source</td>
+                                    <td class="@(c.Succeeded ? "text-success" : "text-danger")">@c.Result</td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                </div>
+            }
+        </div>
+    }
+}
+
+@code {
+    public record MinutePoint(DateTime TimeUtc, decimal MinW, decimal AvgW, decimal MaxW);
+    public record DayPoint(string Date, decimal Kwh);
+
+    private bool _loading = true;
+    private Plug? _main;
+    private List<Plug> _subMeters = new();
+    private List<Plug> _overlayCandidates = new();
+    private Guid? _overlayId;
+    private Dictionary<Guid, string> _aliases = new();
+    private List<MinutePoint> _today = new();
+    private double _todayWh;
+    private List<DayPoint> _daily = new();
+    private long _dailyTotalWh;
+    private IReadOnlyList<RelayCommand> _commands = Array.Empty<RelayCommand>();
+    private bool _relayAllowed;
+    private bool _streamEnabled = true;
+    private int _todayKey, _dailyKey;
+    private KasaMonitor.Core.Costing.TariffCalculator _tariff = null!;
+    private System.Threading.Timer? _timer;
+
+    private readonly ApexChartOptions<MinutePoint> _todayOptions = new()
+    {
+        Chart = new Chart { Toolbar = new Toolbar { Show = false }, Animations = new Animations { Enabled = false } },
+        Stroke = new Stroke { Width = 1.5, Curve = Curve.Straight },
+        DataLabels = new DataLabels { Enabled = false },
+        Xaxis = new XAxis { Labels = new XAxisLabels { DatetimeUTC = false } },
+        Yaxis = new List<YAxis> { new() { DecimalsInFloat = 0 } },
+        Tooltip = new Tooltip { Shared = true, X = new TooltipX { Format = "HH:mm" } },
+    };
+
+    private readonly ApexChartOptions<DayPoint> _dailyOptions = new()
+    {
+        Chart = new Chart { Toolbar = new Toolbar { Show = false } },
+        DataLabels = new DataLabels { Enabled = false },
+    };
+
+    protected override async Task OnInitializedAsync()
+    {
+        _tariff = DefaultTariff;
+        await LoadAsync();
+        _loading = false;
+        // Minute chart, daily bars and the command log refresh every minute; the live parts update themselves.
+        _timer = new System.Threading.Timer(_ => InvokeAsync(async () => { await LoadAsync(); StateHasChanged(); }), null, 60_000, 60_000);
+    }
+
+    private async Task LoadAsync()
+    {
+        try
+        {
+            var settings = await KasaSettings.GetAsync(CancellationToken.None);
+            _tariff = new KasaMonitor.Core.Costing.TariffCalculator(settings.TariffRonPerKwh);
+            _relayAllowed = settings.AllowRelayControl;
+            _streamEnabled = settings.LiveStreamEnabled;
+        }
+        catch (Exception) { /* keep the previous values */ }
+
+        using var scope = ScopeFactory.CreateScope();
+        var plugs = await scope.ServiceProvider.GetRequiredService<IPlugRepository>().ListAllAsync(CancellationToken.None);
+        _aliases = plugs.ToDictionary(p => p.Id, p => p.Alias);
+        _main = plugs.FirstOrDefault(p => p.Role == PlugRole.MainMeter && !p.IsArchived);
+        _subMeters = plugs.Where(p => p.Role == PlugRole.SubMeter && p.IsPolled).OrderBy(p => p.Alias).ToList();
+        // Overlay: any other channel of the same live stream.
+        _overlayCandidates = plugs.Where(p => p.IsPolled && p.StreamEnabled && p.Role != PlugRole.MainMeter).OrderBy(p => p.Alias).ToList();
+        if (_overlayId is { } o && _overlayCandidates.All(p => p.Id != o)) _overlayId = null;
+        if (_main is null) return;
+
+        var meters = scope.ServiceProvider.GetRequiredService<ILiveRepository>();
+        var localMidnight = new DateTimeOffset(DateTime.Today, TimeZoneInfo.Local.GetUtcOffset(DateTime.Today));
+        var minutes = await meters.ListMinutesAsync(_main.Id, localMidnight, DateTimeOffset.UtcNow, CancellationToken.None);
+        _today = minutes.Select(m => new MinutePoint(m.MinuteUtc.UtcDateTime, Math.Round((decimal)m.MinW), Math.Round((decimal)m.AvgW), Math.Round((decimal)m.MaxW))).ToList();
+        _todayWh = minutes.Sum(m => m.EnergyWh);
+        _todayKey++;
+
+        var to = DateOnly.FromDateTime(DateTime.Today);
+        var daily = await scope.ServiceProvider.GetRequiredService<IHistoryRepository>()
+            .GetDailyRangeAsync(_main.Id, to.AddDays(-29), to, CancellationToken.None);
+        _daily = daily.Select(d => new DayPoint($"{d.Year:D4}-{d.Month:D2}-{d.Day:D2}", d.EnergyWh / 1000m)).ToList();
+        _dailyTotalWh = daily.Sum(d => d.EnergyWh);
+        _dailyKey++;
+
+        _commands = await meters.ListRelayCommandsAsync(null, 20, CancellationToken.None);
+    }
+
+    private async Task OnRelayCommandAsync(RelayCommandResult _)
+    {
+        using var scope = ScopeFactory.CreateScope();
+        _commands = await scope.ServiceProvider.GetRequiredService<ILiveRepository>().ListRelayCommandsAsync(null, 20, CancellationToken.None);
+        StateHasChanged();
+    }
+
+    private void OnOverlayChanged(ChangeEventArgs e) =>
+        _overlayId = Guid.TryParse(e.Value?.ToString(), out var id) ? id : null;
+
+    public void Dispose() => _timer?.Dispose();
+}

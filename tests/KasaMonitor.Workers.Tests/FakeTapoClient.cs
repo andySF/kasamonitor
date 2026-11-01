@@ -28,6 +28,14 @@ internal sealed class FakeTapoClient : ITapoClient
         return OnGetEnergyUsage?.Invoke(ip, credentials) ?? throw new InvalidOperationException("OnGetEnergyUsage not set");
     }
 
+    public int LiveCalls;
+
+    public Task<EmeterReading> GetLivePowerAsync(IPAddress ip, string protocol, TapoCredentials credentials, CancellationToken ct)
+    {
+        Interlocked.Increment(ref LiveCalls);
+        return OnGetEnergyUsage?.Invoke(ip, credentials) ?? throw new InvalidOperationException("OnGetEnergyUsage not set");
+    }
+
     public Func<DateOnly, DateOnly, Task<IReadOnlyList<DailyKwh>>>? OnGetDailyEnergy = null;
     public List<(DateOnly First, DateOnly Last)> DailyEnergyRequests { get; } = new();
 

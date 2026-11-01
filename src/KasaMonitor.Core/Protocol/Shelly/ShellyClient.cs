@@ -60,6 +60,10 @@ public sealed class ShellyClient : IShellyClient, IDisposable
     public Task<JsonElement> GetConfigAsync(IPAddress ip, string? password, CancellationToken ct) =>
         CallAsync(ip, "Shelly.GetConfig", "", password, ct);
 
+    /// <summary>The single write: GET /rpc/Switch.Set?id=N&amp;on=true|false (digest like every other call).</summary>
+    public async Task SetSwitchAsync(IPAddress ip, string? password, int switchId, bool on, CancellationToken ct) =>
+        await CallAsync(ip, "Switch.Set", string.Create(CultureInfo.InvariantCulture, $"?id={switchId}&on={(on ? "true" : "false")}"), password, ct);
+
     public async Task<IReadOnlyList<ShellyDataBlock>> GetEm1RecordsAsync(IPAddress ip, string? password, int id, CancellationToken ct) =>
         ShellyEnergyData.ParseRecords(await CallAsync(ip, "EM1Data.GetRecords", $"?id={id}", password, ct));
 

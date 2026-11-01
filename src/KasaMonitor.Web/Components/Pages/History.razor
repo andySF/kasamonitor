@@ -46,7 +46,7 @@ else
         else
         {
             <div class="card mb-3"><div class="card-body">
-            <h2 class="h6 text-secondary" title="Contoarele de energie (Shelly EM) nu sunt incluse: ele conțin deja consumul prizelor">Energie pe zi, toate prizele (kWh, fără contoare)</h2>
+            <h2 class="h6 text-secondary" title="Barele: prizele (rol „priză”), stivuite. Linia „Casă”: contorul general, separat (conține deja prizele, nu se adună la ele). Sub-contoarele nu apar aici.">Energie pe zi, toate prizele (kWh) și casa</h2>
             <ApexChart @key="_chartKey" TItem="DayPoint" Title="kWh / day" Options="_allChartOptions">
                 @foreach (var s in _all.Series)
                 {
@@ -55,6 +55,16 @@ else
                                      Name="@s.Alias"
                                      Color="@s.Color"
                                      SeriesType="SeriesType.Bar"
+                                     XValue="@(d => d.Date)"
+                                     YValue="@(d => d.Kwh)" />
+                }
+                @if (_all.House is { } house)
+                {
+                    <ApexPointSeries TItem="DayPoint"
+                                     Items="@Points(house)"
+                                     Name="@house.Alias"
+                                     Color="@house.Color"
+                                     SeriesType="SeriesType.Line"
                                      XValue="@(d => d.Date)"
                                      YValue="@(d => d.Kwh)" />
                 }
@@ -76,10 +86,18 @@ else
                 </tbody>
                 <tfoot>
                     <tr>
-                        <th>Total</th>
+                        <th>Total prize</th>
                         <th>@((_all.TotalWh / 1000.0).ToString("0.000"))</th>
                         <th>@Tariff.CostFromWh(_all.TotalWh).ToString("0.00")</th>
                     </tr>
+                    @if (_all.House is { } h)
+                    {
+                        <tr title="Contorul general: conține deja prizele, nu se adună la total">
+                            <td><span class="swatch" style="background:@h.Color"></span>Casă (contor general)</td>
+                            <td>@((h.TotalWh / 1000.0).ToString("0.000"))</td>
+                            <td>@Tariff.CostFromWh(h.TotalWh).ToString("0.00")</td>
+                        </tr>
+                    }
                 </tfoot>
             </table>
             </div>
@@ -215,7 +233,8 @@ else
         var totals = string.Join(",", all.DayTotalsWh.Select(wh => (wh / 1000.0).ToString("0.000", inv)));
         return new ApexChartOptions<DayPoint>
         {
-            Chart = new Chart { Stacked = true, Toolbar = new Toolbar { Show = false } },
+            // Only the plug bars are stacked; the "Casă" line (main meter) stays on its own.
+            Chart = new Chart { Stacked = true, StackOnlyBar = true, Toolbar = new Toolbar { Show = false } },
             PlotOptions = new PlotOptions { Bar = new PlotOptionsBar { Horizontal = false } },
             Legend = new Legend { Show = true, OnItemClick = new LegendOnItemClick { ToggleDataSeries = true } },
             Tooltip = new Tooltip
@@ -225,7 +244,7 @@ else
                 X = new TooltipX
                 {
                     // Day total (all plugs) in the tooltip header; the per-plug values are listed below it.
-                    Formatter = $"function(value, opts) {{ var t = [{totals}]; var i = opts ? opts.dataPointIndex : -1; return (i >= 0 && i < t.length) ? value + ' — total ' + t[i].toFixed(3) + ' kWh' : value; }}"
+                    Formatter = $"function(value, opts) {{ var t = [{totals}]; var i = opts ? opts.dataPointIndex : -1; return (i >= 0 && i < t.length) ? value + ' — total prize ' + t[i].toFixed(3) + ' kWh' : value; }}"
                 },
                 Y = new TooltipY { Formatter = "function(value) { return value == null ? '' : value.toFixed(3) + ' kWh'; }" }
             },

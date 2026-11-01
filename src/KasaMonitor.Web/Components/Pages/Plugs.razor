@@ -100,7 +100,7 @@ else
         <div class="table-responsive">
             <table class="table table-hover align-middle mb-0">
                 <thead class="table-light">
-                    <tr><th>Alias</th><th>Model</th><th>IP / MAC</th><th>Firmware</th><th>Văzută</th><th>Stare</th><th class="text-end">Acțiuni</th></tr>
+                    <tr><th>Alias</th><th>Model</th><th title="Priză / contor general (casa) / sub-contor">Rol</th><th>IP / MAC</th><th>Firmware</th><th>Văzută</th><th>Stare</th><th class="text-end">Acțiuni</th></tr>
                 </thead>
                 <tbody>
                     @foreach (var p in _plugs.Where(p => _showArchived || !p.IsArchived).OrderBy(p => p.Alias))
@@ -125,7 +125,27 @@ else
                             <td>
                                 <span class="badge text-bg-light border" title="@UiFormat.ModelTitle(p.Model, p.HwVer, p.Protocol)">@PlugModelName.Short(p.Model)</span>
                                 <span class="badge @UiFormat.ProtocolBadge(p.Protocol)">@p.Protocol</span>
-                                @if (PlugChannel.IsMeter(p.Model)) { <span class="badge text-bg-info" title="Contor de energie: nu intră în totalurile din Dashboard">contor</span> }
+                            </td>
+                            <td class="text-nowrap">
+                                <div class="btn-group btn-group-sm" role="group" aria-label="Rol">
+                                    @foreach (var role in PlugRoles.All)
+                                    {
+                                        <button class="btn @(p.Role == role ? "btn-primary" : "btn-outline-secondary")" @onclick="() => SetRoleAsync(p, role)" disabled="@p.IsArchived"
+                                                title="@PlugRoles.Name(role): @PlugRoles.Description(role)" aria-pressed="@(p.Role == role)"><i class="bi @PlugRoles.Icon(role)"></i></button>
+                                    }
+                                </div>
+                                <span class="badge @(p.Role == PlugRole.Plug ? "text-bg-light border" : "text-bg-info") ms-1" title="@PlugRoles.Description(p.Role)">@PlugRoles.Name(p.Role)</span>
+                                @if (p.IsSupported && !p.IsArchived)
+                                {
+                                    <div class="form-check form-check-inline small mt-1 me-0" title="Flux live: contorul general la 1 s, prizele 1–10 s (adaptiv); un rând brut doar la schimbare sau o dată pe minut">
+                                        <input class="form-check-input" type="checkbox" id="stream-@p.Id" checked="@p.StreamEnabled" @onchange="e => SetStreamAsync(p, e.Value is true)" />
+                                        <label class="form-check-label" for="stream-@p.Id">flux 1 s</label>
+                                    </div>
+                                }
+                                @if (p.Role != PlugRole.MainMeter && p.Protocol == PlugProtocols.ShellyRpc && !p.IsArchived)
+                                {
+                                    <div><button class="btn btn-link btn-sm p-0" @onclick="() => SetRoleAsync(p, PlugRole.MainMeter)" title="Un singur contor general: cel de acum devine sub-contor"><i class="bi bi-house-door me-1"></i>Setează ca contor general</button></div>
+                                }
                             </td>
                             <td>
                                 <div>@p.IpAddress</div>
@@ -149,6 +169,7 @@ else
                                 else { <span class="badge text-bg-success">activă</span> }
                             </td>
                             <td class="text-end text-nowrap">
+                                <button class="btn btn-outline-secondary btn-sm" @onclick="() => ToggleDetails(p.Id)" title="Detalii: roluri, releu"><i class="bi @(_detailsId == p.Id ? "bi-chevron-up" : "bi-info-circle")"></i></button>
                                 <a class="btn btn-outline-secondary btn-sm" href="/history?plugId=@p.Id" title="Istoric"><i class="bi bi-bar-chart"></i></a>
                                 @if (p.IsArchived)
                                 {
@@ -160,6 +181,37 @@ else
                                 }
                             </td>
                         </tr>
+                        @if (_detailsId == p.Id)
+                        {
+                            <tr class="table-light">
+                                <td colspan="8">
+                                    <div class="row g-3 small">
+                                        <div class="col-lg-7">
+                                            <div class="fw-semibold mb-1"><i class="bi bi-diagram-2 me-1"></i>Roluri</div>
+                                            <ul class="list-unstyled mb-1">
+                                                @foreach (var role in PlugRoles.All)
+                                                {
+                                                    <li class="mb-1"><i class="bi @PlugRoles.Icon(role) me-1"></i><b>@PlugRoles.Name(role)</b>@(p.Role == role ? " (rolul actual)" : ""): @PlugRoles.Description(role)</li>
+                                                }
+                                            </ul>
+                                            <div class="text-secondary">Canalele noi de contor Shelly (em1/em) pornesc ca sub-contor; prizele (Kasa, Tapo, Shelly switch/pm1) ca priză. Bifa „flux 1 s” pornește fluxul live: contorul general la fiecare secundă, prizele la 1 s cât timp puterea se schimbă și până la 10 s când stau liniștite. Implicit pornit pentru contorul general și prize, oprit pentru sub-contoare; la schimbarea rolului bifa revine la valoarea implicită a rolului.</div>
+                                        </div>
+                                        <div class="col-lg-5">
+                                            <div class="fw-semibold mb-1"><i class="bi bi-toggle-on me-1"></i>Releu</div>
+                                            @if (p.Protocol == PlugProtocols.ShellyRpc && p.IsPolled)
+                                            {
+                                                <RelaySwitch PlugId="p.Id" />
+                                                <div class="text-secondary mt-1">Apare doar pe canalele Shelly cu releu (canalul 0 al unui contor cu <code>switch:0</code>, prizele Shelly) și când „Permite comanda releului” e pornită în Setări. Fiecare comandă e confirmată și trecută în jurnal (pagina Contor).</div>
+                                            }
+                                            else
+                                            {
+                                                <div class="text-secondary">Fără comandă: doar dispozitivele Shelly cu releu pot fi comandate (Kasa/Tapo nu, deocamdată).</div>
+                                            }
+                                        </div>
+                                    </div>
+                                </td>
+                            </tr>
+                        }
                     }
                 </tbody>
             </table>
@@ -177,6 +229,7 @@ else
     private bool _adding;
     private string _manualIp = "";
     private string? _message;
+    private Guid? _detailsId;
 
     protected override async Task OnInitializedAsync()
     {
@@ -289,6 +342,27 @@ else
         using var scope = ScopeFactory.CreateScope();
         var repo = scope.ServiceProvider.GetRequiredService<IPlugRepository>();
         await repo.SetArchivedAsync(p.Id, !p.IsArchived, CancellationToken.None);
+        await ReloadAsync();
+    }
+
+    private void ToggleDetails(Guid plugId) => _detailsId = _detailsId == plugId ? null : plugId;
+
+    private async Task SetStreamAsync(Plug p, bool enabled)
+    {
+        using (var scope = ScopeFactory.CreateScope())
+            await scope.ServiceProvider.GetRequiredService<IPlugRepository>().SetStreamEnabledAsync(p.Id, enabled, CancellationToken.None);
+        _message = $"„{p.Alias}”: flux live {(enabled ? "pornit" : "oprit")} (se aplică în ≤ 10 s).";
+        await ReloadAsync();
+    }
+
+    private async Task SetRoleAsync(Plug p, PlugRole role)
+    {
+        if (p.Role == role || p.IsArchived) return;
+        using (var scope = ScopeFactory.CreateScope())
+            await scope.ServiceProvider.GetRequiredService<IPlugRepository>().SetRoleAsync(p.Id, role, CancellationToken.None);
+        _message = role == PlugRole.MainMeter
+            ? $"„{p.Alias}” e acum contorul general (cel vechi, dacă exista, a devenit sub-contor). Se aplică la următoarea citire (≤ 10 s)."
+            : $"„{p.Alias}”: rol {PlugRoles.Name(role)}. Se aplică la următoarea citire (≤ 10 s).";
         await ReloadAsync();
     }
 

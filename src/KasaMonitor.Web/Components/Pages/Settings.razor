@@ -4,6 +4,8 @@
 @inject IServiceScopeFactory ScopeFactory
 @inject IKasaSettingsService KasaSettings
 @inject ReadingsRetentionService Retention
+@inject PrometheusRemoteWriter RemoteWriter
+@implements IDisposable
 
 <PageTitle>KasaMonitor — Setări</PageTitle>
 <h1 class="h3 mb-3"><i class="bi bi-gear me-2"></i>Setări</h1>
@@ -89,8 +91,93 @@ else
                     </div>
                     <div class="form-text">
                         Pentru dispozitive pe care mDNS nu le găsește (alt subnet, mDNS oprit): IP-uri, intervale sau CIDR, separate prin virgulă;
-                        fiecare adresă e întrebată la fiecare descoperire cu <code>Shelly.GetDeviceInfo</code> (timeout 1 s). Aplicația doar citește
-                        (nu comută releul, nu schimbă configurația).
+                        fiecare adresă e întrebată la fiecare descoperire cu <code>Shelly.GetDeviceInfo</code> (timeout 1 s). Aplicația citește;
+                        singura scriere e comanda releului (<code>Switch.Set</code>, cu confirmare), nu schimbă configurația.
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="col-lg-6">
+            <div class="card h-100">
+                <div class="card-header fw-semibold"><i class="bi bi-activity me-2"></i>Flux live și releu</div>
+                <div class="card-body">
+                    <div class="form-check form-switch mb-2">
+                        <input class="form-check-input" type="checkbox" id="meterStream" @bind="_meterStream" />
+                        <label class="form-check-label" for="meterStream">Flux live (contorul general la 1 s, prizele 1–10 s)</label>
+                    </div>
+                    <div class="mb-2">
+                        <label class="form-label" for="meterInterval">Interval de bază (secunde, minim @KasaSettingsService.MinLiveIntervalSeconds): contorul general fix, prizele cel mai des</label>
+                        <input class="form-control" id="meterInterval" @bind="_meterInterval" type="number" min="@KasaSettingsService.MinLiveIntervalSeconds" max="@KasaSettingsService.MaxLiveIntervalSeconds" />
+                    </div>
+                    <div class="mb-2">
+                        <label class="form-label" for="meterRetention">Păstrează eșantioanele brute ale fluxului (zile, 0 = nelimitat)</label>
+                        <input class="form-control" id="meterRetention" @bind="_meterRetentionDays" type="number" min="0" max="@KasaSettingsService.MaxLiveRetentionDays" />
+                    </div>
+                    <div class="mb-2">
+                        <label class="form-label" for="burst">Salt al contorului general care readuce prizele la 1 s (W)</label>
+                        <input class="form-control" id="burst" @bind="_burstW" type="number" min="@KasaSettingsService.MinBurstTriggerW" max="@KasaSettingsService.MaxBurstTriggerW" />
+                    </div>
+                    <div class="form-check form-switch mb-1">
+                        <input class="form-check-input" type="checkbox" id="allowRelay" @bind="_allowRelay" />
+                        <label class="form-check-label" for="allowRelay">Permite comanda releului (Shelly <code>Switch.Set</code>)</label>
+                    </div>
+                    <div class="form-text">
+                        Fluxul citește prizele și canalele cu bifa „flux 1 s” (pagina Prize): contorul general la fiecare secundă, prizele la
+                        1 s cât timp puterea se schimbă și până la 10 s când stau liniștite (înapoi la 1 s, timp de 60 s, când contorul general sare cu mai mult decât pragul de mai sus între două secunde).
+                        Un rând brut se scrie doar când puterea se schimbă (&gt; 1 W și &gt; 1 %) sau o dată pe minut; mediile pe minut se calculează
+                        din toate citirile și se păstrează nelimitat. Rândurile brute se șterg o dată pe zi după numărul de zile de mai sus; la o
+                        valoare mai mică se cere confirmare. Când comanda releului e oprită, comutatorul Pornit/Oprit nu mai apare; fiecare comandă
+                        cere confirmare și e trecută în jurnal. Aplicația nu are autentificare: expune-o doar în LAN.
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="col-lg-6">
+            <div class="card h-100">
+                <div class="card-header fw-semibold"><i class="bi bi-diagram-3 me-2"></i>Integrare: Prometheus remote write</div>
+                <div class="card-body">
+                    <div class="form-check form-switch mb-2">
+                        <input class="form-check-input" type="checkbox" id="rwOn" @bind="_rwEnabled" />
+                        <label class="form-check-label" for="rwOn">Trimite eșantioanele fluxului live (<code>kasa_live_*</code>) la Prometheus</label>
+                    </div>
+                    <div class="mb-2">
+                        <label class="form-label" for="rwUrl">Adresa remote write</label>
+                        <input class="form-control" id="rwUrl" @bind="_rwUrl" placeholder="http://192.168.1.10:9090/api/v1/write" />
+                    </div>
+                    <div class="row g-2 mb-1">
+                        <div class="col-sm-6">
+                            <label class="form-label" for="rwUser">Utilizator (opțional, basic auth)</label>
+                            <input class="form-control" id="rwUser" @bind="_rwUser" autocomplete="off" placeholder="@(_hasRwAuth ? "•••• (setat; lasă gol ca să rămână)" : "nesetat")" />
+                        </div>
+                        <div class="col-sm-6">
+                            <label class="form-label" for="rwPassword">Parolă</label>
+                            <input class="form-control" id="rwPassword" @bind="_rwPassword" type="password" autocomplete="new-password" placeholder="@(_hasRwAuth ? "•••••••• (setată)" : "nesetată")" />
+                        </div>
+                    </div>
+                    @if (_hasRwAuth)
+                    {
+                        <div class="form-check mb-2">
+                            <input class="form-check-input" type="checkbox" id="clearRw" @bind="_clearRwAuth" />
+                            <label class="form-check-label" for="clearRw">Șterge utilizatorul și parola</label>
+                        </div>
+                    }
+                    @{ var st = RemoteWriter.Status; }
+                    <div class="small mt-2">
+                        <span class="badge @(st.Enabled ? (st.LastError is null ? "text-bg-success" : "text-bg-warning") : "text-bg-secondary")">@(st.Enabled ? (st.LastError is null ? "activ" : "eroare") : "oprit")</span>
+                        <span class="ms-2">ultimul succes: @(st.LastSuccessUtc is { } ls ? KasaMonitor.Web.Ui.UiFormat.RelativeRo(ls, DateTimeOffset.UtcNow) : "—")</span>
+                        <span class="ms-2">trimise: @st.SentSamples.ToString("N0")</span>
+                        <span class="ms-2">pierdute: @st.DroppedSamples.ToString("N0")</span>
+                        <span class="ms-2">eșecuri: @st.Failures.ToString("N0")</span>
+                        <span class="ms-2">în coadă: @st.Buffered.ToString("N0")</span>
+                        @if (st.LastError is not null) { <div class="text-danger mt-1">@st.LastError</div> }
+                    </div>
+                    <div class="form-text">
+                        Trimite doar eșantioanele scrise și în baza de date (la schimbare &gt; 1 W și &gt; 1 % sau o dată pe minut), cu ora reală a
+                        eșantionului: <code>kasa_live_power_w</code>, iar unde există și <code>kasa_live_voltage_v</code>, <code>kasa_live_current_a</code>,
+                        <code>kasa_live_power_factor</code>. Prometheus trebuie pornit cu <code>--web.enable-remote-write-receiver</code>. Coada ține
+                        cel mult 5 minute; ce e mai vechi se pierde (contorul „pierdute”).
                     </div>
                 </div>
             </div>
@@ -128,11 +215,18 @@ else
             </div>
         </div>
 
-        @if (_pendingPlan is { } plan)
+        @if (_pendingPlan is not null || _pendingLivePlan is not null)
         {
             <div class="col-12">
                 <div class="alert alert-warning mb-0">
-                    <p class="mb-2"><i class="bi bi-exclamation-triangle-fill me-2"></i>Se vor șterge <b>@plan.RowsToDelete.ToString("N0")</b> citiri mai vechi de <b>@plan.CutoffUtc!.Value.ToLocalTime().ToString("yyyy-MM-dd HH:mm")</b>. Confirmi?</p>
+                    @if (_pendingPlan is { NeedsConfirmation: true } plan)
+                    {
+                        <p class="mb-2"><i class="bi bi-exclamation-triangle-fill me-2"></i>Se vor șterge <b>@plan.RowsToDelete.ToString("N0")</b> citiri mai vechi de <b>@plan.CutoffUtc!.Value.ToLocalTime().ToString("yyyy-MM-dd HH:mm")</b>. Confirmi?</p>
+                    }
+                    @if (_pendingLivePlan is { NeedsConfirmation: true } live)
+                    {
+                        <p class="mb-2"><i class="bi bi-exclamation-triangle-fill me-2"></i>Se vor șterge <b>@live.RowsToDelete.ToString("N0")</b> eșantioane brute ale fluxului live mai vechi de <b>@live.CutoffUtc!.Value.ToLocalTime().ToString("yyyy-MM-dd HH:mm")</b> (mediile pe minut rămân). Confirmi?</p>
+                    }
                     <button class="btn btn-danger btn-sm me-2" @onclick="ConfirmAsync" disabled="@_deleting">
                         <i class="bi bi-trash me-1"></i>@(_deleting ? "Se șterge…" : "Da, salvează și șterge")
                     </button>
@@ -143,11 +237,11 @@ else
         }
 
         <div class="col-12 d-flex align-items-center gap-3">
-            <button class="btn btn-primary" @onclick="SaveAsync" disabled="@(_pendingPlan is not null)"><i class="bi bi-save me-1"></i>Salvează</button>
+            <button class="btn btn-primary" @onclick="SaveAsync" disabled="@(_pendingPlan is not null || _pendingLivePlan is not null)"><i class="bi bi-save me-1"></i>Salvează</button>
             @if (_saved) { <span class="text-success"><i class="bi bi-check-circle me-1"></i>Salvat.@(_deletedMessage is null ? "" : " " + _deletedMessage)</span> }
             @if (_error is not null) { <span class="text-danger"><i class="bi bi-x-circle me-1"></i>@_error</span> }
         </div>
-        <div class="col-12 form-text">Setările de descoperire, contul TP-Link, setările Shelly și retenția se aplică fără repornire (la următorul ciclu).</div>
+        <div class="col-12 form-text">Setările de descoperire, contul TP-Link, setările Shelly, fluxul live și retenția se aplică fără repornire (la următorul ciclu; fluxul în ≤ 10 s).</div>
     </div>
 }
 
@@ -171,7 +265,20 @@ else
     private bool _hasShellyPassword;
     private bool _clearShellyPassword;
     private string _shellyProbeHosts = "";
+    private bool _meterStream;
+    private int _meterInterval;
+    private int _meterRetentionDays;
+    private bool _allowRelay;
+    private int _burstW;
+    private bool _rwEnabled;
+    private string _rwUrl = "";
+    private string _rwUser = "";
+    private string _rwPassword = "";
+    private bool _hasRwAuth;
+    private bool _clearRwAuth;
+    private System.Threading.Timer? _statusTimer;
     private RetentionPlan? _pendingPlan;
+    private RetentionPlan? _pendingLivePlan;
     private bool _deleting;
     private string? _deletedMessage;
 
@@ -179,7 +286,11 @@ else
     {
         await LoadAsync();
         _loading = false;
+        // Remote write status (sent / dropped / last success) refreshed every 5 s.
+        _statusTimer = new System.Threading.Timer(_ => InvokeAsync(StateHasChanged), null, 5000, 5000);
     }
+
+    public void Dispose() => _statusTimer?.Dispose();
 
     private async Task LoadAsync()
     {
@@ -207,6 +318,17 @@ else
         _shellyPassword = "";
         _clearShellyPassword = false;
         _shellyProbeHosts = s.ShellyProbeHosts;
+        _meterStream = s.LiveStreamEnabled;
+        _meterInterval = s.LiveStreamIntervalSeconds;
+        _meterRetentionDays = s.LiveRawRetentionDays;
+        _allowRelay = s.AllowRelayControl;
+        _burstW = s.LiveBurstTriggerW;
+        _rwEnabled = s.RemoteWriteEnabled;
+        _rwUrl = s.RemoteWriteUrl;
+        _hasRwAuth = s.HasRemoteWriteAuth;
+        _rwUser = "";
+        _rwPassword = "";
+        _clearRwAuth = false;
     }
 
     private async Task SaveAsync()
@@ -227,34 +349,48 @@ else
         }
         _retentionMonths = Math.Clamp(_retentionMonths, 0, KasaSettingsService.MaxRetentionMonths);
 
-        // Ask before anything is saved when the new retention would delete existing readings.
+        _meterRetentionDays = Math.Clamp(_meterRetentionDays, 0, KasaSettingsService.MaxLiveRetentionDays);
+
+        // Ask before anything is saved when a new retention would delete existing readings or live samples.
         var plan = await Retention.PlanAsync(_retentionMonths, CancellationToken.None);
-        if (plan.NeedsConfirmation)
+        var live = await Retention.PlanLiveRawAsync(_meterRetentionDays, CancellationToken.None);
+        if (plan.NeedsConfirmation || live.NeedsConfirmation)
         {
             _pendingPlan = plan;
+            _pendingLivePlan = live;
             return;
         }
         await SaveCoreAsync();
     }
 
-    private void CancelConfirm() => _pendingPlan = null;
+    private void CancelConfirm()
+    {
+        _pendingPlan = null;
+        _pendingLivePlan = null;
+    }
 
     private async Task ConfirmAsync()
     {
-        if (_pendingPlan is not { } plan) return;
+        if (_pendingPlan is not { } plan || _pendingLivePlan is not { } live) return;
         _retentionMonths = plan.Months;
+        _meterRetentionDays = live.Months;
         _deleting = true;
         StateHasChanged();
         try
         {
             if (!await SaveSettingsAsync()) return;
-            var deleted = await Retention.ApplyAsync(plan.Months, CancellationToken.None);
-            _deletedMessage = $"Au fost șterse {deleted:N0} citiri.";
+            var parts = new List<string>();
+            if (plan.NeedsConfirmation)
+                parts.Add($"{await Retention.ApplyAsync(plan.Months, CancellationToken.None):N0} citiri");
+            if (live.NeedsConfirmation)
+                parts.Add($"{await Retention.ApplyLiveRawAsync(live.Months, CancellationToken.None):N0} eșantioane brute");
+            _deletedMessage = $"Au fost șterse {string.Join(" și ", parts)}.";
         }
         finally
         {
             _deleting = false;
             _pendingPlan = null;
+            _pendingLivePlan = null;
         }
         await AfterSaveAsync();
     }
@@ -275,7 +411,18 @@ else
                 ShellyDiscoveryEnabled: _shellyDiscovery,
                 ShellyProbeHosts: _shellyProbeHosts,
                 NewShellyPassword: _shellyPassword,
-                ClearShellyPassword: _clearShellyPassword), CancellationToken.None);
+                ClearShellyPassword: _clearShellyPassword,
+                LiveStreamEnabled: _meterStream,
+                LiveStreamIntervalSeconds: _meterInterval,
+                LiveRawRetentionDays: _meterRetentionDays,
+                AllowRelayControl: _allowRelay,
+                LiveBurstTriggerW: _burstW,
+                RemoteWriteEnabled: _rwEnabled,
+                RemoteWriteUrl: _rwUrl,
+                NewRemoteWriteUser: _rwUser,
+                NewRemoteWritePassword: _rwPassword,
+                ClearRemoteWriteAuth: _clearRwAuth), CancellationToken.None);
+            await RemoteWriter.RefreshSettingsAsync(CancellationToken.None);
         }
         catch (FormatException ex)
         {

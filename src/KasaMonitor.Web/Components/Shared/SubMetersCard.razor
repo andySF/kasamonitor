@@ -1,0 +1,42 @@
+@inject ILiveStreamBroadcaster Stream
+@inject IPlugStateBroadcaster States
+@implements IDisposable
+
+@* Sub-meters of /contor: the 1-second stream when fresh, otherwise the 10 s poll; refreshes itself every 2 s. *@
+<div class="card mt-3">
+    <div class="card-header fw-semibold"><i class="bi bi-speedometer me-2"></i>Sub-contoare</div>
+    <div class="table-responsive">
+        <table class="table table-sm align-middle mb-0">
+            <thead class="table-light"><tr><th>Alias</th><th class="text-end">Putere</th><th class="text-end">Tensiune</th><th class="text-end">Curent</th><th>Sursa</th></tr></thead>
+            <tbody>
+                @foreach (var sub in _subMeters)
+                {
+                    var sample = Stream.Latest(sub.Id) is { } s && DateTimeOffset.UtcNow - s.TsUtc <= TimeSpan.FromSeconds(5) ? s : null;
+                    var reading = States.Snapshot().GetValueOrDefault(sub.Id)?.LastReading;
+                    var w = sample?.PowerW ?? reading?.PowerMw / 1000.0;
+                    var v = sample?.VoltageV ?? reading?.VoltageMv / 1000.0;
+                    var a = sample?.CurrentA ?? reading?.CurrentMa / 1000.0;
+                    <tr>
+                        <td><a href="/history?plugId=@sub.Id">@sub.Alias</a></td>
+                        <td class="text-end">@(w is { } x ? x.ToString("0") + " W" : "—")</td>
+                        <td class="text-end">@(v is { } y ? y.ToString("0.0") + " V" : "—")</td>
+                        <td class="text-end">@(a is { } z ? z.ToString("0.00") + " A" : "—")</td>
+                        <td class="small text-secondary">@(sample is not null ? "flux 1 s" : reading is not null ? "10 s" : "—")</td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </div>
+</div>
+
+@code {
+    [Parameter, EditorRequired] public IReadOnlyList<Plug> Meters { get; set; } = Array.Empty<Plug>();
+
+    private IReadOnlyList<Plug> _subMeters => Meters;
+    private System.Threading.Timer? _timer;
+
+    protected override void OnInitialized() =>
+        _timer = new System.Threading.Timer(_ => InvokeAsync(StateHasChanged), null, 2000, 2000);
+
+    public void Dispose() => _timer?.Dispose();
+}

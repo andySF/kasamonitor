@@ -60,6 +60,54 @@ public static class DigestAuth
         return sb.ToString();
     }
 
+    /// <summary>Challenge of Shelly RPC over WebSocket: carried as JSON in the <c>message</c> of an RPC error with code 401.</summary>
+    public sealed record WsChallenge(string Realm, long Nonce, long Nc, string Algorithm);
+
+    /// <summary>
+    /// Parses <c>{"auth_type":"digest","nonce":1625038762,"nc":1,"realm":"shellypro4pm-…","algorithm":"SHA-256"}</c>
+    /// (Shelly Gen2+ docs, "Authentication" over WebSocket); null when it is not a usable digest challenge.
+    /// </summary>
+    public static WsChallenge? ParseWsChallenge(string? message)
+    {
+        if (string.IsNullOrWhiteSpace(message)) return null;
+        try
+        {
+            using var doc = System.Text.Json.JsonDocument.Parse(message);
+            var root = doc.RootElement;
+            if (root.ValueKind != System.Text.Json.JsonValueKind.Object) return null;
+            var realm = ShellyJson.Str(root, "realm");
+            var nonce = ShellyJson.Num(root, "nonce");
+            var algorithm = ShellyJson.Str(root, "algorithm") ?? "SHA-256";
+            if (realm is null || nonce is null || !IsSupported(algorithm)) return null;
+            return new WsChallenge(realm, (long)nonce.Value, (long)(ShellyJson.Num(root, "nc") ?? 1), algorithm);
+        }
+        catch (System.Text.Json.JsonException)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// The <c>auth</c> object added to every RPC frame after a WebSocket challenge:
+    /// response = H(H(user:realm:password) ":" nonce ":" nc ":" cnonce ":auth:" H("dummy_method:dummy_uri")).
+    /// </summary>
+    public static Dictionary<string, object> BuildWsAuth(WsChallenge c, string user, string password, long? cnonce = null)
+    {
+        var cn = cnonce ?? (long)(BitConverter.ToUInt32(RandomNumberGenerator.GetBytes(4)) & 0x7FFFFFFF);
+        var ha1 = Hash(c.Algorithm, $"{user}:{c.Realm}:{password}");
+        var ha2 = Hash(c.Algorithm, "dummy_method:dummy_uri");
+        var response = Hash(c.Algorithm, $"{ha1}:{c.Nonce}:{c.Nc}:{cn}:auth:{ha2}");
+        return new Dictionary<string, object>
+        {
+            ["realm"] = c.Realm,
+            ["username"] = user,
+            ["nonce"] = c.Nonce,
+            ["cnonce"] = cn,
+            ["response"] = response,
+            ["algorithm"] = c.Algorithm,
+        };
+    }
+
     private static string Hash(string algorithm, string text)
     {
         var bytes = Encoding.UTF8.GetBytes(text);

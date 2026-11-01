@@ -13,6 +13,9 @@ public sealed class KasaDbContext : DbContext
     public DbSet<DailyEnergyEntity> DailyEnergies => Set<DailyEnergyEntity>();
     public DbSet<MonthlyEnergyEntity> MonthlyEnergies => Set<MonthlyEnergyEntity>();
     public DbSet<SettingEntity> Settings => Set<SettingEntity>();
+    public DbSet<LiveSampleEntity> LiveSamples => Set<LiveSampleEntity>();
+    public DbSet<LiveMinuteAggregateEntity> LiveMinuteAggregates => Set<LiveMinuteAggregateEntity>();
+    public DbSet<RelayCommandEntity> RelayCommands => Set<RelayCommandEntity>();
 
     public KasaDbContext(DbContextOptions<KasaDbContext> options) : base(options) { }
 
@@ -25,6 +28,8 @@ public sealed class KasaDbContext : DbContext
             // Identity of a plug: MAC + measured channel (multi-channel Shelly meters). Existing rows migrate to channel 0.
             e.HasIndex(p => new { p.Mac, p.Channel }).IsUnique();
             e.Property(p => p.Protocol).HasDefaultValue("legacy");
+            // At most one main meter (Role = 1) per installation, enforced by the database as well.
+            e.HasIndex(p => p.Role).IsUnique().HasFilter("\"Role\" = 1").HasDatabaseName("IX_Plugs_SingleMainMeter");
         });
 
         var dateTimeOffsetConverter = new ValueConverter<DateTimeOffset, long>(
@@ -72,6 +77,29 @@ public sealed class KasaDbContext : DbContext
         {
             e.ToTable("Settings");
             e.HasKey(s => s.Key);
+        });
+
+        // Live stream: raw rows on change (retention LiveRawRetentionDays) and minute aggregates (kept forever).
+        mb.Entity<LiveSampleEntity>(e =>
+        {
+            e.ToTable("LiveSamples");
+            e.HasKey(s => s.Id);
+            e.Property(s => s.Id).ValueGeneratedOnAdd();
+            e.HasIndex(s => new { s.PlugId, s.Ts }).HasDatabaseName("IX_LiveSamples_PlugId_Ts");
+        });
+
+        mb.Entity<LiveMinuteAggregateEntity>(e =>
+        {
+            e.ToTable("LiveMinuteAggregates");
+            e.HasKey(a => new { a.PlugId, a.MinuteTs });
+        });
+
+        mb.Entity<RelayCommandEntity>(e =>
+        {
+            e.ToTable("RelayCommands");
+            e.HasKey(r => r.Id);
+            e.Property(r => r.Id).ValueGeneratedOnAdd();
+            e.HasIndex(r => new { r.PlugId, r.Ts });
         });
     }
 }

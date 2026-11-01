@@ -7,6 +7,7 @@
 @inject IKasaSettingsService KasaSettings
 @inject DeviceDetailsService Details
 @inject IServiceScopeFactory ScopeFactory
+@inject ILiveStreamBroadcaster MeterStream
 @implements IDisposable
 
 <PageTitle>KasaMonitor — Dashboard</PageTitle>
@@ -15,7 +16,7 @@
     <h1 class="h3 mb-0"><i class="bi bi-speedometer2 me-2"></i>Dashboard</h1>
     <div class="d-flex flex-wrap gap-2">
         <div class="card px-3 py-2 text-center">
-            <div class="small text-secondary" title="Suma prizelor; contoarele de energie (Shelly EM) nu intră în total">Putere acum</div>
+            <div class="small text-secondary" title="Suma prizelor (rol „priză”); contoarele (contor general, sub-contoare) nu intră în total">Putere acum</div>
             <div class="fs-5 fw-semibold"><i class="bi bi-lightning-charge text-warning"></i> @TotalPowerW.ToString("0") W</div>
             <div class="small text-secondary">@EnergyFormat.Lei(HourlyCostRon)/h</div>
         </div>
@@ -31,6 +32,29 @@
         </div>
     </div>
 </div>
+
+@if (MainState is { } main)
+{
+    var mainW = KasaMonitor.Core.Metering.HouseBalance.MainW(main, MeterStream.Latest(main.PlugId), _now, LiveMaxAge);
+    var restW = KasaMonitor.Core.Metering.HouseBalance.RestW(mainW, _states.Values);
+    <div class="card mb-3 border-start border-4 @(main.IsOnline ? "border-primary" : "border-danger")">
+        <div class="card-body d-flex flex-wrap align-items-center gap-4">
+            <div>
+                <a class="h5 text-decoration-none text-body mb-0" href="/contor" title="Pagina Contor"><i class="bi bi-house-door me-2"></i>Casă</a>
+                <div class="small text-secondary">@main.Alias</div>
+            </div>
+            <div>
+                <div class="small text-secondary">Putere acum</div>
+                <div class="fs-4 fw-semibold">@(mainW is { } w ? w.ToString("0") + " W" : "—")</div>
+            </div>
+            <div title="Puterea contorului general minus prizele online">
+                <div class="small text-secondary">Restul casei</div>
+                <div class="fs-4 fw-semibold">@(restW is { } r ? r.ToString("0") + " W" : "—")</div>
+            </div>
+            <div class="ms-auto"><RelaySwitch PlugId="main.PlugId" /></div>
+        </div>
+    </div>
+}
 
 @if (_states.Count == 0)
 {
@@ -52,6 +76,10 @@ else
                         <div class="mb-2">
                             @if (!string.IsNullOrEmpty(s.Model)) { <span class="badge text-bg-light border me-1">@s.Model</span> }
                             <span class="badge @UiFormat.ProtocolBadge(s.Protocol)">@s.Protocol</span>
+                            @if (s.Role != PlugRole.Plug)
+                            {
+                                <span class="badge text-bg-info" title="@PlugRoles.Description(s.Role)"><i class="bi @PlugRoles.Icon(s.Role) me-1"></i>@PlugRoles.Name(s.Role)</span>
+                            }
                         </div>
                         @if (s.LastReading is not null)
                         {
@@ -59,7 +87,7 @@ else
                                 @((s.LastReading.PowerMw / 1000.0).ToString("0.0")) W
                                 @if (s.Protocol == PlugProtocols.ShellyRpc && s.LastReading.PowerMw < ReversedBelowMw)
                                 {
-                                    <span class="badge text-bg-warning fs-6 align-middle" title="Putere negativă: clema e montată invers (sau energia e livrată în rețea). Se poate corecta din aplicația Shelly (reverse); KasaMonitor doar citește.">inversat?</span>
+                                    <span class="badge text-bg-warning fs-6 align-middle" title="Putere negativă: clema e montată invers (sau energia e livrată în rețea). Se poate corecta din aplicația Shelly (reverse); KasaMonitor nu schimbă configurația.">inversat?</span>
                                 }
                             </div>
                             <div class="small text-secondary">
@@ -145,14 +173,17 @@ else
     private const long ReversedBelowMw = -10_000;
 
     private const string DayCountersNote =
-        "Suma contoarelor de azi / din lună raportate de prize (Kasa, Tapo). Prizele Shelly nu au astfel de contoare în dispozitiv și nu sunt incluse aici (istoricul lor zilnic e în History); contoarele de energie (Shelly EM) nu intră în totaluri.";
+        "Suma contoarelor de azi / din lună raportate de prize (Kasa, Tapo). Prizele Shelly nu au astfel de contoare în dispozitiv și nu sunt incluse aici (istoricul lor zilnic e în History); contoarele (rol contor general / sub-contor) nu intră în totaluri.";
 
-    /// <summary>Plugs that count towards the header totals: energy meters (Shelly EM) already include them.</summary>
-    private IEnumerable<PlugLiveState> Counted => _states.Values.Where(s => PlugChannel.CountsInTotals(s.Model));
+    /// <summary>A 1-second sample of the main meter older than this is ignored (the 10 s poll is shown instead).</summary>
+    private static readonly TimeSpan LiveMaxAge = TimeSpan.FromSeconds(5);
 
-    private double TotalPowerW => Counted
-        .Where(s => s.IsOnline && s.LastReading is not null)
-        .Sum(s => s.LastReading!.PowerMw / 1000.0);
+    /// <summary>Plugs that count towards the header totals (role Plug): meters already include them.</summary>
+    private IEnumerable<PlugLiveState> Counted => _states.Values.Where(s => PlugRoles.CountsInTotals(s.Role));
+
+    private PlugLiveState? MainState => _states.Values.FirstOrDefault(s => s.Role == PlugRole.MainMeter);
+
+    private double TotalPowerW => KasaMonitor.Core.Metering.HouseBalance.PlugsW(_states.Values);
 
     private KasaMonitor.Core.Costing.TariffCalculator _tariff = null!;
     private int _ticks;

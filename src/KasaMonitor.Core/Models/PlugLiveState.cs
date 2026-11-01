@@ -9,7 +9,8 @@ public sealed record PlugLiveState(
     DateTimeOffset LastSampleUtc,
     string Model = "",
     string Protocol = PlugProtocols.Legacy,
-    int Channel = 0
+    int Channel = 0,
+    PlugRole Role = PlugRole.Plug
 )
 {
     /// <summary>Value of the <c>mac</c> metric label: the MAC for channel 0, "&lt;mac&gt;-&lt;channel&gt;" otherwise.</summary>

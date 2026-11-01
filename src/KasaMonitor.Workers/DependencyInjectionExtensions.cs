@@ -12,8 +12,11 @@ public static class DependencyInjectionExtensions
         services.AddScoped<ISampleRepository, SampleRepository>();
         services.AddScoped<IHistoryRepository, HistoryRepository>();
         services.AddScoped<ISettingsRepository, SettingsRepository>();
+        services.AddScoped<ILiveRepository, LiveRepository>();
 
         services.AddSingleton<IPlugStateBroadcaster, PlugStateBroadcaster>();
+        services.AddSingleton<ILiveStreamBroadcaster>(sp => new LiveStreamBroadcaster(
+            sp.GetService<Microsoft.Extensions.Logging.ILogger<LiveStreamBroadcaster>>()));
         services.AddSingleton<IPlugDiscoveredChannel, PlugDiscoveredChannel>();
         services.AddSingleton<IKasaSettingsService, KasaSettingsService>();
         services.AddSingleton<ReadingsRetentionService>(sp => new ReadingsRetentionService(

@@ -83,6 +83,9 @@ public sealed class TapoClient : ITapoClient
 
     private readonly System.Collections.Concurrent.ConcurrentDictionary<string, bool> _noEmeterData = new();
 
+    public async Task<EmeterReading> GetLivePowerAsync(IPAddress ip, string protocol, TapoCredentials credentials, CancellationToken ct) =>
+        SmartMessages.MapEnergyUsage(await CallAsync(ip, protocol, credentials, "get_energy_usage", ct));
+
     public async Task<IReadOnlyList<DailyKwh>> GetDailyEnergyAsync(IPAddress ip, string protocol, TapoCredentials credentials,
         DateOnly firstDay, DateOnly lastDay, DateOnly today, TimeZoneInfo tz, CancellationToken ct)
     {

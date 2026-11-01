@@ -39,8 +39,10 @@ builder.Services.AddSingleton<IKasaClient, KasaClient>();
 builder.Services.AddSingleton<ISmartTransport>(_ => new KlapTransport(TimeSpan.FromSeconds(5)));
 builder.Services.AddSingleton<ISmartTransport>(_ => new AesTransport(TimeSpan.FromSeconds(5)));
 builder.Services.AddSingleton<ITapoClient>(sp => new TapoClient(sp.GetServices<ISmartTransport>()));
-// Shelly Gen2/Gen3 JSON-RPC over HTTP, read-only; 3 s per request (polling), 1 s for discovery probes.
+// Shelly Gen2/Gen3 JSON-RPC over HTTP: reads, plus Switch.Set (relay, UI only); 3 s per request (polling), 1 s for discovery probes.
 builder.Services.AddSingleton<IShellyClient>(_ => new ShellyClient(TimeSpan.FromSeconds(3)));
+// Live stream (1 s main meter, 1-10 s plugs): one persistent WebSocket per streamed Shelly device.
+builder.Services.AddSingleton<IShellyRpcSocketFactory, ShellyRpcSocketFactory>();
 builder.Services.AddKasaWorkers();
 
 // DataProtection protects the TP-Link password stored in the Settings table. The key ring lives next to the
@@ -66,7 +68,16 @@ builder.Services.AddSingleton(new KasaSettingsDefaults(
     TariffRonPerKwh: tariff,
     ShellyDiscoveryEnabled: builder.Configuration.GetValue("KasaMonitor:ShellyDiscoveryEnabled", true),
     ShellyPassword: builder.Configuration["KasaMonitor:ShellyPassword"],
-    ShellyProbeHosts: builder.Configuration["KasaMonitor:ShellyProbeHosts"] ?? ""));
+    ShellyProbeHosts: builder.Configuration["KasaMonitor:ShellyProbeHosts"] ?? "",
+    LiveStreamEnabled: builder.Configuration.GetValue("KasaMonitor:LiveStreamEnabled", true),
+    LiveStreamIntervalSeconds: builder.Configuration.GetValue("KasaMonitor:LiveStreamIntervalSeconds", 1),
+    LiveRawRetentionDays: builder.Configuration.GetValue("KasaMonitor:LiveRawRetentionDays", 30),
+    AllowRelayControl: builder.Configuration.GetValue("KasaMonitor:AllowRelayControl", true),
+    LiveBurstTriggerW: builder.Configuration.GetValue("KasaMonitor:LiveBurstTriggerW", KasaSettingsDefaults.DefaultLiveBurstTriggerW),
+    RemoteWriteEnabled: builder.Configuration.GetValue("KasaMonitor:RemoteWriteEnabled", false),
+    RemoteWriteUrl: builder.Configuration["KasaMonitor:RemoteWriteUrl"] ?? "",
+    RemoteWriteUser: builder.Configuration["KasaMonitor:RemoteWriteUser"],
+    RemoteWritePassword: builder.Configuration["KasaMonitor:RemoteWritePassword"]));
 
 var pollIntervalSec = builder.Configuration.GetValue("KasaMonitor:PollIntervalSeconds", 10);
 
@@ -111,7 +122,34 @@ builder.Services.AddHostedService(sp => new RollupWorker(
     sp.GetRequiredService<ReadingsRetentionService>(),
     sp.GetRequiredService<IKasaSettingsService>()));
 
+builder.Services.AddSingleton(sp => new LiveStreamWorker(
+    sp.GetRequiredService<IServiceScopeFactory>(),
+    sp.GetRequiredService<IKasaSettingsService>(),
+    sp.GetRequiredService<ILiveStreamBroadcaster>(),
+    sp.GetRequiredService<IShellyRpcSocketFactory>(),
+    sp.GetRequiredService<IKasaClient>(),
+    sp.GetRequiredService<ITapoClient>(),
+    sp.GetRequiredService<ILogger<LiveStreamWorker>>()));
+builder.Services.AddHostedService(sp => sp.GetRequiredService<LiveStreamWorker>());
+
+// Prometheus remote write of the live samples (kasa_live_*), off by default (/settings → Integrare).
+builder.Services.AddSingleton(sp => new PrometheusRemoteWriter(
+    sp.GetRequiredService<IServiceScopeFactory>(),
+    sp.GetRequiredService<IKasaSettingsService>(),
+    sp.GetRequiredService<ILiveStreamBroadcaster>(),
+    sp.GetRequiredService<ILogger<PrometheusRemoteWriter>>()));
+builder.Services.AddHostedService(sp => sp.GetRequiredService<PrometheusRemoteWriter>());
+
 builder.Services.AddHostedService<KasaMetrics>();
+
+// The only write to a device: Shelly Switch.Set, after a confirmation in the UI (setting AllowRelayControl).
+builder.Services.AddSingleton(sp => new RelayControlService(
+    sp.GetRequiredService<IShellyClient>(),
+    sp.GetRequiredService<IServiceScopeFactory>(),
+    sp.GetRequiredService<IKasaSettingsService>(),
+    sp.GetRequiredService<ILiveStreamBroadcaster>(),
+    sp.GetRequiredService<IPlugStateBroadcaster>(),
+    sp.GetRequiredService<ILogger<RelayControlService>>()));
 
 builder.Services.AddSingleton(sp => new DeviceDetailsService(
     sp.GetRequiredService<IKasaClient>(),
@@ -123,6 +161,7 @@ builder.Services.AddSingleton<KasaMonitor.Web.Diagnostics.ClientErrorEndpoint>()
 builder.Services.AddSingleton<PrometheusTargetsChecker>();
 
 var app = builder.Build();
+RemoteWriteMetrics.Register(app.Services.GetRequiredService<PrometheusRemoteWriter>());
 
 using (var scope = app.Services.CreateScope())
 {

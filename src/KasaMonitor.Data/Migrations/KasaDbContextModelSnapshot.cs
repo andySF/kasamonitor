@@ -33,6 +33,75 @@ namespace KasaMonitor.Data.Migrations
                     b.ToTable("DailyEnergy", (string)null);
                 });
 
+            modelBuilder.Entity("KasaMonitor.Data.Entities.LiveMinuteAggregateEntity", b =>
+                {
+                    b.Property<Guid>("PlugId")
+                        .HasColumnType("TEXT");
+
+                    b.Property<long>("MinuteTs")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<double?>("AvgVoltageV")
+                        .HasColumnType("REAL");
+
+                    b.Property<double>("AvgW")
+                        .HasColumnType("REAL");
+
+                    b.Property<double>("CoveredSeconds")
+                        .HasColumnType("REAL");
+
+                    b.Property<double>("EnergyWh")
+                        .HasColumnType("REAL");
+
+                    b.Property<double>("MaxW")
+                        .HasColumnType("REAL");
+
+                    b.Property<double>("MinW")
+                        .HasColumnType("REAL");
+
+                    b.Property<int>("SampleCount")
+                        .HasColumnType("INTEGER");
+
+                    b.HasKey("PlugId", "MinuteTs");
+
+                    b.ToTable("LiveMinuteAggregates", (string)null);
+                });
+
+            modelBuilder.Entity("KasaMonitor.Data.Entities.LiveSampleEntity", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("INTEGER");
+
+                    b.Property<double?>("ApparentVa")
+                        .HasColumnType("REAL");
+
+                    b.Property<double?>("CurrentA")
+                        .HasColumnType("REAL");
+
+                    b.Property<double?>("Pf")
+                        .HasColumnType("REAL");
+
+                    b.Property<Guid>("PlugId")
+                        .HasColumnType("TEXT");
+
+                    b.Property<double>("PowerW")
+                        .HasColumnType("REAL");
+
+                    b.Property<long>("Ts")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<double?>("VoltageV")
+                        .HasColumnType("REAL");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("PlugId", "Ts")
+                        .HasDatabaseName("IX_LiveSamples_PlugId_Ts");
+
+                    b.ToTable("LiveSamples", (string)null);
+                });
+
             modelBuilder.Entity("KasaMonitor.Data.Entities.MonthlyEnergyEntity", b =>
                 {
                     b.Property<Guid>("PlugId")
@@ -159,6 +228,12 @@ namespace KasaMonitor.Data.Migrations
                         .HasColumnType("TEXT")
                         .HasDefaultValue("legacy");
 
+                    b.Property<int>("Role")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<bool>("StreamEnabled")
+                        .HasColumnType("INTEGER");
+
                     b.Property<string>("SwVer")
                         .IsRequired()
                         .HasColumnType("TEXT");
@@ -168,10 +243,45 @@ namespace KasaMonitor.Data.Migrations
 
                     b.HasKey("Id");
 
+                    b.HasIndex("Role")
+                        .IsUnique()
+                        .HasDatabaseName("IX_Plugs_SingleMainMeter")
+                        .HasFilter("\"Role\" = 1");
+
                     b.HasIndex("Mac", "Channel")
                         .IsUnique();
 
                     b.ToTable("Plugs", (string)null);
+                });
+
+            modelBuilder.Entity("KasaMonitor.Data.Entities.RelayCommandEntity", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("INTEGER");
+
+                    b.Property<bool>("On")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<Guid>("PlugId")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("Result")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("Source")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<long>("Ts")
+                        .HasColumnType("INTEGER");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("PlugId", "Ts");
+
+                    b.ToTable("RelayCommands", (string)null);
                 });
 
             modelBuilder.Entity("KasaMonitor.Data.Entities.SampleEntity", b =>

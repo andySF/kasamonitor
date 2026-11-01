@@ -2,11 +2,11 @@
 
 Self-hosted monitoring for TP-Link smart plugs with energy metering: **Kasa** (e.g. KP115, legacy XOR protocol on
 port 9999) and **Tapo** (e.g. P110/P115, KLAP and AES "securePassthrough" protocols), plus **Shelly Gen2/Gen3**
-plugs and energy meters (e.g. Shelly EM Gen3, local JSON-RPC, read-only). Blazor Server app (.NET 10)
+plugs and energy meters (e.g. Shelly EM Gen3, local JSON-RPC; the only write is the relay switch, after a confirmation). Blazor Server app (.NET 10)
 with SQLite, a web UI on port 8910 and a Prometheus `/metrics` endpoint. An optional Prometheus + Grafana stack
 with a ready-made dashboard and alert rules is included.
 
-Version: **0.3.0** (`Directory.Build.props`). Docker image: `duobit/kasamonitor`.
+Version: **0.4.0** (`Directory.Build.props`). Docker image: `duobit/kasamonitor`.
 
 ## Quick start
 
@@ -42,6 +42,12 @@ TP-Link (Tapo app) account in `/settings` and press **Scanează acum** on `/plug
 - **Device details** (Dashboard, "Details" on a plug card): settings read from the plug on demand (cached 60 s) —
   relay, uptime, default state after power loss, LED, auto-off / countdown, power protection, Wi-Fi signal, firmware,
   device time, cloud, schedules. Read-only; see `docs/device-api-capabilities.md` for everything the local APIs offer.
+- **Roles** (`/plugs`): every channel is a *plug* (counts in the totals), the *main meter* of the house (one per
+  installation) or a *sub-meter*. See [Roles, live stream, Contor page, relay](#roles-live-stream-contor-page-relay).
+- **Live stream**: the main meter every second, plugs (Shelly, Kasa, Tapo) every 1–10 s (adaptive), raw rows only on
+  change; minute aggregates from every reading.
+- **Contor page** (`/contor`): the house in real time (1 s), rest of the house, today per minute, energy per day, relay.
+- **Version in the menu**: „v0.4.0” at the right of the navigation bar; the tooltip shows the commit and the build time.
 - **Browser errors in the server log**: JavaScript errors and the Blazor error banner are reported to
   `POST /api/client-error` and logged at Warning (category `KasaMonitor.ClientErrors`), so `docker logs` shows them.
 
@@ -66,6 +72,14 @@ not been saved from `/settings`.
 | Shelly discovery | `KasaMonitor__ShellyDiscoveryEnabled` | `true` | mDNS `_shelly._tcp.local` + the probe hosts below |
 | Shelly password | `KasaMonitor__ShellyPassword` | — | optional; admin password of Shelly devices with authentication on (digest auth, user `admin`); stored encrypted like the TP-Link password |
 | Shelly probe hosts | `KasaMonitor__ShellyProbeHosts` | — | optional; comma-separated IPs, ranges (`192.168.1.10-20`) or CIDR (`/22`–`/32`, max. 1024 addresses), each probed with `Shelly.GetDeviceInfo` (1 s) on every discovery |
+| Live stream | `KasaMonitor__LiveStreamEnabled` | `true` | stream of the channels ticked „flux 1 s” on `/plugs` |
+| Live stream base interval (s) | `KasaMonitor__LiveStreamIntervalSeconds` | `1` | minimum 1; the main meter's interval, the plugs' fastest (they slow down to 10 s when quiet) |
+| Keep raw live samples (days) | `KasaMonitor__LiveRawRetentionDays` | `30` | `0` = unlimited; the minute aggregates are never deleted; a smaller value asks for confirmation |
+| Allow relay control | `KasaMonitor__AllowRelayControl` | `true` | shows the Shelly relay switch (`Switch.Set`); off = hidden and refused. No authentication in KasaMonitor: LAN only |
+| Burst trigger (W) | `KasaMonitor__LiveBurstTriggerW` | `50` | jump of the main meter between two readings that sends every plug back to 1 s for 60 s |
+| Remote write | `KasaMonitor__RemoteWriteEnabled` | `false` | Prometheus remote write of the live samples (`kasa_live_*`) |
+| Remote write URL | `KasaMonitor__RemoteWriteUrl` | — | e.g. `http://192.168.1.10:9090/api/v1/write` |
+| Remote write user / password | `KasaMonitor__RemoteWriteUser`, `KasaMonitor__RemoteWritePassword` | — | optional basic auth; stored encrypted |
 | Keep raw readings (months) | `KasaMonitor__ReadingsRetentionMonths` | `0` = unlimited | raw 10-second readings only; daily history and minute aggregates are never deleted. Saving a value that would delete existing readings asks for confirmation with the exact row count |
 | — | `KasaMonitor__DbPath` | `/data/kasa.db` (image) | |
 
@@ -129,9 +143,11 @@ job; import `kasamonitor.json` and choose your data source (or give it the uid `
 
 ### Dashboard
 
-Stat panels (power now, plugs online/total, energy and cost for 24 h and 30 days), a table per plug (online, relay,
+Stat panels (power now, plugs online/total, energy and cost for 24 h and 30 days, all on `role="plug"`), a table per plug (online, relay,
 W, V, A, kWh 24 h / 30 d, cost, last online, `model`, `protocol`), and per-plug time series for power, energy per day,
-online/offline, relay, voltage and current (legend `{{alias}}`). Dashboard variables at the top: `tariff` (price per
+online/offline, relay, voltage and current (legend `{{alias}}`). Row **Contor general** (`role="main"`): house power,
+rest of the house (house − plugs), grid voltage with 207/253 V thresholds, power factor, energy per day. Row
+**Sub-contoare** (`role="sub"`): power and energy per day per sub-meter channel. Dashboard variables at the top: `tariff` (price per
 kWh, default 1.11) and `currency` (only used in titles).
 
 Energy is computed as the **sum of the counter's 5-minute increases, clamped at 0**:
@@ -144,8 +160,18 @@ reset and would count the whole cumulative value as new consumption. The trade-o
 ### Metrics (`/metrics`)
 
 Every series has the labels `alias` (plug name, MAC if empty), `mac`, `model` (e.g. `KP115`, `P115`,
-`S3EM-002CXCEU`, without the region suffix) and `protocol` (`legacy` | `klap` | `aes` | `shelly-rpc`). For the
-channels ≥ 1 of a multi-channel Shelly meter `mac` is `<mac>-<channel>` (channel 0 keeps the plain MAC).
+`S3EM-002CXCEU`, without the region suffix), `protocol` (`legacy` | `klap` | `aes` | `shelly-rpc`) and `role`
+(`plug` | `main` | `sub`, the role set on `/plugs`). For the channels ≥ 1 of a multi-channel Shelly meter `mac` is
+`<mac>-<channel>` (channel 0 keeps the plain MAC). `/metrics` exports every channel; filter by role in the query:
+
+```promql
+sum(kasa_power_load{role="plug"})                                     # all plugs
+kasa_power_load{role="main"}                                          # the house (main meter)
+sum(kasa_power_load{role="main"}) - sum(kasa_power_load{role="plug"}) # rest of the house
+kasa_voltage{role="main"}                                             # grid voltage
+```
+
+Changing a role (or renaming) removes the series with the old labels; the new ones start at the next poll.
 
 | Metric | Type | Unit | Legacy (Kasa) source | Tapo (KLAP/AES) source |
 |---|---|---|---|---|
@@ -176,6 +202,27 @@ across KasaMonitor restarts (it is re-seeded from the plug's total, which can be
 increase method above, not `rate()`/`increase()`, for energy.
 
 Withdrawn or unsupported plugs have no series. Renaming a plug removes the series with the old alias.
+
+### Live samples via remote write (`kasa_live_*`)
+
+Two metric families reach Prometheus:
+
+- `kasa_*` (above): scraped from `/metrics` (typically every 15 s), the last value of every plug at scrape time.
+- `kasa_live_*`: pushed by KasaMonitor with **Prometheus remote write 1.0** (protobuf `WriteRequest` + snappy,
+  `Content-Encoding: snappy`, `X-Prometheus-Remote-Write-Version: 0.1.0`), with each sample's own timestamp, so the
+  second-by-second fluctuations of the live stream reach Grafana without scraping every second:
+  `kasa_live_power_w` and, when reported, `kasa_live_voltage_v`, `kasa_live_current_a`, `kasa_live_power_factor`.
+  Same labels as `kasa_*` (`alias`, `mac`, `model`, `protocol`, `role`). Only the samples stored as raw rows are sent
+  (power changed by more than max(1 W, 1 %), or every 60 s), so a quiet plug costs one sample a minute.
+
+Enable it in `/settings` → *Integrare: Prometheus remote write* (URL, optional basic auth; or the
+`KasaMonitor__RemoteWrite*` variables). Prometheus must run with `--web.enable-remote-write-receiver` (already in
+`deploy/docker-compose.monitoring.yml`). Samples are queued in memory and sent every second (or at 500 samples);
+a failed request is retried with backoff 1 → 60 s, an HTTP 4xx other than 429 drops the batch (e.g. out-of-order
+samples), and samples older than 5 minutes in the queue are dropped. State in `/settings` and on `/metrics`:
+`kasa_remote_write_samples_total`, `kasa_remote_write_failures_total`, `kasa_remote_write_dropped_samples_total`,
+`kasa_remote_write_last_success_timestamp_seconds`. Example: `kasa_live_power_w{role="main"}` in a Grafana time
+series with a 1 s min interval.
 
 ### Alerts and notifications
 
@@ -254,22 +301,95 @@ the official component schema without having been tested:
   (page limit reached) is not stored and is retried at the next sync. Records are stamped with the device's own
   clock: minutes written before the device synchronised its time (e.g. right after a reboot) can land on the wrong
   day, and records dated more than 5 minutes in the future are ignored.
-- **Meters vs. plugs** — a meter on the main panel already includes the plugs behind it, so totals leave out models
-  matching `S3EM.*|SPEM.*` (Dashboard header, History "Toate", and the Grafana stats via `model!~"S3EM.*|SPEM.*"`).
-  The Grafana dashboard has a row *Contoare (Shelly EM)* with power, power factor, voltage and daily energy per channel.
+- **Meters vs. plugs** — decided by the channel's **role** (see below), not by the model: new `em1`/`em` channels
+  start as sub-meters, `switch`/`pm1` channels as plugs.
 - **Reversed clamp** — the Dashboard card shows „inversat?” when a Shelly channel reads below −10 W (simple rule on
   the current reading, accepted instead of "negative for a while"); fix the clamp direction (`reverse`) in the Shelly
   app if it is not real export.
-- **Read-only** — only `Shelly.Get*`, `EM1Data.Get*` are called: KasaMonitor never switches the relay
-  (`Switch.Set`), never changes configuration (`*.SetConfig`), never reboots or updates the device.
+- **Writes** — reads use only `Shelly.Get*`, `EM1.GetStatus`/`PM1.GetStatus`/`Switch.GetStatus`/`EM.GetStatus`,
+  `EM1Data.Get*`. The single write is `Switch.Set` (relay switch, below); KasaMonitor never changes configuration
+  (`*.SetConfig`), never reboots, resets or updates the device.
 
 See `docs/device-api-capabilities.md` for what is shown, what exists and is not shown, and what would need writes.
+
+## Roles, live stream, Contor page, relay
+
+**Roles** (`Plugs.Role`, `/plugs` → column *Rol*, icons plug / house / meter): *plug* (`0`, default for Kasa, Tapo
+and Shelly `switch`/`pm1`), *main meter* (`1`, the channel that measures the house supply; at most one, also enforced
+by a partial unique index; setting a new one turns the previous one into a sub-meter; button „Setează ca contor
+general”) and *sub-meter* (`2`, default for Shelly `em1`/`em` channels). Only plugs count in totals: Dashboard
+header, History „Toate” (stacked bars; the house is a separate „Casă” line, never added to the plugs), Grafana totals
+(`role="plug"`). Upgrading from 0.3.0 marks the existing Shelly meter channels (`S3EM…`, `SPEM…`, apps `EMG3`,
+`ProEM`, `Pro3EM`) as sub-meters; other `em1`/`em` devices already in the database (another model code) stay plugs:
+set their role on `/plugs`. Choose the main meter once on `/plugs`. Roles cannot be changed on withdrawn rows.
+
+**Live stream** (`/plugs` → checkbox „flux 1 s” per channel, `Plugs.StreamEnabled`; default on for the main meter
+and every plug, off for sub-meters such as an unused clamp; changing the role resets it to the role's default):
+
+- **Shelly**: one persistent WebSocket per device (`ws://<ip>/rpc`; it does not count against the 6 non-persistent
+  RPC channels). First frame `Shelly.GetStatus` (valid `src`, so notifications come on it too), then
+  `EM1.GetStatus {id}` (or `EM`/`PM1`/`Switch.GetStatus`) per streamed channel, answers matched by `id`, 2 s timeout.
+  `NotifyStatus`/`NotifyEvent` are logged at Debug and update the relay state. Why not notifications: the device
+  measures every 1.0 s, but `NotifyStatus` comes only every 4–16 s and `em1data` every 60 s; an RPC on the open
+  socket answers in ~21 ms. With a device password the socket uses Shelly's WebSocket digest (`auth` object after
+  the 401 challenge), implemented from the documentation, not yet verified on a device with a password.
+- **Kasa legacy**: `emeter.get_realtime` through the same client as the 10 s polling (the legacy client opens one
+  short TCP connection per request, as it always did).
+- **Tapo (KLAP/AES)**: one `get_energy_usage` per reading on the transport's cached session, shared with polling and
+  re-authenticated by the transport when it expires (needs the TP-Link account in `/settings`).
+- **Timing**: ticks at the start of every wall-clock second, each reading stamped with the nearest second (never
+  more than one per channel and second). The **main meter** is read every second (the base interval
+  `LiveStreamIntervalSeconds`, minimum 1, never less). **Every other channel is adaptive**: 1 s while its power
+  changed by more than max(1 W, 1 %) during the last 60 s, then one second slower after each quiet reading, up to
+  10 s; back to 1 s at the first change, or for 60 s when the main meter jumps by more than `LiveBurstTriggerW`
+  (default 50 W) between two seconds (a „house event”: every plug is read at once). Measured on 2026-11-01: the
+  house's main meter moves by a median 17 W per second, so a 15 W trigger kept every plug at 1 s all the time. A device that stops answering (3 ticks with every request
+  failing, or a closed WebSocket) is re-opened with backoff 1 → 30 s.
+- **Storage** (`LiveSamples`: `PlugId`, `Ts` = UTC unix second, `PowerW`, `ApparentVa`, `VoltageV`, `CurrentA`, `Pf`;
+  index (`PlugId`, `Ts`)): a row is written only when the power differs by more than max(1 W, 1 %) from the last
+  **written** row, or 60 s after it (a witness), in batches (one transaction every 10 s). `LiveMinuteAggregates`
+  (per channel and UTC minute: min/avg/max W, avg V, energy, samples, covered seconds) are computed from **every**
+  reading received, not only the written ones: each reading stands for the interval it was scheduled with (capped at
+  the time since the previous reading, so a missed second adds nothing); energy = Σ W × seconds / 3600. A second part
+  of a minute (restart in the middle of a minute, a late answer) is merged into the stored minute, never overwritten.
+  Raw rows older than `LiveRawRetentionDays` (default 30, `0` = keep) are deleted once a day (a smaller value asks
+  for confirmation in `/settings`); aggregates are kept forever. The 10 s polling (`Samples`, `/metrics`) is unchanged
+  and the live stream is **not** exported to `/metrics`.
+- **Volume** (≈ 146 bytes per raw row including the index; measured on 2026-11-01 with the EM Gen3 and five KP115):
+  a quiet plug writes ≈ 1 row/min (the witness) ≈ 1,440 rows ≈ 0.2 MB/day; a plug with a cycling load (UPS,
+  network rack with fans/compressor) wrote 30–42 % of its readings at 1 s ≈ 26,000–36,000 rows ≈ 3.8–5.3 MB/day; the
+  main meter at 1 s wrote 94 % ≈ 81,000 rows ≈ 11.8 MB/day (a whole house rarely holds within 1 %). With the default
+  30 days: ≈ 350 MB for the main meter + 6–160 MB per plug. Minute aggregates: 1,440 rows per channel per day.
+- To stop it: untick „flux 1 s” on a channel, or *Settings → Flux live* off (applies within 10 s).
+
+**Contor page** (`/contor`, menu „Contor”): alias of the main meter, power now (1 s; falls back to the 10 s poll when
+the stream is older than 5 s), rest of the house (main − online plugs), voltage (red outside 207–253 V), current, power
+factor, frequency, relay; live chart of the last 10 minutes (main meter, plus an optional plug chosen in „Suprapune o
+priză”, from the same stream; only the new point is pushed to ApexCharts each time, the whole 10-minute window once a
+minute); today per minute (min/avg/max from the aggregates); energy per day for 30 days (from `DailyEnergy`) with
+cost; the sub-meters; the last 20 relay commands. Without a main meter it links to `/plugs`. The Dashboard shows a
+„Casă” card (house power, rest of the house, relay) above the plugs.
+
+**Relay**: on channel 0 of a Shelly meter with `switch:N` (EM Gen3: `switch:0`, a contactor) and on Shelly
+`switch` plugs (Plus Plug S, …) a Pornit/Oprit switch appears on `/contor`, in the „Casă” card and in the *Detalii*
+row of `/plugs`. Every command needs a confirmation („Releul comandă un contactor; sigur?”) and sends
+`Switch.Set {id: <channel>, on}` over HTTP RPC (digest when a password is set); the server refuses channels without a
+relay. Every attempt is logged in `RelayCommands` (`Ts`, `PlugId`, `On`, `Source` = `ui`, `Result` = `ok` or the
+error) and in the application log. The shown state is the newest of the 10 s poll (`switch:N.output`) and the
+WebSocket notifications. *Settings → Permite comanda releului* off hides the switch and refuses commands.
+**Risk:** relay control is on by default and KasaMonitor has **no authentication**: anyone who can open the web UI
+can switch the contactor (the confirmation only prevents mistakes). Expose KasaMonitor only inside the LAN (never
+through a port forward or a reverse proxy without authentication), or turn relay control off. TODO: Kasa/Tapo relay
+commands (different protocols; not in this version).
 
 ## Data retention
 
 | Data | Table | Written | Deleted |
 |---|---|---|---|
 | Raw readings (every poll, default 10 s) | `Samples` | ≈ 128 bytes per reading ≈ 1.1 MB per plug per day ≈ 400 MB per plug per year | never by default; only if `ReadingsRetentionMonths` > 0 (daily purge, in batches) |
+| Raw live samples (on change or every 60 s) | `LiveSamples` | ≈ 146 bytes per row: quiet plug ≈ 0.2 MB/day, cycling load ≈ 4–5 MB/day, main meter ≈ 12 MB/day | after `LiveRawRetentionDays` (default 30; `0` = never), daily |
+| Live minute aggregates | `LiveMinuteAggregates` | 1,440 rows per streamed channel per day | never |
+| Relay commands | `RelayCommands` | one row per command | never |
 | Minute aggregates | `OneMinuteAggregates` | ≈ 120 bytes per plug-minute ≈ 65 MB per plug per year | never |
 | Daily / monthly energy | `DailyEnergy`, `MonthlyEnergy` | one row per plug per day / month | never |
 
@@ -284,6 +404,9 @@ a retention. SQLite does not shrink the file after deletions (the space is reuse
   failure, then after 10 more consecutive failures or 10 minutes, whichever comes first, per plug.
 - `Plug <alias> (<ip>) is responding again after N failed polls` — Information.
 - `History sync failed for plug <alias> (<ip>, <id>)` — Warning.
+- `Live stream <mac> (<ip>) connected: EM1.GetStatus for channels 0` — Information (Shelly); a device that fails
+  logs one Warning (`…; retrying with backoff`), repeats at Debug, then `receiving again after N failed attempts`.
+- `Relay command ON|OFF for <alias> (<ip>, switch:N) from ui: ok|<error>` — Information.
 
 ## Build and test
 
@@ -297,15 +420,15 @@ dotnet test KasaMonitor.sln
 From the repository root, with Docker running and `docker login` done once:
 
 ```powershell
-.\deploy\build-and-push.ps1 -Version 0.3.0          # build :0.3.0 + :latest and push both
-.\deploy\build-and-push.ps1 -Version 0.3.0 -NoPush  # local build only
+.\deploy\build-and-push.ps1 -Version 0.4.0          # build :0.4.0 + :latest and push both
+.\deploy\build-and-push.ps1 -Version 0.4.0 -NoPush  # local build only
 ```
 
 or manually:
 
 ```bash
-docker build -t duobit/kasamonitor:0.3.0 -t duobit/kasamonitor:latest -f deploy/Dockerfile .
-docker push duobit/kasamonitor:0.3.0
+docker build -t duobit/kasamonitor:0.4.0 -t duobit/kasamonitor:latest -f deploy/Dockerfile .
+docker push duobit/kasamonitor:0.4.0
 docker push duobit/kasamonitor:latest
 ```
 
@@ -319,7 +442,14 @@ To publish under your own Docker Hub account, change the image name (`-Repo` par
    `Plugs.UnsupportedReason`; existing data stays and existing plugs become `legacy`. Upgrading to 0.3.0 runs
    `AddPlugChannel`: adds `Plugs.Channel` (0 for every existing plug) and replaces the unique index on `Mac` with one
    on (`Mac`, `Channel`); no other table is touched. Downgrading to 0.2.x after that (the migration's `Down`) needs
-   the rows with `Channel > 0` deleted first, otherwise re-creating the unique index on `Mac` fails.
+   the rows with `Channel > 0` deleted first, otherwise re-creating the unique index on `Mac` fails. Upgrading to
+   0.4.0 runs `AddRolesAndLiveStream`: adds `Plugs.Role` (0; Shelly meter channels `S3EM…`/`SPEM…`/`EMG3`/`ProEM`/`Pro3EM`
+   become 2 = sub-meter) and `Plugs.StreamEnabled` (1; 0 for those sub-meters), a partial unique index (one main
+   meter) and the empty tables `LiveSamples`, `LiveMinuteAggregates`, `RelayCommands`; no existing table is rewritten.
+   After the update, set the main meter on `/plugs` and change Grafana dashboards that used
+   `model!~"S3EM.*|SPEM.*"` to `role="plug"`. Prometheus series written before the upgrade have no `role` label, so
+   `{role="plug"}` does not see them: for the 30-day panels use `{role!~"main|sub", model!~"S3EM.*|SPEM.*"}` until
+   30 days have passed after the upgrade, then `{role="plug"}`.
 2. `docker compose -f deploy/docker-compose.yml pull && docker compose -f deploy/docker-compose.yml up -d`
    (Portainer: *Update the stack* with *Re-pull image and redeploy*).
 3. Check `http://<host>:8910/health`, `/plugs` (Scan now) and `curl -s http://<host>:8910/metrics | grep kasa_online`.

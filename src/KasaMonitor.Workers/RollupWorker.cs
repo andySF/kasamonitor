@@ -82,6 +82,14 @@ public sealed class RollupWorker : BackgroundService
         return await _retention.ApplyAsync(months, ct);
     }
 
+    /// <summary>Raw live samples older than LiveRawRetentionDays (default 30, 0 = keep all); minute aggregates stay.</summary>
+    public async Task<int> ApplyLiveRetentionAsync(CancellationToken ct)
+    {
+        if (_retention is null || _settings is null) return 0;
+        var days = (await _settings.GetAsync(ct)).LiveRawRetentionDays;
+        return await _retention.ApplyLiveRawAsync(days, ct);
+    }
+
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         while (!stoppingToken.IsCancellationRequested)
@@ -93,6 +101,9 @@ public sealed class RollupWorker : BackgroundService
                 await ApplyRetentionAsync(stoppingToken);
             }
             catch (Exception ex) when (!stoppingToken.IsCancellationRequested) { _log.LogError(ex, "Rollup cycle failed"); }
+            // On its own: a failure above must not skip the live-sample retention of the day (and the other way round).
+            try { await ApplyLiveRetentionAsync(stoppingToken); }
+            catch (Exception ex) when (!stoppingToken.IsCancellationRequested) { _log.LogError(ex, "Live sample retention failed"); }
             try { await Task.Delay(TimeSpan.FromHours(24), stoppingToken); }
             catch (TaskCanceledException) { return; }
         }

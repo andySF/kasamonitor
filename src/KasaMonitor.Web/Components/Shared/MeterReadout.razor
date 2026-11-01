@@ -1,0 +1,83 @@
+@using KasaMonitor.Core.Metering
+@using KasaMonitor.Web.Ui
+@inject ILiveStreamBroadcaster Stream
+@inject IPlugStateBroadcaster States
+@implements IDisposable
+
+@* Live values of the main meter: the 1-second stream when fresh, otherwise the 10 s poll. Re-renders only itself. *@
+@{
+    var live = _live;
+    var sample = _sample is { } s && DateTimeOffset.UtcNow - s.TsUtc <= LiveMaxAge ? s : null;
+    var reading = live?.LastReading;
+    var powerW = HouseBalance.MainW(live, sample, DateTimeOffset.UtcNow, LiveMaxAge);
+    var restW = HouseBalance.RestW(powerW, States.Snapshot().Values);
+    var voltage = sample?.VoltageV ?? reading?.VoltageMv / 1000.0;
+    var current = sample?.CurrentA ?? reading?.CurrentMa / 1000.0;
+    var pf = sample?.Pf ?? reading?.PowerFactor;
+    var freq = sample?.FrequencyHz ?? reading?.FrequencyHz;
+}
+<div class="d-flex flex-wrap gap-2">
+    <div class="card px-3 py-2">
+        <div class="small text-secondary">Putere acum</div>
+        <div class="fs-3 fw-semibold"><i class="bi bi-lightning-charge text-warning"></i> @(powerW is { } w ? w.ToString("0") + " W" : "—")</div>
+        <div class="small text-secondary">@(sample is not null ? "flux 1 s" : live is not null ? "citire la 10 s" : "fără date")</div>
+    </div>
+    <div class="card px-3 py-2" title="Puterea contorului general minus prizele online (starea prizelor se actualizează la 10 s)">
+        <div class="small text-secondary">Restul casei</div>
+        <div class="fs-3 fw-semibold">@(restW is { } r ? r.ToString("0") + " W" : "—")</div>
+        <div class="small text-secondary">prize: @HouseBalance.PlugsW(States.Snapshot().Values).ToString("0") W</div>
+    </div>
+    <div class="card px-3 py-2">
+        <div class="small text-secondary">Tensiune</div>
+        <div class="fs-5 fw-semibold @(voltage is < 207 or > 253 ? "text-danger" : "")">@(voltage is { } v ? v.ToString("0.0") + " V" : "—")</div>
+    </div>
+    <div class="card px-3 py-2">
+        <div class="small text-secondary">Curent</div>
+        <div class="fs-5 fw-semibold">@(current is { } a ? a.ToString("0.00") + " A" : "—")</div>
+    </div>
+    <div class="card px-3 py-2">
+        <div class="small text-secondary">Factor de putere</div>
+        <div class="fs-5 fw-semibold">@(pf is { } p ? p.ToString("0.00") : "—")</div>
+    </div>
+    <div class="card px-3 py-2">
+        <div class="small text-secondary">Frecvență</div>
+        <div class="fs-5 fw-semibold">@(freq is { } f ? f.ToString("0.00") + " Hz" : "—")</div>
+    </div>
+</div>
+
+@code {
+    [Parameter, EditorRequired] public Guid PlugId { get; set; }
+
+    private static readonly TimeSpan LiveMaxAge = TimeSpan.FromSeconds(5);
+    private PlugLiveState? _live;
+    private LiveSample? _sample;
+    private System.Threading.Timer? _timer;
+
+    protected override void OnInitialized()
+    {
+        _live = States.Snapshot().GetValueOrDefault(PlugId);
+        _sample = Stream.Latest(PlugId);
+        Stream.SampleReceived += OnSample;
+        States.StateChanged += OnState;
+        // Re-evaluates freshness when the stream stops (falls back to the 10 s poll).
+        _timer = new System.Threading.Timer(_ => InvokeAsync(StateHasChanged), null, 5000, 5000);
+    }
+
+    private void OnSample(LiveSample s)
+    {
+        if (s.PlugId != PlugId) return;
+        InvokeAsync(() => { _sample = s; StateHasChanged(); });
+    }
+
+    private void OnState(PlugLiveState s)
+    {
+        InvokeAsync(() => { if (s.PlugId == PlugId) _live = s; StateHasChanged(); });
+    }
+
+    public void Dispose()
+    {
+        Stream.SampleReceived -= OnSample;
+        States.StateChanged -= OnState;
+        _timer?.Dispose();
+    }
+}

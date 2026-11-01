@@ -31,13 +31,13 @@
       },
       "options": {
         "mode": "markdown",
-        "content": "**KasaMonitor** — TP-Link Kasa (legacy), Tapo (KLAP / AES) and Shelly Gen2/Gen3 (protocol `shelly-rpc`) devices with energy metering: power (W), voltage (V), current (A), energy (kWh) and cost per plug. KasaMonitor polls the plugs every 10 s and exposes `/metrics`; Prometheus scrapes it (job `kasa`). `kasa_power_total` is **cumulative Wh**; kWh = Wh / 1000. Energy over a range = sum of the counter's 5-minute increases (a drop, e.g. after a restart or a plug reset, is not counted; a scrape gap longer than 5 minutes loses the energy of that gap). Cost = kWh × **$tariff $currency/kWh** (dashboard variables, top left). 30-day windows are complete only after 30 days of data. A plug that is unplugged or off Wi-Fi shows **offline** (red); W/V/A/relay keep the last good reading. A plug withdrawn in KasaMonitor (/plugs, \"Retrage\") is no longer polled and disappears from the metrics. Voltage and current appear only for plugs that report them. The totals at the top leave out energy meters (Shelly EM: `model!~\"S3EM.*|SPEM.*\"`), which already include the plugs behind them; meters are in the **Contoare (Shelly EM)** row at the bottom, one series per measured channel."
+        "content": "**KasaMonitor** — TP-Link Kasa (legacy), Tapo (KLAP / AES) and Shelly Gen2/Gen3 (protocol `shelly-rpc`) devices with energy metering: power (W), voltage (V), current (A), energy (kWh) and cost per plug. KasaMonitor polls the plugs every 10 s and exposes `/metrics`; Prometheus scrapes it (job `kasa`). `kasa_power_total` is **cumulative Wh**; kWh = Wh / 1000. Energy over a range = sum of the counter's 5-minute increases (a drop, e.g. after a restart or a plug reset, is not counted; a scrape gap longer than 5 minutes loses the energy of that gap). Cost = kWh × **$tariff $currency/kWh** (dashboard variables, top left). 30-day windows are complete only after 30 days of data. A plug that is unplugged or off Wi-Fi shows **offline** (red); W/V/A/relay keep the last good reading. A plug withdrawn in KasaMonitor (/plugs, \"Retrage\") is no longer polled and disappears from the metrics. Voltage and current appear only for plugs that report them. Every series has a `role` label (`plug` | `main` | `sub`, set per channel in KasaMonitor /plugs). The totals at the top count only `role=\"plug\"`: the main meter and the sub-meters already include the plugs behind them. The house (main meter) is in the **Contor general** row at the bottom (power, rest of the house = house − plugs, voltage, power factor, energy per day); other meter channels are in **Sub-contoare**."
       }
     },
     {
       "type": "stat",
       "title": "Power now",
-      "description": "Sum of instantaneous power (W) of all plugs: sum(sum by (alias) (kasa_power_load{model!~\"S3EM.*|SPEM.*\"})). Energy meters (model S3EM… / SPEM…, e.g. Shelly EM Gen3, Shelly Pro EM / Pro 3EM) are excluded with model!~\"S3EM.*|SPEM.*\": a meter on the main panel already includes the plugs behind it. Meters have their own row at the bottom.",
+      "description": "Sum of instantaneous power (W) of all plugs: sum(sum by (alias) (kasa_power_load{role=\"plug\"})). Only channels with role=\"plug\" are counted: the main meter (role=\"main\") and the sub-meters (role=\"sub\") already include the plugs behind them; the role is set per channel in KasaMonitor (/plugs). Meters have their own rows at the bottom.",
       "id": 2,
       "datasource": {
         "type": "prometheus",
@@ -56,7 +56,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum(sum by (alias) (kasa_power_load{model!~\"S3EM.*|SPEM.*\"}))",
+          "expr": "sum(sum by (alias) (kasa_power_load{role=\"plug\"}))",
           "instant": true,
           "range": false
         }
@@ -94,7 +94,7 @@
     {
       "type": "stat",
       "title": "Plugs online / total",
-      "description": "Plugs answering right now, and all plugs exported by KasaMonitor (offline included). Energy meters (model S3EM… / SPEM…, e.g. Shelly EM Gen3) are excluded with model!~\"S3EM.*|SPEM.*\": they already include the plugs behind them (see the row \"Contoare (Shelly EM)\").",
+      "description": "Plugs answering right now, and all plugs exported by KasaMonitor (offline included). Only channels with role=\"plug\" are counted: the main meter (role=\"main\") and the sub-meters (role=\"sub\") already include the plugs behind them; the role is set per channel in KasaMonitor (/plugs). Meters have their own rows at the bottom.",
       "id": 3,
       "datasource": {
         "type": "prometheus",
@@ -113,7 +113,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum(max by (alias) (kasa_online{model!~\"S3EM.*|SPEM.*\"}))",
+          "expr": "sum(max by (alias) (kasa_online{role=\"plug\"}))",
           "instant": true,
           "range": false,
           "legendFormat": "online"
@@ -124,7 +124,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "count(max by (alias) (kasa_online{model!~\"S3EM.*|SPEM.*\"}))",
+          "expr": "count(max by (alias) (kasa_online{role=\"plug\"}))",
           "instant": true,
           "range": false,
           "legendFormat": "total"
@@ -163,7 +163,7 @@
     {
       "type": "stat",
       "title": "Energy (24 h)",
-      "description": "kWh used by all plugs in the last 24 hours. Energy = sum of the counter's 5-minute increases, clamped at 0: sum_over_time(clamp_min(max by (alias) (kasa_power_total) - max by (alias) (kasa_power_total offset 5m), 0)[RANGE:5m]). Not increase(): kasa_power_total is re-seeded from the plug's own total when KasaMonitor restarts (and Tapo plugs report month-to-date energy), so the series can drop a little; increase() treats any drop as a counter reset and would add the whole cumulative value as new consumption. A gap longer than 5 minutes loses the energy of that gap. Energy meters (model S3EM… / SPEM…, e.g. Shelly EM Gen3, Shelly Pro EM / Pro 3EM) are excluded with model!~\"S3EM.*|SPEM.*\": a meter on the main panel already includes the plugs behind it. Meters have their own row at the bottom.",
+      "description": "kWh used by all plugs in the last 24 hours. Energy = sum of the counter's 5-minute increases, clamped at 0: sum_over_time(clamp_min(max by (alias) (kasa_power_total) - max by (alias) (kasa_power_total offset 5m), 0)[RANGE:5m]). Not increase(): kasa_power_total is re-seeded from the plug's own total when KasaMonitor restarts (and Tapo plugs report month-to-date energy), so the series can drop a little; increase() treats any drop as a counter reset and would add the whole cumulative value as new consumption. A gap longer than 5 minutes loses the energy of that gap. Only channels with role=\"plug\" are counted: the main meter (role=\"main\") and the sub-meters (role=\"sub\") already include the plugs behind them; the role is set per channel in KasaMonitor (/plugs). Meters have their own rows at the bottom.",
       "id": 4,
       "datasource": {
         "type": "prometheus",
@@ -182,7 +182,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum(sum_over_time(clamp_min(max by (alias) (kasa_power_total{model!~\"S3EM.*|SPEM.*\"}) - max by (alias) (kasa_power_total{model!~\"S3EM.*|SPEM.*\"} offset 5m), 0)[24h:5m]) / 1000)",
+          "expr": "sum(sum_over_time(clamp_min(max by (alias) (kasa_power_total{role=\"plug\"}) - max by (alias) (kasa_power_total{role=\"plug\"} offset 5m), 0)[24h:5m]) / 1000)",
           "instant": true,
           "range": false
         }
@@ -220,7 +220,7 @@
     {
       "type": "stat",
       "title": "Cost (24 h, $currency)",
-      "description": "Cost of the last 24 hours: kWh × $tariff. Energy meters (model S3EM… / SPEM…, e.g. Shelly EM Gen3, Shelly Pro EM / Pro 3EM) are excluded with model!~\"S3EM.*|SPEM.*\": a meter on the main panel already includes the plugs behind it. Meters have their own row at the bottom.",
+      "description": "Cost of the last 24 hours: kWh × $tariff. Only channels with role=\"plug\" are counted: the main meter (role=\"main\") and the sub-meters (role=\"sub\") already include the plugs behind them; the role is set per channel in KasaMonitor (/plugs). Meters have their own rows at the bottom.",
       "id": 5,
       "datasource": {
         "type": "prometheus",
@@ -239,7 +239,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum(sum_over_time(clamp_min(max by (alias) (kasa_power_total{model!~\"S3EM.*|SPEM.*\"}) - max by (alias) (kasa_power_total{model!~\"S3EM.*|SPEM.*\"} offset 5m), 0)[24h:5m]) / 1000 * $tariff)",
+          "expr": "sum(sum_over_time(clamp_min(max by (alias) (kasa_power_total{role=\"plug\"}) - max by (alias) (kasa_power_total{role=\"plug\"} offset 5m), 0)[24h:5m]) / 1000 * $tariff)",
           "instant": true,
           "range": false
         }
@@ -277,7 +277,7 @@
     {
       "type": "stat",
       "title": "Energy (30 days)",
-      "description": "kWh used by all plugs in the last 30 days (complete only after 30 days of data). Energy = sum of the counter's 5-minute increases, clamped at 0: sum_over_time(clamp_min(max by (alias) (kasa_power_total) - max by (alias) (kasa_power_total offset 5m), 0)[RANGE:5m]). Not increase(): kasa_power_total is re-seeded from the plug's own total when KasaMonitor restarts (and Tapo plugs report month-to-date energy), so the series can drop a little; increase() treats any drop as a counter reset and would add the whole cumulative value as new consumption. A gap longer than 5 minutes loses the energy of that gap. Energy meters (model S3EM… / SPEM…, e.g. Shelly EM Gen3, Shelly Pro EM / Pro 3EM) are excluded with model!~\"S3EM.*|SPEM.*\": a meter on the main panel already includes the plugs behind it. Meters have their own row at the bottom.",
+      "description": "kWh used by all plugs in the last 30 days (complete only after 30 days of data). Energy = sum of the counter's 5-minute increases, clamped at 0: sum_over_time(clamp_min(max by (alias) (kasa_power_total) - max by (alias) (kasa_power_total offset 5m), 0)[RANGE:5m]). Not increase(): kasa_power_total is re-seeded from the plug's own total when KasaMonitor restarts (and Tapo plugs report month-to-date energy), so the series can drop a little; increase() treats any drop as a counter reset and would add the whole cumulative value as new consumption. A gap longer than 5 minutes loses the energy of that gap. Only channels with role=\"plug\" are counted: the main meter (role=\"main\") and the sub-meters (role=\"sub\") already include the plugs behind them; the role is set per channel in KasaMonitor (/plugs). Meters have their own rows at the bottom.",
       "id": 6,
       "datasource": {
         "type": "prometheus",
@@ -296,7 +296,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum(sum_over_time(clamp_min(max by (alias) (kasa_power_total{model!~\"S3EM.*|SPEM.*\"}) - max by (alias) (kasa_power_total{model!~\"S3EM.*|SPEM.*\"} offset 5m), 0)[30d:5m]) / 1000)",
+          "expr": "sum(sum_over_time(clamp_min(max by (alias) (kasa_power_total{role=\"plug\"}) - max by (alias) (kasa_power_total{role=\"plug\"} offset 5m), 0)[30d:5m]) / 1000)",
           "instant": true,
           "range": false
         }
@@ -334,7 +334,7 @@
     {
       "type": "stat",
       "title": "Cost (30 days, $currency)",
-      "description": "Cost of the last 30 days: kWh × $tariff. Energy meters (model S3EM… / SPEM…, e.g. Shelly EM Gen3, Shelly Pro EM / Pro 3EM) are excluded with model!~\"S3EM.*|SPEM.*\": a meter on the main panel already includes the plugs behind it. Meters have their own row at the bottom.",
+      "description": "Cost of the last 30 days: kWh × $tariff. Only channels with role=\"plug\" are counted: the main meter (role=\"main\") and the sub-meters (role=\"sub\") already include the plugs behind them; the role is set per channel in KasaMonitor (/plugs). Meters have their own rows at the bottom.",
       "id": 7,
       "datasource": {
         "type": "prometheus",
@@ -353,7 +353,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum(sum_over_time(clamp_min(max by (alias) (kasa_power_total{model!~\"S3EM.*|SPEM.*\"}) - max by (alias) (kasa_power_total{model!~\"S3EM.*|SPEM.*\"} offset 5m), 0)[30d:5m]) / 1000 * $tariff)",
+          "expr": "sum(sum_over_time(clamp_min(max by (alias) (kasa_power_total{role=\"plug\"}) - max by (alias) (kasa_power_total{role=\"plug\"} offset 5m), 0)[30d:5m]) / 1000 * $tariff)",
           "instant": true,
           "range": false
         }
@@ -807,7 +807,7 @@
     {
       "type": "timeseries",
       "title": "Energy per day (30 days)",
-      "description": "kWh per plug and day (stacked bars = daily total). Each bar covers the 24 h before its timestamp; days are aligned to 00:00 UTC and the current day is not shown. Energy = sum of the counter's 5-minute increases, clamped at 0: sum_over_time(clamp_min(max by (alias) (kasa_power_total) - max by (alias) (kasa_power_total offset 5m), 0)[RANGE:5m]). Not increase(): kasa_power_total is re-seeded from the plug's own total when KasaMonitor restarts (and Tapo plugs report month-to-date energy), so the series can drop a little; increase() treats any drop as a counter reset and would add the whole cumulative value as new consumption. A gap longer than 5 minutes loses the energy of that gap. Energy meters (model S3EM… / SPEM…, e.g. Shelly EM Gen3) are excluded with model!~\"S3EM.*|SPEM.*\": they already include the plugs behind them (see the row \"Contoare (Shelly EM)\").",
+      "description": "kWh per plug and day (stacked bars = daily total). Each bar covers the 24 h before its timestamp; days are aligned to 00:00 UTC and the current day is not shown. Energy = sum of the counter's 5-minute increases, clamped at 0: sum_over_time(clamp_min(max by (alias) (kasa_power_total) - max by (alias) (kasa_power_total offset 5m), 0)[RANGE:5m]). Not increase(): kasa_power_total is re-seeded from the plug's own total when KasaMonitor restarts (and Tapo plugs report month-to-date energy), so the series can drop a little; increase() treats any drop as a counter reset and would add the whole cumulative value as new consumption. A gap longer than 5 minutes loses the energy of that gap. Only channels with role=\"plug\" are counted: the main meter (role=\"main\") and the sub-meters (role=\"sub\") already include the plugs behind them; the role is set per channel in KasaMonitor (/plugs). Meters have their own rows at the bottom.",
       "id": 10,
       "datasource": {
         "type": "prometheus",
@@ -826,7 +826,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum_over_time(clamp_min(max by (alias) (kasa_power_total{model!~\"S3EM.*|SPEM.*\"}) - max by (alias) (kasa_power_total{model!~\"S3EM.*|SPEM.*\"} offset 5m), 0)[$__interval:5m]) / 1000",
+          "expr": "sum_over_time(clamp_min(max by (alias) (kasa_power_total{role=\"plug\"}) - max by (alias) (kasa_power_total{role=\"plug\"} offset 5m), 0)[$__interval:5m]) / 1000",
           "instant": false,
           "range": true,
           "legendFormat": "{{alias}}"
@@ -1250,7 +1250,7 @@
     },
     {
       "type": "row",
-      "title": "Contoare (Shelly EM)",
+      "title": "Contor general",
       "id": 17,
       "collapsed": false,
       "gridPos": {
@@ -1262,17 +1262,17 @@
       "panels": []
     },
     {
-      "type": "timeseries",
-      "title": "Meter power per channel",
-      "description": "Active power (W) per meter channel (kasa_power_load{model=~\"S3EM.*|SPEM.*\"}). Negative = reversed clamp or energy exported.",
+      "type": "stat",
+      "title": "House power now",
+      "description": "Active power (W) of the main meter: sum(kasa_power_load{role=\"main\"}). Set the main meter in KasaMonitor /plugs (one per installation).",
       "id": 18,
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
       },
       "gridPos": {
-        "h": 8,
-        "w": 12,
+        "h": 4,
+        "w": 6,
         "x": 0,
         "y": 47
       },
@@ -1283,7 +1283,509 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum by (alias) (kasa_power_load{model=~\"S3EM.*|SPEM.*\"})",
+          "expr": "sum(kasa_power_load{role=\"main\"})",
+          "instant": true,
+          "range": false
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "background",
+        "graphMode": "area",
+        "textMode": "value"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "watt",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "blue",
+                "value": null
+              }
+            ]
+          },
+          "decimals": 0
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Rest of the house now",
+      "description": "Main meter minus the plugs: sum(kasa_power_load{role=\"main\"}) - sum(kasa_power_load{role=\"plug\"}). What is consumed by everything that is not on a monitored plug (plugs offline count as 0).",
+      "id": 19,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 6,
+        "y": 47
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(kasa_power_load{role=\"main\"}) - sum(kasa_power_load{role=\"plug\"})",
+          "instant": true,
+          "range": false
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "background",
+        "graphMode": "area",
+        "textMode": "value"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "watt",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "purple",
+                "value": null
+              }
+            ]
+          },
+          "decimals": 0
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Grid voltage now",
+      "description": "Voltage (V) measured by the main meter: avg(kasa_voltage{role=\"main\"}). Red outside 207–253 V (230 V ± 10 %, EN 50160).",
+      "id": 20,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 12,
+        "y": 47
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "avg(kasa_voltage{role=\"main\"})",
+          "instant": true,
+          "range": false
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "background",
+        "graphMode": "area",
+        "textMode": "value"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "volt",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 207
+              },
+              {
+                "color": "red",
+                "value": 253
+              }
+            ]
+          },
+          "decimals": 1
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "stat",
+      "title": "House power factor now",
+      "description": "Power factor of the main meter: avg(kasa_power_factor{role=\"main\"}).",
+      "id": 21,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 18,
+        "y": 47
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "avg(kasa_power_factor{role=\"main\"})",
+          "instant": true,
+          "range": false
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "background",
+        "graphMode": "area",
+        "textMode": "value"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "blue",
+                "value": null
+              }
+            ]
+          },
+          "decimals": 2
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "House power and rest of the house",
+      "description": "House = sum(kasa_power_load{role=\"main\"}); rest of the house = house − sum of the plugs (role=\"plug\"). Plugs are sampled every 10 s like the meter; the 1-second stream is only in KasaMonitor (/contor).",
+      "id": 22,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 51
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(kasa_power_load{role=\"main\"})",
+          "instant": false,
+          "range": true,
+          "legendFormat": "House"
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(kasa_power_load{role=\"main\"}) - sum(kasa_power_load{role=\"plug\"})",
+          "instant": false,
+          "range": true,
+          "legendFormat": "Rest of the house"
+        },
+        {
+          "refId": "C",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(kasa_power_load{role=\"plug\"})",
+          "instant": false,
+          "range": true,
+          "legendFormat": "Plugs"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "watt",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 15,
+            "lineWidth": 1,
+            "stacking": {
+              "mode": "none"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Grid voltage",
+      "description": "Voltage of the main meter (kasa_voltage{role=\"main\"}). Threshold lines at 207 V and 253 V (230 V ± 10 %).",
+      "id": 23,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 51
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "avg by (alias) (kasa_voltage{role=\"main\"})",
+          "instant": false,
+          "range": true,
+          "legendFormat": "{{alias}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "volt",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 15,
+            "lineWidth": 1,
+            "stacking": {
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "line+area"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "transparent",
+                "value": 207
+              },
+              {
+                "color": "red",
+                "value": 253
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "House power factor",
+      "description": "Power factor of the main meter (kasa_power_factor{role=\"main\"}).",
+      "id": 24,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 59
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "avg by (alias) (kasa_power_factor{role=\"main\"})",
+          "instant": false,
+          "range": true,
+          "legendFormat": "{{alias}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 15,
+            "lineWidth": 1,
+            "stacking": {
+              "mode": "none"
+            }
+          },
+          "min": 0,
+          "max": 1,
+          "decimals": 2
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "House energy per day (30 days)",
+      "description": "kWh per day of the main meter, from its cumulative counter (kasa_power_total{role=\"main\"}), same method as \"Energy per day\": sum of the 5-minute increases, days aligned to 00:00 UTC. KasaMonitor's History uses the meter's own per-minute records instead.",
+      "id": 25,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 59
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum_over_time(clamp_min(max by (alias) (kasa_power_total{role=\"main\"}) - max by (alias) (kasa_power_total{role=\"main\"} offset 5m), 0)[$__interval:5m]) / 1000",
+          "instant": false,
+          "range": true,
+          "legendFormat": "{{alias}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "kwatth",
+          "custom": {
+            "drawStyle": "bars",
+            "fillOpacity": 70,
+            "lineWidth": 1,
+            "stacking": {
+              "mode": "none"
+            },
+            "barAlignment": -1
+          },
+          "decimals": 2
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "interval": "1d",
+      "timeFrom": "30d"
+    },
+    {
+      "type": "row",
+      "title": "Sub-contoare",
+      "id": 26,
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 67
+      },
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "title": "Sub-meter power per channel",
+      "description": "Active power (W) per sub-meter channel (kasa_power_load{role=\"sub\"}). Negative = reversed clamp or energy exported.",
+      "id": 27,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 68
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (alias) (kasa_power_load{role=\"sub\"})",
           "instant": false,
           "range": true,
           "legendFormat": "{{alias}}"
@@ -1315,9 +1817,9 @@
     },
     {
       "type": "timeseries",
-      "title": "Meter power factor per channel",
-      "description": "Power factor per meter channel (kasa_power_factor{model=~\"S3EM.*|SPEM.*\"}); 1 = purely resistive load.",
-      "id": 19,
+      "title": "Sub-meter energy per day (30 days)",
+      "description": "kWh per sub-meter channel and day (kasa_power_total{role=\"sub\"}), sum of the 5-minute increases, days aligned to 00:00 UTC.",
+      "id": 28,
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -1326,7 +1828,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 47
+        "y": 68
       },
       "targets": [
         {
@@ -1335,112 +1837,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "avg by (alias) (kasa_power_factor{model=~\"S3EM.*|SPEM.*\"})",
-          "instant": false,
-          "range": true,
-          "legendFormat": "{{alias}}"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "none",
-          "custom": {
-            "drawStyle": "line",
-            "fillOpacity": 15,
-            "lineWidth": 1,
-            "stacking": {
-              "mode": "none"
-            }
-          },
-          "decimals": 2
-        },
-        "overrides": []
-      },
-      "options": {
-        "legend": {
-          "displayMode": "list",
-          "placement": "bottom"
-        },
-        "tooltip": {
-          "mode": "multi"
-        }
-      }
-    },
-    {
-      "type": "timeseries",
-      "title": "Meter voltage per channel",
-      "description": "Voltage (V) per meter channel (kasa_voltage{model=~\"S3EM.*|SPEM.*\"}).",
-      "id": 20,
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 0,
-        "y": 55
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "avg by (alias) (kasa_voltage{model=~\"S3EM.*|SPEM.*\"})",
-          "instant": false,
-          "range": true,
-          "legendFormat": "{{alias}}"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "volt",
-          "custom": {
-            "drawStyle": "line",
-            "fillOpacity": 15,
-            "lineWidth": 1,
-            "stacking": {
-              "mode": "none"
-            }
-          }
-        },
-        "overrides": []
-      },
-      "options": {
-        "legend": {
-          "displayMode": "list",
-          "placement": "bottom"
-        },
-        "tooltip": {
-          "mode": "multi"
-        }
-      }
-    },
-    {
-      "type": "timeseries",
-      "title": "Meter energy per day (30 days)",
-      "description": "kWh per meter channel and day, from the meter's cumulative counter (kasa_power_total{model=~\"S3EM.*|SPEM.*\"}), same method as \"Energy per day\": sum of the 5-minute increases, days aligned to 00:00 UTC. The daily values in KasaMonitor's History come from the meter's own per-minute records instead.",
-      "id": 21,
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 12,
-        "y": 55
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "sum_over_time(clamp_min(max by (alias) (kasa_power_total{model=~\"S3EM.*|SPEM.*\"}) - max by (alias) (kasa_power_total{model=~\"S3EM.*|SPEM.*\"} offset 5m), 0)[$__interval:5m]) / 1000",
+          "expr": "sum_over_time(clamp_min(max by (alias) (kasa_power_total{role=\"sub\"}) - max by (alias) (kasa_power_total{role=\"sub\"} offset 5m), 0)[$__interval:5m]) / 1000",
           "instant": false,
           "range": true,
           "legendFormat": "{{alias}}"

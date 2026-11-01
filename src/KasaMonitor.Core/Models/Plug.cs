@@ -18,7 +18,9 @@ public sealed record Plug(
     string? Notes,
     string Protocol = PlugProtocols.Legacy,
     string? UnsupportedReason = null,
-    int Channel = 0
+    int Channel = 0,
+    PlugRole Role = PlugRole.Plug,
+    bool StreamEnabled = true
 )
 {
     /// <summary>MAC for channel 0, "&lt;mac&gt;-&lt;channel&gt;" otherwise: the <c>mac</c> metric label and a unique display key.</summary>
@@ -28,4 +30,7 @@ public sealed record Plug(
 
     /// <summary>Polled, exported to /metrics and shown in history: not withdrawn (archived) and on a supported protocol.</summary>
     public bool IsPolled => !IsArchived && IsSupported;
+
+    /// <summary>Counts towards totals (only <see cref="PlugRole.Plug"/>; meters already contain the plugs behind them).</summary>
+    public bool CountsInTotals => PlugRoles.CountsInTotals(Role);
 }

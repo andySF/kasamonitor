@@ -70,8 +70,10 @@ Source: the official Gen2+ API documentation (components `Shelly`, `Sys`, `WiFi`
 `Shelly.GetStatus` / `Shelly.GetConfig` return all components at once, keyed `type:id` (e.g. `em1:0`).
 `Shelly.GetDeviceInfo` never needs authentication. With `auth_en: true` every other call answers 401 with
 `WWW-Authenticate: Digest qop="auth", realm="<device id>", nonce=…, algorithm=SHA-256`; the client answers with HTTP
-digest (RFC 7616, user `admin`). KasaMonitor calls **only** `Shelly.GetDeviceInfo`, `Shelly.GetStatus`,
-`Shelly.GetConfig`, `EM1Data.GetRecords`, `EM1Data.GetData`.
+digest (RFC 7616, user `admin`). KasaMonitor reads with `Shelly.GetDeviceInfo`, `Shelly.GetStatus`,
+`Shelly.GetConfig`, `EM1Data.GetRecords`, `EM1Data.GetData` (HTTP) and `Shelly.GetStatus` + `EM1.GetStatus`
+(or `EM`/`PM1`/`Switch.GetStatus`) on the WebSocket of the live stream (Kasa/Tapo plugs: `emeter.get_realtime` / `get_energy_usage`). The only write is `Switch.Set`
+(relay command from the UI, confirmed and logged).
 
 | Area | Request | What it returns / does | KasaMonitor |
 |---|---|---|---|
@@ -92,7 +94,8 @@ digest (RFC 7616, user `admin`). KasaMonitor calls **only** `Shelly.GetDeviceInf
 | Network | `wifi` status | `sta_ip`, `status`, `ssid`, `rssi` | **shown**; `rssi` also in `PlugInfo` |
 | Cloud / MQTT / WebSocket | `cloud.connected`, `mqtt.connected`, `ws.connected` | connection state | **shown** (cloud, MQTT) |
 | Bluetooth | `ble`, `bthome` | BLE gateway / BTHome state | not relevant |
-| Relay control | `Switch.Set`, `Switch.Toggle` | switch the relay | **action** (deliberately not: KasaMonitor is read-only) |
+| Relay control | `Switch.Set {id, on}`, `Switch.Toggle` | switch the relay | **used** since 0.4.0: `Switch.Set` only, from the UI after a confirmation, logged in `RelayCommands`, switchable off (*Permite comanda releului*); `Switch.Toggle` not used |
+| Live measurement | `EM1.GetStatus {id}` on a persistent WebSocket (`ws://<ip>/rpc`) | one channel's W, V, A, VA, pf, Hz | **used** (live stream, page Contor, tables `LiveSamples`/`LiveMinuteAggregates`) |
 | Configuration | `EM1.SetConfig` (`reverse`, `name`, `ct_type`), `Switch.SetConfig`, `Sys.SetConfig` (time zone, name), `WiFi.SetConfig`, `Cloud.SetConfig`, `MQTT.SetConfig` | change settings | **action** (not implemented; e.g. fixing a wrong `sys.location.tz` or a reversed CT is done in the Shelly app / web UI) |
 | Counters / data | `EM1Data.ResetCounters`, `EM1Data.DeleteAllData`, `EMData.*` equivalents | reset energy totals / delete history | **action** (deliberately not) |
 | Maintenance | `Shelly.Reboot`, `Shelly.Update`, `Shelly.FactoryReset`, `Shelly.SetAuth` | reboot, firmware update, reset, set password | **action** (deliberately not) |
@@ -100,6 +103,15 @@ digest (RFC 7616, user `admin`). KasaMonitor calls **only** `Shelly.GetDeviceInf
 
 Notes:
 
+- **Measured rhythm (EM Gen3, fw 2.1.1, 2026-11-01)**: the device updates its measurement every 1.0 s; an RPC on an
+  open WebSocket answers in ~21 ms; spontaneous `NotifyStatus` (on a WebSocket where a frame with a valid `src` was
+  sent) comes only every 4–16 s, when values change, and `em1data` every 60 s. Notifications are therefore not a
+  1-second source: KasaMonitor keeps **one persistent WebSocket per device** and asks `EM1.GetStatus` per channel
+  every second (answers matched by `id`, 2 s timeout, reconnect with backoff 1 → 30 s). A persistent WebSocket does
+  not count against the 6 simultaneous non-persistent RPC channels (HTTP). Over WebSocket, authentication is an RPC
+  error 401 whose message is a JSON digest challenge; every later frame carries an `auth` object (`realm`, `username`,
+  `nonce`, `cnonce`, `response`, `algorithm`; response = H(H(admin:realm:pw):nonce:nc:cnonce:auth:H(dummy_method:dummy_uri))).
+  Implemented from the documentation; not verified on a device with a password.
 - A device with `auth_en: true` and no password in `/settings` is listed as `nesuportat: parolă Shelly lipsă`; a
   rejected password as `autentificare Shelly eșuată`. The digest challenge is cached per device (nonce count
   incremented), so a steady poll costs one request; a stale nonce costs one extra 401.

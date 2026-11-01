@@ -5,15 +5,16 @@ using Prometheus;
 namespace KasaMonitor.Web;
 
 /// <summary>
-/// Prometheus exporter. Every series carries alias, mac, model (e.g. KP115, P115, S3EM-002CXCEU) and protocol
-/// (legacy|klap|aes|shelly-rpc). The mac label is the MAC for channel 0 and "&lt;mac&gt;-&lt;channel&gt;" for the other
+/// Prometheus exporter. Every series carries alias, mac, model (e.g. KP115, P115, S3EM-002CXCEU), protocol
+/// (legacy|klap|aes|shelly-rpc) and role (plug|main|sub, <see cref="PlugRoles.Label"/>): totals use
+/// <c>role="plug"</c>, the house is <c>role="main"</c>; nothing is left out of /metrics. The mac label is the MAC for channel 0 and "&lt;mac&gt;-&lt;channel&gt;" for the other
 /// channels of a multi-channel meter. Series of plugs that are withdrawn (archived) or unsupported are removed, and a
 /// plug whose labels change (rename) drops its old series instead of leaving it frozen. Power factor, apparent power,
 /// frequency, returned energy and device temperature exist only for devices that report them (Shelly).
 /// </summary>
 public sealed class KasaMetrics : IHostedService, IDisposable
 {
-    public static readonly string[] LabelNames = { "alias", "mac", "model", "protocol" };
+    public static readonly string[] LabelNames = PlugMetricLabels.Names;
 
     /// <summary>One exported metric family: single owner of names, types, units and help texts (also shown on /integration).</summary>
     public sealed record MetricInfo(string Name, string Type, string Unit, string Help);
@@ -77,13 +78,7 @@ public sealed class KasaMetrics : IHostedService, IDisposable
         return Task.CompletedTask;
     }
 
-    public static string[] LabelValues(PlugLiveState s) => new[]
-    {
-        string.IsNullOrEmpty(s.Alias) ? s.MacLabel : s.Alias,
-        s.MacLabel,
-        PlugModelName.Short(s.Model),
-        string.IsNullOrEmpty(s.Protocol) ? PlugProtocols.Legacy : s.Protocol,
-    };
+    public static string[] LabelValues(PlugLiveState s) => PlugMetricLabels.For(s);
 
     private void Update(PlugLiveState s)
     {

@@ -99,6 +99,52 @@ public static class ShellyStatusParser
         return new ShellyStatusReadings(ShellyMeterKind.None, Array.Empty<ShellyChannelReading>());
     }
 
+    /// <summary>
+    /// RPC method that returns one measuring component of <paramref name="kind"/> (the live stream asks it per
+    /// channel): <c>EM1.GetStatus</c>, <c>EM.GetStatus</c>, <c>PM1.GetStatus</c> or <c>Switch.GetStatus</c>; null for none.
+    /// </summary>
+    public static string? ComponentStatusMethod(ShellyMeterKind kind) => kind switch
+    {
+        ShellyMeterKind.Em1 => "EM1.GetStatus",
+        ShellyMeterKind.Em => "EM.GetStatus",
+        ShellyMeterKind.Pm1 => "PM1.GetStatus",
+        ShellyMeterKind.Switch => "Switch.GetStatus",
+        _ => null,
+    };
+
+    /// <summary>
+    /// Reading of one component from its own <c>&lt;Component&gt;.GetStatus</c> answer (same field names as in
+    /// <c>Shelly.GetStatus</c>). Energy counters are not part of these answers (<see cref="EmeterReading.TotalWh"/> is
+    /// null for em/em1); the relay is set only for <c>switch</c>.
+    /// </summary>
+    public static EmeterReading? ParseComponent(ShellyMeterKind kind, JsonElement c)
+    {
+        if (c.ValueKind != JsonValueKind.Object) return null;
+        return kind switch
+        {
+            ShellyMeterKind.Em1 => Reading(
+                powerW: ShellyJson.Num(c, "act_power"), voltageV: ShellyJson.Num(c, "voltage"), currentA: ShellyJson.Num(c, "current"),
+                totalWh: null, returnedWh: null, pf: ShellyJson.Num(c, "pf"), apparentVa: ShellyJson.Num(c, "aprt_power"),
+                freqHz: ShellyJson.Num(c, "freq"), relay: null, temperatureC: null),
+            ShellyMeterKind.Em => Reading(
+                powerW: ShellyJson.Num(c, "total_act_power"), voltageV: null, currentA: ShellyJson.Num(c, "total_current"),
+                totalWh: null, returnedWh: null, pf: null, apparentVa: ShellyJson.Num(c, "total_aprt_power"),
+                freqHz: ShellyJson.Num(c, "a_freq"), relay: null, temperatureC: null),
+            ShellyMeterKind.Pm1 => PowerComponent(c, relay: null),
+            ShellyMeterKind.Switch => PowerComponent(c, ShellyJson.Bool(c, "output")),
+            _ => null,
+        };
+    }
+
+    /// <summary>Relay states (<c>switch:N.output</c>) present in a status or <c>NotifyStatus</c> params object.</summary>
+    public static IReadOnlyList<(int Id, bool On)> Relays(JsonElement statusOrParams) =>
+        ShellyJson.Components(statusOrParams)
+            .Where(c => c.Type == "switch" && c.Id >= 0)
+            .Select(c => (c.Id, On: ShellyJson.Bool(c.Value, "output")))
+            .Where(c => c.On is not null)
+            .Select(c => (c.Id, c.On!.Value))
+            .ToList();
+
     /// <summary>Wi-Fi RSSI (dBm) from the <c>wifi</c> component, 0 when absent.</summary>
     public static int Rssi(JsonElement status) => (int)(ShellyJson.Num(ShellyJson.Obj(status, "wifi"), "rssi") ?? 0);
 

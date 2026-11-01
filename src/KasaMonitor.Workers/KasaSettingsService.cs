@@ -27,7 +27,27 @@ public static class SettingKeys
     public const string ShellyPassword = "ShellyPassword";
     /// <summary>Optional IPs / ranges / CIDR blocks probed with Shelly.GetDeviceInfo on every discovery (mDNS fallback).</summary>
     public const string ShellyProbeHosts = "ShellyProbeHosts";
+    /// <summary>Live stream (main meter 1 s, plugs 1–10 s) for the channels with StreamEnabled.</summary>
+    public const string LiveStreamEnabled = "LiveStreamEnabled";
+    /// <summary>Base interval of the live stream in seconds (minimum 1): the main meter's fixed interval, the plugs' fastest.</summary>
+    public const string LiveStreamIntervalSeconds = "LiveStreamIntervalSeconds";
+    /// <summary>Days of raw live samples to keep (0 = unlimited); minute aggregates are never deleted.</summary>
+    public const string LiveRawRetentionDays = "LiveRawRetentionDays";
+    /// <summary>Shows the relay switch (Shelly Switch.Set) in the UI; false hides it and refuses commands.</summary>
+    public const string AllowRelayControl = "AllowRelayControl";
+    /// <summary>Jump of the main meter (W, between two readings) that sends every plug back to 1 s for 60 s.</summary>
+    public const string LiveBurstTriggerW = "LiveBurstTriggerW";
+    /// <summary>Prometheus remote write of the live samples (<c>kasa_live_*</c>); off by default.</summary>
+    public const string RemoteWriteEnabled = "RemoteWriteEnabled";
+    /// <summary>Remote write endpoint, e.g. http://prometheus:9090/api/v1/write.</summary>
+    public const string RemoteWriteUrl = "RemoteWriteUrl";
+    /// <summary>Optional basic-auth user and password of the remote write endpoint; both stored encrypted.</summary>
+    public const string RemoteWriteUser = "RemoteWriteUser";
+    public const string RemoteWritePassword = "RemoteWritePassword";
 }
+
+/// <summary>Basic-auth credentials of the remote write endpoint (decrypted, never shown).</summary>
+public sealed record RemoteWriteCredentials(string User, string Password);
 
 /// <summary>Values from configuration (env <c>KasaMonitor__*</c>), used when the database has no value for a key.</summary>
 public sealed record KasaSettingsDefaults(
@@ -41,7 +61,19 @@ public sealed record KasaSettingsDefaults(
     decimal TariffRonPerKwh = 1.30m,
     bool ShellyDiscoveryEnabled = true,
     string? ShellyPassword = null,
-    string ShellyProbeHosts = "");
+    string ShellyProbeHosts = "",
+    bool LiveStreamEnabled = true,
+    int LiveStreamIntervalSeconds = 1,
+    int LiveRawRetentionDays = 30,
+    bool AllowRelayControl = true,
+    int LiveBurstTriggerW = KasaSettingsDefaults.DefaultLiveBurstTriggerW,
+    bool RemoteWriteEnabled = false,
+    string RemoteWriteUrl = "",
+    string? RemoteWriteUser = null,
+    string? RemoteWritePassword = null)
+{
+    public const int DefaultLiveBurstTriggerW = 50;
+}
 
 /// <summary>Effective settings (database first, configuration as fallback).</summary>
 public sealed record KasaRuntimeSettings(
@@ -58,8 +90,17 @@ public sealed record KasaRuntimeSettings(
     bool ShellyDiscoveryEnabled = true,
     ShellyCredentials? ShellyCredentials = null,
     string ShellyProbeHosts = "",
-    IReadOnlyList<IPAddress>? ShellyProbeAddresses = null)
+    IReadOnlyList<IPAddress>? ShellyProbeAddresses = null,
+    bool LiveStreamEnabled = true,
+    int LiveStreamIntervalSeconds = 1,
+    int LiveRawRetentionDays = 30,
+    bool AllowRelayControl = true,
+    int LiveBurstTriggerW = KasaSettingsDefaults.DefaultLiveBurstTriggerW,
+    bool RemoteWriteEnabled = false,
+    string RemoteWriteUrl = "",
+    RemoteWriteCredentials? RemoteWriteCredentials = null)
 {
+    public bool HasRemoteWriteAuth => RemoteWriteCredentials is not null;
     public bool HasShellyPassword => ShellyCredentials is not null;
     public IReadOnlyList<IPAddress> ShellyProbeList => ShellyProbeAddresses ?? Array.Empty<IPAddress>();
 }
@@ -69,6 +110,7 @@ public sealed record KasaRuntimeSettings(
 /// <param name="ShellyDiscoveryEnabled">Null keeps the stored value.</param>
 /// <param name="ShellyProbeHosts">Null keeps the stored value.</param>
 /// <param name="NewShellyPassword">Null or empty keeps the stored password.</param>
+/// <param name="LiveStreamEnabled">Null keeps the stored value (likewise the other live-stream settings).</param>
 public sealed record KasaSettingsUpdate(
     bool AutoDiscoveryEnabled,
     int AutoDiscoveryIntervalMinutes,
@@ -81,7 +123,17 @@ public sealed record KasaSettingsUpdate(
     bool? ShellyDiscoveryEnabled = null,
     string? ShellyProbeHosts = null,
     string? NewShellyPassword = null,
-    bool ClearShellyPassword = false);
+    bool ClearShellyPassword = false,
+    bool? LiveStreamEnabled = null,
+    int? LiveStreamIntervalSeconds = null,
+    int? LiveRawRetentionDays = null,
+    bool? AllowRelayControl = null,
+    int? LiveBurstTriggerW = null,
+    bool? RemoteWriteEnabled = null,
+    string? RemoteWriteUrl = null,
+    string? NewRemoteWriteUser = null,
+    string? NewRemoteWritePassword = null,
+    bool ClearRemoteWriteAuth = false);
 
 public interface IKasaSettingsService
 {
@@ -94,6 +146,11 @@ public sealed class KasaSettingsService : IKasaSettingsService
     public const int MinIntervalMinutes = 1;
     public const int MaxIntervalMinutes = 1440;
     public const int MaxRetentionMonths = 1200;
+    public const int MinLiveIntervalSeconds = 1;
+    public const int MaxLiveIntervalSeconds = 60;
+    public const int MaxLiveRetentionDays = 36500;
+    public const int MinBurstTriggerW = 1;
+    public const int MaxBurstTriggerW = 100_000;
 
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly KasaSettingsDefaults _defaults;
@@ -151,13 +208,46 @@ public sealed class KasaSettingsService : IKasaSettingsService
         var probeText = db.TryGetValue(SettingKeys.ShellyProbeHosts, out var ph) ? ph : _defaults.ShellyProbeHosts;
         var (probeHosts, _) = ShellySupport.ParseProbeHosts(probeText);
 
+        var streamOn = ParseBool(db, SettingKeys.LiveStreamEnabled) ?? _defaults.LiveStreamEnabled;
+        var streamInterval = Math.Clamp(ParseInt(db, SettingKeys.LiveStreamIntervalSeconds) ?? _defaults.LiveStreamIntervalSeconds,
+            MinLiveIntervalSeconds, MaxLiveIntervalSeconds);
+        var meterRetention = Math.Clamp(ParseInt(db, SettingKeys.LiveRawRetentionDays) ?? _defaults.LiveRawRetentionDays, 0, MaxLiveRetentionDays);
+        var relay = ParseBool(db, SettingKeys.AllowRelayControl) ?? _defaults.AllowRelayControl;
+        var burst = Math.Clamp(ParseInt(db, SettingKeys.LiveBurstTriggerW) ?? _defaults.LiveBurstTriggerW, MinBurstTriggerW, MaxBurstTriggerW);
+        var rwOn = ParseBool(db, SettingKeys.RemoteWriteEnabled) ?? _defaults.RemoteWriteEnabled;
+        var rwUrl = db.TryGetValue(SettingKeys.RemoteWriteUrl, out var ru) ? ru : _defaults.RemoteWriteUrl;
+        var rwUser = Secret(db, SettingKeys.RemoteWriteUser, _defaults.RemoteWriteUser);
+        var rwPassword = Secret(db, SettingKeys.RemoteWritePassword, _defaults.RemoteWritePassword);
+        var rwCreds = !string.IsNullOrEmpty(rwUser) && rwPassword is not null ? new RemoteWriteCredentials(rwUser, rwPassword) : null;
+
         return new KasaRuntimeSettings(enabled, interval, broadcastText, addrs, autoAdd,
             user, !string.IsNullOrEmpty(password), creds, retention, tariff,
             shellyEnabled,
             string.IsNullOrEmpty(shellyPassword) ? null : new ShellyCredentials(shellyPassword),
             probeText,
-            probeHosts);
+            probeHosts,
+            streamOn,
+            streamInterval,
+            meterRetention,
+            relay,
+            burst,
+            rwOn,
+            rwUrl.Trim(),
+            rwCreds);
     }
+
+    /// <summary>An encrypted value from the database (empty = cleared), else the configuration value.</summary>
+    private string? Secret(IReadOnlyDictionary<string, string> db, string key, string? fallback)
+    {
+        if (db.TryGetValue(key, out var stored)) return stored.Length == 0 ? null : _protector.Unprotect(stored);
+        return string.IsNullOrEmpty(fallback) ? null : fallback;
+    }
+
+    /// <summary>An absolute http/https URL, or a Romanian error text.</summary>
+    public static string? ValidateRemoteWriteUrl(string? url) =>
+        Uri.TryCreate(url?.Trim(), UriKind.Absolute, out var u) && (u.Scheme == Uri.UriSchemeHttp || u.Scheme == Uri.UriSchemeHttps)
+            ? null
+            : "Adresa remote write trebuie să fie un URL http(s) complet, ex. http://192.168.1.10:9090/api/v1/write";
 
     public async Task SaveAsync(KasaSettingsUpdate update, CancellationToken ct)
     {
@@ -166,6 +256,9 @@ public sealed class KasaSettingsService : IKasaSettingsService
             throw new FormatException($"Adrese broadcast invalide: {string.Join(", ", invalid)}");
         if (update.ShellyProbeHosts is { } probe && ShellySupport.ParseProbeHosts(probe).Invalid is { Count: > 0 } badHosts)
             throw new FormatException($"Adrese Shelly invalide: {string.Join(", ", badHosts)} (IP, interval a.b.c.d-e sau CIDR /{ShellySupport.MinCidrPrefix}–/32, max. {ShellySupport.MaxProbeHosts} adrese)");
+
+        if (update.RemoteWriteEnabled == true && ValidateRemoteWriteUrl(update.RemoteWriteUrl) is { } badUrl)
+            throw new FormatException(badUrl);
 
         using var scope = _scopeFactory.CreateScope();
         var repo = scope.ServiceProvider.GetRequiredService<ISettingsRepository>();
@@ -190,6 +283,35 @@ public sealed class KasaSettingsService : IKasaSettingsService
             await repo.SetAsync(SettingKeys.ShellyPassword, "", ct);
         else if (!string.IsNullOrEmpty(update.NewShellyPassword))
             await repo.SetAsync(SettingKeys.ShellyPassword, _protector.Protect(update.NewShellyPassword), ct);
+        if (update.LiveStreamEnabled is { } streamOn)
+            await repo.SetAsync(SettingKeys.LiveStreamEnabled, streamOn ? "true" : "false", ct);
+        if (update.LiveStreamIntervalSeconds is { } streamInterval)
+            await repo.SetAsync(SettingKeys.LiveStreamIntervalSeconds,
+                Math.Clamp(streamInterval, MinLiveIntervalSeconds, MaxLiveIntervalSeconds).ToString(CultureInfo.InvariantCulture), ct);
+        if (update.LiveRawRetentionDays is { } days)
+            await repo.SetAsync(SettingKeys.LiveRawRetentionDays,
+                Math.Clamp(days, 0, MaxLiveRetentionDays).ToString(CultureInfo.InvariantCulture), ct);
+        if (update.AllowRelayControl is { } relay)
+            await repo.SetAsync(SettingKeys.AllowRelayControl, relay ? "true" : "false", ct);
+        if (update.LiveBurstTriggerW is { } burst)
+            await repo.SetAsync(SettingKeys.LiveBurstTriggerW,
+                Math.Clamp(burst, MinBurstTriggerW, MaxBurstTriggerW).ToString(CultureInfo.InvariantCulture), ct);
+        if (update.RemoteWriteEnabled is { } rwOn)
+            await repo.SetAsync(SettingKeys.RemoteWriteEnabled, rwOn ? "true" : "false", ct);
+        if (update.RemoteWriteUrl is { } rwUrl)
+            await repo.SetAsync(SettingKeys.RemoteWriteUrl, rwUrl.Trim(), ct);
+        if (update.ClearRemoteWriteAuth)
+        {
+            await repo.SetAsync(SettingKeys.RemoteWriteUser, "", ct);
+            await repo.SetAsync(SettingKeys.RemoteWritePassword, "", ct);
+        }
+        else
+        {
+            if (!string.IsNullOrEmpty(update.NewRemoteWriteUser))
+                await repo.SetAsync(SettingKeys.RemoteWriteUser, _protector.Protect(update.NewRemoteWriteUser.Trim()), ct);
+            if (!string.IsNullOrEmpty(update.NewRemoteWritePassword))
+                await repo.SetAsync(SettingKeys.RemoteWritePassword, _protector.Protect(update.NewRemoteWritePassword), ct);
+        }
     }
 
     /// <summary>Comma-separated IPv4 addresses; returns the valid ones and the rejected tokens.</summary>

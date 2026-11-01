@@ -34,6 +34,10 @@ internal sealed class FakeShellyClient : IShellyClient
     public int StatusCalls;
     public int DeviceInfoCalls;
     public List<(int Id, long From, long To)> DataRequests { get; } = new();
+    /// <summary>Switch.Set calls received (ip, switch id, on): the only write, never sent to a real device in tests.</summary>
+    public List<(string Ip, int SwitchId, bool On)> SwitchSets { get; } = new();
+    /// <summary>When set, Switch.Set fails with this exception.</summary>
+    public Exception? SwitchError { get; set; }
 
     public Device Add(string ip, Device? device = null) => Devices[ip] = device ?? new Device();
 
@@ -88,6 +92,15 @@ internal sealed class FakeShellyClient : IShellyClient
         if (d.IncompleteWindows.Contains(fromTs)) throw new ShellyIncompleteDataException("page limit reached");
         IReadOnlyList<ShellyEnergyRow> rows = (d.Energy.GetValueOrDefault(id) ?? new()).Where(r => r.Ts >= fromTs && r.Ts <= toTs).ToList();
         return Task.FromResult(rows);
+    }
+
+    public Task SetSwitchAsync(IPAddress ip, string? password, int switchId, bool on, CancellationToken ct)
+    {
+        var d = Get(ip);
+        CheckAuth(d, password);
+        if (SwitchError is not null) throw SwitchError;
+        lock (SwitchSets) SwitchSets.Add((ip.ToString(), switchId, on));
+        return Task.CompletedTask;
     }
 
     public async IAsyncEnumerable<ShellyMdnsAnswer> DiscoverAsync(TimeSpan timeout, [EnumeratorCancellation] CancellationToken ct)

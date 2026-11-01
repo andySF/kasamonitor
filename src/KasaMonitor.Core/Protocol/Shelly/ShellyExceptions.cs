@@ -11,13 +11,18 @@ public sealed class ShellyAuthenticationException : Exception
 /// <summary>A JSON-RPC call failed (HTTP error or an RPC error object such as "method not found").</summary>
 public sealed class ShellyRpcException : Exception
 {
+    /// <summary>HTTP status, or the RPC error code of a WebSocket answer (401 = authentication needed).</summary>
     public int? HttpStatus { get; }
     public string Method { get; }
+
+    /// <summary>The device's error message as received (a JSON challenge for a WebSocket 401).</summary>
+    public string Detail { get; }
 
     public ShellyRpcException(string method, string message, int? httpStatus = null) : base($"{method}: {message}")
     {
         Method = method;
         HttpStatus = httpStatus;
+        Detail = message;
     }
 }
 

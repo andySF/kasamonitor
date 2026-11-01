@@ -11,7 +11,7 @@ groups:
     folder: KasaMonitor
     interval: 1m
     rules:
-      # One alert instance per plug (labels alias, mac, model, protocol).
+      # One alert instance per plug (labels alias, mac, model, protocol, role).
       - uid: kasamonitor-plug-offline
         title: "KasaMonitor: plug offline"
         condition: C

@@ -1,0 +1,114 @@
+@using KasaMonitor.Workers
+@inject RelayControlService Relay
+@inject IPlugStateBroadcaster States
+@inject ILiveStreamBroadcaster Stream
+@implements IDisposable
+
+@* Relay switch of a Shelly channel (Switch.Set). Hidden when AllowRelayControl is off or the channel has no relay. *@
+@if (_allowed && RelayControlService.HasRelay(_live))
+{
+    var on = RelayControlService.CurrentState(_live, _streamed);
+    <div class="d-inline-flex flex-wrap align-items-center gap-2 relay-switch">
+        <span class="small text-secondary"><i class="bi bi-toggle-on me-1"></i>Releu</span>
+        <span class="badge @(on == true ? "text-bg-success" : on == false ? "text-bg-secondary" : "text-bg-light border")">@(on == true ? "pornit" : on == false ? "oprit" : "necunoscut")</span>
+        @if (_pending is { } target)
+        {
+            <span class="small text-warning-emphasis"><i class="bi bi-exclamation-triangle-fill me-1"></i>Releul comandă un contactor; sigur? (@(target ? "Pornește" : "Oprește"))</span>
+            <button class="btn btn-sm @(target ? "btn-success" : "btn-danger")" @onclick="ConfirmAsync" disabled="@_busy">
+                @(_busy ? "Se trimite…" : "Da, " + (target ? "pornește" : "oprește"))
+            </button>
+            <button class="btn btn-sm btn-outline-secondary" @onclick="Cancel" disabled="@_busy">Renunță</button>
+        }
+        else
+        {
+            <div class="btn-group btn-group-sm" role="group" aria-label="Comandă releu">
+                <button class="btn @(on == true ? "btn-success" : "btn-outline-success")" @onclick="() => Ask(true)" title="Switch.Set on=true">Pornit</button>
+                <button class="btn @(on == false ? "btn-secondary" : "btn-outline-secondary")" @onclick="() => Ask(false)" title="Switch.Set on=false">Oprit</button>
+            </div>
+        }
+        @if (_message is not null)
+        {
+            <span class="small @(_ok ? "text-success" : "text-danger")">@_message</span>
+        }
+    </div>
+}
+
+@code {
+    [Parameter, EditorRequired] public Guid PlugId { get; set; }
+
+    /// <summary>Raised after a command (success or failure), e.g. to reload the command log.</summary>
+    [Parameter] public EventCallback<RelayCommandResult> OnCommand { get; set; }
+
+    private bool _allowed;
+    private PlugLiveState? _live;
+    private RelayState? _streamed;
+    private bool? _pending;
+    private bool _busy;
+    private string? _message;
+    private bool _ok;
+
+    protected override async Task OnInitializedAsync()
+    {
+        try { _allowed = await Relay.IsAllowedAsync(CancellationToken.None); }
+        catch (Exception) { _allowed = false; }
+        States.StateChanged += OnState;
+        Stream.RelayChanged += OnRelay;
+    }
+
+    protected override void OnParametersSet()
+    {
+        _live = States.Snapshot().GetValueOrDefault(PlugId);
+        _streamed = Stream.Relay(PlugId);
+    }
+
+    private void Ask(bool on)
+    {
+        _message = null;
+        _pending = on;
+    }
+
+    private void Cancel() => _pending = null;
+
+    private async Task ConfirmAsync()
+    {
+        if (_busy || _pending is not { } on) return;   // a second click on "Da" before the button is disabled
+        _busy = true;
+        StateHasChanged();
+        try
+        {
+            var result = await Relay.SetAsync(PlugId, on, RelayCommandSources.Ui, CancellationToken.None);
+            _ok = result.Success;
+            _message = result.Message;
+            _streamed = Stream.Relay(PlugId);
+            await OnCommand.InvokeAsync(result);
+        }
+        catch (Exception ex)
+        {
+            _ok = false;
+            _message = ex.Message;
+        }
+        finally
+        {
+            _busy = false;
+            _pending = null;
+        }
+    }
+
+    private void OnState(PlugLiveState s)
+    {
+        if (s.PlugId != PlugId) return;
+        InvokeAsync(() => { _live = s; StateHasChanged(); });
+    }
+
+    private void OnRelay(RelayState r)
+    {
+        if (r.PlugId != PlugId) return;
+        InvokeAsync(() => { _streamed = r; StateHasChanged(); });
+    }
+
+    public void Dispose()
+    {
+        States.StateChanged -= OnState;
+        Stream.RelayChanged -= OnRelay;
+    }
+}

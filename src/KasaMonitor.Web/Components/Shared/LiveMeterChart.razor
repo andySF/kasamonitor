@@ -1,0 +1,103 @@
+@using KasaMonitor.Web.Ui
+@inject ILiveStreamBroadcaster Stream
+@implements IDisposable
+
+@* Live power of the main meter (and optionally one plug overlaid), last 10 minutes. Rendered once; each new sample is
+   appended to its series (AppendDataBySeriesNameAsync); every TrimEvery appends the whole window is pushed once
+   (UpdateSeriesAsync) so the chart drops the points older than 10 minutes. *@
+<ApexChart @ref="_chart" TItem="LivePoint" Options="_options" Height="260" XAxisType="XAxisType.Datetime">
+    <ApexPointSeries TItem="LivePoint"
+                     Items="_main.Points"
+                     Name="@MainName"
+                     Color="#0072B2"
+                     SeriesType="SeriesType.Line"
+                     XValue="@(p => p.TimeUtc)"
+                     YValue="@(p => p.PowerW)" />
+    @if (OverlayPlugId is not null)
+    {
+        <ApexPointSeries TItem="LivePoint"
+                         Items="_overlay.Points"
+                         Name="@OverlayName"
+                         Color="#E69F00"
+                         SeriesType="SeriesType.Line"
+                         XValue="@(p => p.TimeUtc)"
+                         YValue="@(p => p.PowerW)" />
+    }
+</ApexChart>
+
+@code {
+    /// <summary>Appends between two full pushes of the window (trims the chart to 10 minutes).</summary>
+    public const int TrimEvery = 60;
+
+    [Parameter, EditorRequired] public Guid PlugId { get; set; }
+    [Parameter] public string MainName { get; set; } = "Casă (W)";
+
+    /// <summary>A plug drawn over the main meter (same live stream); null = none.</summary>
+    [Parameter] public Guid? OverlayPlugId { get; set; }
+    [Parameter] public string OverlayName { get; set; } = "Priză (W)";
+
+    private readonly LiveChartWindow _main = new();
+    private readonly LiveChartWindow _overlay = new();
+    private ApexChart<LivePoint>? _chart;
+    private bool _rendered;
+    private int _appends;
+    private readonly SemaphoreSlim _push = new(1, 1);
+
+    private readonly ApexChartOptions<LivePoint> _options = new()
+    {
+        Chart = new Chart
+        {
+            Toolbar = new Toolbar { Show = false },
+            Animations = new Animations { Enabled = false },
+            Zoom = new Zoom { Enabled = false },
+        },
+        Stroke = new Stroke { Width = 2, Curve = Curve.Straight },
+        Markers = new Markers { Size = 0 },
+        DataLabels = new DataLabels { Enabled = false },
+        Xaxis = new XAxis { Labels = new XAxisLabels { DatetimeUTC = false } },
+        Yaxis = new List<YAxis> { new() { DecimalsInFloat = 0, Title = new AxisTitle { Text = "W" } } },
+        Tooltip = new Tooltip { Shared = true, X = new TooltipX { Format = "HH:mm:ss" } },
+    };
+
+    protected override void OnInitialized()
+    {
+        _main.Seed(Stream.Recent(PlugId));
+        if (OverlayPlugId is { } o) _overlay.Seed(Stream.Recent(o));
+        Stream.SampleReceived += OnSample;
+    }
+
+    protected override bool ShouldRender() => !_rendered;
+
+    protected override void OnAfterRender(bool firstRender)
+    {
+        if (firstRender) _rendered = true;
+    }
+
+    private void OnSample(LiveSample s)
+    {
+        var window = s.PlugId == PlugId ? _main : s.PlugId == OverlayPlugId ? _overlay : null;
+        if (window is null) return;
+        var series = window == _main ? MainName : OverlayName;
+        _ = InvokeAsync(async () =>
+        {
+            if (!window.Add(s) || _chart is null) return;
+            // One push at a time; a sample that arrives meanwhile is already in the window and goes with the next trim.
+            if (!await _push.WaitAsync(0)) return;
+            try
+            {
+                if (++_appends % TrimEvery == 0)
+                    await _chart.UpdateSeriesAsync(false);
+                else
+                    await _chart.AppendDataBySeriesNameAsync(new Dictionary<string, IEnumerable<LivePoint>> { [series] = new[] { window.Points[^1] } });
+            }
+            catch (Exception) { /* circuit gone or chart not ready yet */ }
+            finally { _push.Release(); }
+        });
+    }
+
+    public void Dispose()
+    {
+        Stream.SampleReceived -= OnSample;
+        _push.Dispose();
+    }
+}

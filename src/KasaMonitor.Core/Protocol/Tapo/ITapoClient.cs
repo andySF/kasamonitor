@@ -14,6 +14,12 @@ public interface ITapoClient
     Task<EmeterReading> GetEnergyUsageAsync(IPAddress ip, string protocol, TapoCredentials credentials, CancellationToken ct);
 
     /// <summary>
+    /// Live stream reading: a single <c>get_energy_usage</c> on the cached KLAP/AES session (no <c>get_emeter_data</c>,
+    /// so no voltage/current). Sessions are shared with polling and re-authenticated by the transport when they expire.
+    /// </summary>
+    Task<EmeterReading> GetLivePowerAsync(IPAddress ip, string protocol, TapoCredentials credentials, CancellationToken ct);
+
+    /// <summary>
     /// Daily energy (Wh per local day) from <c>get_energy_data</c> (interval 1440) for the days from
     /// <paramref name="firstDay"/> up to <paramref name="lastDay"/>; the device may answer fewer or more days.
     /// </summary>

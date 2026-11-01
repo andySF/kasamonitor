@@ -14,4 +14,13 @@ public interface IPlugRepository
     Task<Plug?> GetByMacAsync(string mac, CancellationToken ct);
     Task SetAliasAsync(Guid plugId, string alias, bool isCustom, CancellationToken ct);
     Task SetArchivedAsync(Guid plugId, bool archived, CancellationToken ct);
+
+    /// <summary>
+    /// Sets the role of a plug. There is at most one <see cref="PlugRole.MainMeter"/>: setting it demotes the previous
+    /// main meter to <see cref="PlugRole.SubMeter"/> (same transaction).
+    /// </summary>
+    Task SetRoleAsync(Guid plugId, PlugRole role, CancellationToken ct);
+
+    /// <summary>Turns the live stream (1–10 s) of one plug/channel on or off.</summary>
+    Task SetStreamEnabledAsync(Guid plugId, bool enabled, CancellationToken ct);
 }

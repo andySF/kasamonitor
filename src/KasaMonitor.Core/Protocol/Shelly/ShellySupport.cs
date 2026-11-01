@@ -64,13 +64,22 @@ public static class ShellySupport
         var rssi = ShellyStatusParser.Rssi(status);
         var uptime = ShellyStatusParser.Uptime(status);
         var many = readings.Channels.Count > 1;
+        var role = DefaultRole(readings.Kind);
         return readings.Channels.Select(c => new DiscoveredPlug(
             ip,
             Info(info, Alias(info, config, componentType, c.Channel, many), c.Reading.RelayOn ?? false, rssi, uptime),
             PlugProtocols.ShellyRpc,
             UnsupportedReason: null,
-            Channel: c.Channel)).ToList();
+            Channel: c.Channel,
+            Role: role)).ToList();
     }
+
+    /// <summary>
+    /// Role of a newly found channel: meter channels (<c>em1</c>, <c>em</c>) are <see cref="PlugRole.SubMeter"/> until the
+    /// user picks the main meter in /plugs; <c>switch</c>/<c>pm1</c> channels are plugs.
+    /// </summary>
+    public static PlugRole DefaultRole(ShellyMeterKind kind) =>
+        kind is ShellyMeterKind.Em1 or ShellyMeterKind.Em ? PlugRole.SubMeter : PlugRole.Plug;
 
     /// <summary>Listed-but-not-polled placeholder (password missing / rejected, no meter, read error).</summary>
     public static DiscoveredPlug Unsupported(IPAddress ip, ShellyDeviceInfo info, string reason) =>

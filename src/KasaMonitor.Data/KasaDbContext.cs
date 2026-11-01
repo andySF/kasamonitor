@@ -21,6 +21,9 @@ public sealed class KasaDbContext : DbContext
     public DbSet<HeatingEnergyDailyEntity> HeatingEnergyDaily => Set<HeatingEnergyDailyEntity>();
     public DbSet<HeatingEnergyPeriodEntity> HeatingEnergyPeriods => Set<HeatingEnergyPeriodEntity>();
     public DbSet<HeatingRawFeaturesEntity> HeatingRawFeatures => Set<HeatingRawFeaturesEntity>();
+    public DbSet<MeterEventEntity> MeterEvents => Set<MeterEventEntity>();
+    public DbSet<ApplianceSignatureEntity> ApplianceSignatures => Set<ApplianceSignatureEntity>();
+    public DbSet<ApplianceRunEntity> ApplianceRuns => Set<ApplianceRunEntity>();
 
     public KasaDbContext(DbContextOptions<KasaDbContext> options) : base(options) { }
 
@@ -137,6 +140,35 @@ public sealed class KasaDbContext : DbContext
         {
             e.ToTable("HeatingRawFeatures");
             e.HasKey(r => r.DeviceId);
+        });
+
+        // Appliance detection (NILM): events of the main meter, signatures (one per appliance) and runs (on → off).
+        mb.Entity<MeterEventEntity>(e =>
+        {
+            e.ToTable("MeterEvents");
+            e.HasKey(x => x.Id);
+            e.Property(x => x.Id).ValueGeneratedOnAdd();
+            e.HasIndex(x => new { x.PlugId, x.Ts }).IsUnique();
+            e.HasIndex(x => x.Ts);
+            // Per-signature aggregates over the window read (SignatureId, Ts) ranges only.
+            e.HasIndex(x => new { x.SignatureId, x.Ts });
+        });
+
+        mb.Entity<ApplianceSignatureEntity>(e =>
+        {
+            e.ToTable("ApplianceSignatures");
+            e.HasKey(x => x.Id);
+            e.Property(x => x.Id).ValueGeneratedOnAdd();
+        });
+
+        mb.Entity<ApplianceRunEntity>(e =>
+        {
+            e.ToTable("ApplianceRuns");
+            e.HasKey(x => x.Id);
+            e.Property(x => x.Id).ValueGeneratedOnAdd();
+            e.HasIndex(x => x.SignatureId);
+            e.HasIndex(x => x.StartTs);
+            e.HasIndex(x => x.EndTs);
         });
     }
 }

@@ -1,0 +1,72 @@
+@using KasaMonitor.Core.Nilm
+@using KasaMonitor.Workers.Nilm
+@using KasaMonitor.Web.Ui
+@inject NilmService Nilm
+@implements IDisposable
+
+@* "Acum pornite" and "Azi" of the appliance detection (Dashboard, /contor): from NilmService.Summary, refreshed every 10 s.
+   Only detected appliances: those measured by a plug are on their own plug card. *@
+@if (_summary is { Enabled: true, HasMainMeter: true } s)
+{
+    <div class="row g-3 @CssClass">
+        <div class="col-md-6">
+            <div class="card h-100">
+                <div class="card-header fw-semibold d-flex justify-content-between">
+                    <span><i class="bi bi-lightning me-2"></i>Acum pornite</span>
+                    <a class="small fw-normal" href="/consumatori">Consumatori</a>
+                </div>
+                @if (s.Active.Count == 0)
+                {
+                    <div class="card-body small text-secondary">Niciun consumator detectat pornit acum.</div>
+                }
+                else
+                {
+                    <ul class="list-group list-group-flush">
+                        @foreach (var a in s.Active.Take(MaxRows))
+                        {
+                            <li class="list-group-item d-flex justify-content-between align-items-center py-1">
+                                <span title="@NilmSources.Name(a.Source) · pornit la @UiFormat.FullLocal(a.SinceUtc)"><i class="bi @a.Icon me-2"></i>@a.Name</span>
+                                <span class="fw-semibold">@a.PowerW.ToString("0") W</span>
+                            </li>
+                        }
+                    </ul>
+                }
+            </div>
+        </div>
+        <div class="col-md-6">
+            <div class="card h-100">
+                <div class="card-header fw-semibold"><i class="bi bi-calendar-day me-2"></i>Azi (consumatori detectați)</div>
+                <ul class="list-group list-group-flush">
+                    @foreach (var r in s.Today.Take(5))
+                    {
+                        <li class="list-group-item d-flex justify-content-between align-items-center py-1">
+                            <span><i class="bi @r.Icon me-2"></i>@r.Name</span>
+                            <span>@EnergyFormat.Kwh((long)Math.Round(r.Wh)) kWh</span>
+                        </li>
+                    }
+                    <li class="list-group-item d-flex justify-content-between align-items-center py-1 text-secondary"
+                        title="Casă azi (@EnergyFormat.Kwh((long)Math.Round(s.HouseTodayWh)) kWh, minutele măsurate) − prize (@EnergyFormat.Kwh((long)Math.Round(s.PlugsTodayWh)) kWh, pe același interval) − consumatorii detectați (fără cei măsurați de prize)">
+                        <span><i class="bi bi-question-diamond me-2"></i>Neidentificat</span>
+                        <span>@EnergyFormat.Kwh((long)Math.Round(s.UnidentifiedTodayWh)) kWh</span>
+                    </li>
+                </ul>
+            </div>
+        </div>
+    </div>
+}
+
+@code {
+    [Parameter] public string CssClass { get; set; } = "";
+
+    private const int MaxRows = 8;
+    private NilmSummary? _summary;
+    private System.Threading.Timer? _timer;
+
+    protected override void OnInitialized()
+    {
+        _summary = Nilm.Summary;
+        _timer = new System.Threading.Timer(_ => InvokeAsync(() => { _summary = Nilm.Summary; StateHasChanged(); }), null, 10_000, 10_000);
+    }
+
+    public void Dispose() => _timer?.Dispose();
+}

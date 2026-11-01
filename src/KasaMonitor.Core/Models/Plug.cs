@@ -20,7 +20,8 @@ public sealed record Plug(
     string? UnsupportedReason = null,
     int Channel = 0,
     PlugRole Role = PlugRole.Plug,
-    bool StreamEnabled = true
+    bool StreamEnabled = true,
+    KasaMonitor.Core.Nilm.PlugNilmState NilmState = KasaMonitor.Core.Nilm.PlugNilmState.Auto
 )
 {
     /// <summary>MAC for channel 0, "&lt;mac&gt;-&lt;channel&gt;" otherwise: the <c>mac</c> metric label and a unique display key.</summary>
@@ -33,4 +34,7 @@ public sealed record Plug(
 
     /// <summary>Counts towards totals (only <see cref="PlugRole.Plug"/>; meters already contain the plugs behind them).</summary>
     public bool CountsInTotals => PlugRoles.CountsInTotals(Role);
+
+    /// <summary>Its changes label appliance events and train the classifier (a polled plug, not excluded from learning).</summary>
+    public bool TeachesNilm => IsPolled && Role == PlugRole.Plug && !KasaMonitor.Core.Nilm.PlugNilmStates.IsIgnored(NilmState);
 }

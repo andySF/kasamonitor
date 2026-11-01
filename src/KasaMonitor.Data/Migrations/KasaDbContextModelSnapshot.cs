@@ -17,6 +17,97 @@ namespace KasaMonitor.Data.Migrations
 #pragma warning disable 612, 618
             modelBuilder.HasAnnotation("ProductVersion", "10.0.14");
 
+            modelBuilder.Entity("KasaMonitor.Data.Entities.ApplianceRunEntity", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("INTEGER");
+
+                    b.Property<long?>("EndEventId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int>("EndReason")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<long?>("EndTs")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<double?>("EstimatedWh")
+                        .HasColumnType("REAL");
+
+                    b.Property<double>("HouseBeforeW")
+                        .HasColumnType("REAL");
+
+                    b.Property<double>("PowerW")
+                        .HasColumnType("REAL");
+
+                    b.Property<long>("SignatureId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<long>("StartEventId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<long>("StartTs")
+                        .HasColumnType("INTEGER");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("EndTs");
+
+                    b.HasIndex("SignatureId");
+
+                    b.HasIndex("StartTs");
+
+                    b.ToTable("ApplianceRuns", (string)null);
+                });
+
+            modelBuilder.Entity("KasaMonitor.Data.Entities.ApplianceSignatureEntity", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("Category")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<int>("Count")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<bool>("Hidden")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("Icon")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<int>("LabelSource")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<long?>("LastSeen")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<double>("MeanDeltaP")
+                        .HasColumnType("REAL");
+
+                    b.Property<double>("MeanDeltaQ")
+                        .HasColumnType("REAL");
+
+                    b.Property<double>("MeanTransient")
+                        .HasColumnType("REAL");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<Guid?>("PlugId")
+                        .HasColumnType("TEXT");
+
+                    b.HasKey("Id");
+
+                    b.ToTable("ApplianceSignatures", (string)null);
+                });
+
             modelBuilder.Entity("KasaMonitor.Data.Entities.DailyEnergyEntity", b =>
                 {
                     b.Property<Guid>("PlugId")
@@ -310,6 +401,60 @@ namespace KasaMonitor.Data.Migrations
                     b.ToTable("LiveSamples", (string)null);
                 });
 
+            modelBuilder.Entity("KasaMonitor.Data.Entities.MeterEventEntity", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("INTEGER");
+
+                    b.Property<double>("DeltaP")
+                        .HasColumnType("REAL");
+
+                    b.Property<double>("DeltaPf")
+                        .HasColumnType("REAL");
+
+                    b.Property<double>("DeltaQ")
+                        .HasColumnType("REAL");
+
+                    b.Property<string>("Label")
+                        .HasColumnType("TEXT");
+
+                    b.Property<Guid?>("LabelPlugId")
+                        .HasColumnType("TEXT");
+
+                    b.Property<Guid>("PlugId")
+                        .HasColumnType("TEXT");
+
+                    b.Property<double>("PowerBeforeW")
+                        .HasColumnType("REAL");
+
+                    b.Property<double>("RiseSeconds")
+                        .HasColumnType("REAL");
+
+                    b.Property<long?>("SignatureId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int>("Source")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<double>("TransientRatio")
+                        .HasColumnType("REAL");
+
+                    b.Property<long>("Ts")
+                        .HasColumnType("INTEGER");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("Ts");
+
+                    b.HasIndex("PlugId", "Ts")
+                        .IsUnique();
+
+                    b.HasIndex("SignatureId", "Ts");
+
+                    b.ToTable("MeterEvents", (string)null);
+                });
+
             modelBuilder.Entity("KasaMonitor.Data.Entities.MonthlyEnergyEntity", b =>
                 {
                     b.Property<Guid>("PlugId")
@@ -422,6 +567,9 @@ namespace KasaMonitor.Data.Migrations
                     b.Property<string>("Model")
                         .IsRequired()
                         .HasColumnType("TEXT");
+
+                    b.Property<int>("NilmIgnored")
+                        .HasColumnType("INTEGER");
 
                     b.Property<string>("Notes")
                         .HasColumnType("TEXT");

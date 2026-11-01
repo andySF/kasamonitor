@@ -12,6 +12,9 @@ public interface ILiveRepository
     Task SaveBatchAsync(IReadOnlyList<LiveSample> samples, IReadOnlyList<LiveMinuteAggregate> minutes, CancellationToken ct);
 
     Task<IReadOnlyList<LiveSample>> ListSamplesAsync(Guid plugId, DateTimeOffset fromUtc, DateTimeOffset toUtc, CancellationToken ct);
+    /// <summary>Second of the oldest stored raw sample of a plug (null when it has none).</summary>
+    Task<DateTimeOffset?> FirstSampleTsAsync(Guid plugId, CancellationToken ct);
+
     Task<IReadOnlyList<LiveMinuteAggregate>> ListMinutesAsync(Guid plugId, DateTimeOffset fromUtc, DateTimeOffset toUtc, CancellationToken ct);
 
     Task<int> CountSamplesOlderThanAsync(DateTimeOffset cutoffUtc, CancellationToken ct);

@@ -30,4 +30,6 @@ public sealed class PlugEntity
 
     /// <summary>Live stream (1–10 s) for this channel; default true, false for sub-meters.</summary>
     public bool StreamEnabled { get; set; } = true;
+    /// <summary><see cref="KasaMonitor.Core.Nilm.PlugNilmState"/>: 0 used, 1 ignored automatically, 2 ignored by the user, 3 always used.</summary>
+    public int NilmIgnored { get; set; }
 }

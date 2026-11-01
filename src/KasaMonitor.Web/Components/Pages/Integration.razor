@@ -1,4 +1,5 @@
 @page "/integration"
+@using KasaMonitor.Workers.Nilm
 @rendermode InteractiveServer
 @using KasaMonitor.Web.Integration
 @using KasaMonitor.Workers
@@ -139,6 +140,37 @@
             <li>randament aparent luna trecută: <code>sum(heating_heat_production_kwh{period="lastmonth"}) / (sum(heating_gas_consumption_m3{period="lastmonth"}) * 10.55)</code></li>
             <li>modul apei calde: <code>heating_dhw_mode_info</code> (=1, eticheta <code>mode</code>); programul: <code>heating_program_info</code></li>
         </ul>
+        <h3>Consumatori detectați (NILM)</h3>
+        <p class="note">
+            Din fluxul la 1 s al contorului general, KasaMonitor detectează pornirile și opririle aparatelor (pagina <a href="/consumatori">Consumatori</a>)
+            și exportă pe <code>/metrics</code>:
+        </p>
+        <table class="table table-sm align-middle int-table">
+            <thead><tr><th>Metrică</th><th>Tip</th><th>Unitate</th><th>Etichete</th><th>Descriere</th></tr></thead>
+            <tbody>
+                @foreach (var m in NilmMetrics.Catalog)
+                {
+                    <tr>
+                        <td><code>@m.Name</code></td>
+                        <td>@m.Type</td>
+                        <td>@m.Unit</td>
+                        <td>@(m == NilmMetrics.PowerInfo ? string.Join(", ", NilmMetrics.PowerLabels) : m == NilmMetrics.EnergyInfo ? string.Join(", ", NilmMetrics.EnergyLabels) : "—")</td>
+                        <td>@m.Help</td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+        <p class="note">
+            Se exportă doar consumatorii <b>detectați</b> pe care i-ai numit sau care au cel puțin @NilmService.MinEventsForMetrics evenimente în fereastră; cei
+            măsurați de prize au deja seriile lor <code>kasa_*</code>, iar cei ascunși nu apar. <code>appliance</code> = numele semnăturii normalizat
+            (fără diacritice, doar litere, cifre, spațiu, <code>_</code> și <code>-</code>, cel mult @NilmMetrics.MaxLabelLength de caractere: „Necunoscut #12” →
+            <code>Necunoscut 12</code>), <code>category</code> = fridge, boiler, cooking, washer, hvac, lighting, electronics, other,
+            <code>source</code> = <code>user</code> (numit de tine) sau <code>cluster</code> (grupare automată). Seriile unui consumator redenumit, ascuns sau unit
+            dispar. Contoarele pornesc de la 0 la repornirea aplicației
+            (<code>kasa_nilm_events_total</code> de la numărul de evenimente din bază), deci energia se calculează cu <code>increase()</code>. Exemple:
+            <code>sum by (appliance) (kasa_appliance_power_w)</code>, <code>sum by (appliance) (increase(kasa_appliance_energy_wh_total[1d])) / 1000</code>,
+            <code>increase(kasa_nilm_unidentified_wh_total[1d]) / 1000</code>. Dashboard-ul din pachet are rândul „Consumatori detectați”.
+        </p>
     }
 
     <h3>Prize care NU apar în metrici</h3>

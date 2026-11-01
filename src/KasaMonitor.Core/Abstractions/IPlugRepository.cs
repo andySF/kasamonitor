@@ -23,4 +23,7 @@ public interface IPlugRepository
 
     /// <summary>Turns the live stream (1–10 s) of one plug/channel on or off.</summary>
     Task SetStreamEnabledAsync(Guid plugId, bool enabled, CancellationToken ct);
+
+    /// <summary>Whether the plug labels appliance events and trains the classifier (see <see cref="KasaMonitor.Core.Nilm.PlugNilmState"/>).</summary>
+    Task SetNilmStateAsync(Guid plugId, KasaMonitor.Core.Nilm.PlugNilmState state, CancellationToken ct);
 }

@@ -44,6 +44,18 @@ public static class SettingKeys
     /// <summary>Optional basic-auth user and password of the remote write endpoint; both stored encrypted.</summary>
     public const string RemoteWriteUser = "RemoteWriteUser";
     public const string RemoteWritePassword = "RemoteWritePassword";
+    /// <summary>Appliance detection from the main meter (events, signatures, runs, /consumatori); on by default.</summary>
+    public const string NilmEnabled = "NilmEnabled";
+    /// <summary>Smallest steady-state step of the main meter (W) recorded as an event; default 30 W.</summary>
+    public const string MinEventDeltaW = "MinEventDeltaW";
+    /// <summary>Days of events grouped by the nightly re-clustering (DBSCAN); default 30.</summary>
+    public const string ClusterWindowDays = "ClusterWindowDays";
+    /// <summary>Nightly ML.NET classifier over the labelled events (from plugs or the user); on by default.</summary>
+    public const string MlEnabled = "MlEnabled";
+    /// <summary>Internal: unix second up to which the main meter's samples went through the event detector.</summary>
+    public const string NilmLastProcessedTs = "NilmLastProcessedTs";
+    /// <summary>Internal: JSON with the last training of the classifier (time, examples, accuracy, confusion matrix).</summary>
+    public const string NilmModelInfo = "NilmModelInfo";
 }
 
 /// <summary>Basic-auth credentials of the remote write endpoint (decrypted, never shown).</summary>
@@ -70,9 +82,15 @@ public sealed record KasaSettingsDefaults(
     bool RemoteWriteEnabled = false,
     string RemoteWriteUrl = "",
     string? RemoteWriteUser = null,
-    string? RemoteWritePassword = null)
+    string? RemoteWritePassword = null,
+    bool NilmEnabled = true,
+    int MinEventDeltaW = KasaSettingsDefaults.DefaultMinEventDeltaW,
+    int ClusterWindowDays = KasaSettingsDefaults.DefaultClusterWindowDays,
+    bool MlEnabled = true)
 {
     public const int DefaultLiveBurstTriggerW = 50;
+    public const int DefaultMinEventDeltaW = 30;
+    public const int DefaultClusterWindowDays = 30;
 }
 
 /// <summary>Effective settings (database first, configuration as fallback).</summary>
@@ -98,7 +116,11 @@ public sealed record KasaRuntimeSettings(
     int LiveBurstTriggerW = KasaSettingsDefaults.DefaultLiveBurstTriggerW,
     bool RemoteWriteEnabled = false,
     string RemoteWriteUrl = "",
-    RemoteWriteCredentials? RemoteWriteCredentials = null)
+    RemoteWriteCredentials? RemoteWriteCredentials = null,
+    bool NilmEnabled = true,
+    int MinEventDeltaW = KasaSettingsDefaults.DefaultMinEventDeltaW,
+    int ClusterWindowDays = KasaSettingsDefaults.DefaultClusterWindowDays,
+    bool MlEnabled = true)
 {
     public bool HasRemoteWriteAuth => RemoteWriteCredentials is not null;
     public bool HasShellyPassword => ShellyCredentials is not null;
@@ -133,7 +155,11 @@ public sealed record KasaSettingsUpdate(
     string? RemoteWriteUrl = null,
     string? NewRemoteWriteUser = null,
     string? NewRemoteWritePassword = null,
-    bool ClearRemoteWriteAuth = false);
+    bool ClearRemoteWriteAuth = false,
+    bool? NilmEnabled = null,
+    int? MinEventDeltaW = null,
+    int? ClusterWindowDays = null,
+    bool? MlEnabled = null);
 
 public interface IKasaSettingsService
 {
@@ -151,6 +177,10 @@ public sealed class KasaSettingsService : IKasaSettingsService
     public const int MaxLiveRetentionDays = 36500;
     public const int MinBurstTriggerW = 1;
     public const int MaxBurstTriggerW = 100_000;
+    public const int MinEventDeltaWMin = 5;
+    public const int MinEventDeltaWMax = 10_000;
+    public const int MinClusterWindowDays = 1;
+    public const int MaxClusterWindowDays = 365;
 
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly KasaSettingsDefaults _defaults;
@@ -219,6 +249,10 @@ public sealed class KasaSettingsService : IKasaSettingsService
         var rwUser = Secret(db, SettingKeys.RemoteWriteUser, _defaults.RemoteWriteUser);
         var rwPassword = Secret(db, SettingKeys.RemoteWritePassword, _defaults.RemoteWritePassword);
         var rwCreds = !string.IsNullOrEmpty(rwUser) && rwPassword is not null ? new RemoteWriteCredentials(rwUser, rwPassword) : null;
+        var nilmOn = ParseBool(db, SettingKeys.NilmEnabled) ?? _defaults.NilmEnabled;
+        var minEvent = Math.Clamp(ParseInt(db, SettingKeys.MinEventDeltaW) ?? _defaults.MinEventDeltaW, MinEventDeltaWMin, MinEventDeltaWMax);
+        var clusterDays = Math.Clamp(ParseInt(db, SettingKeys.ClusterWindowDays) ?? _defaults.ClusterWindowDays, MinClusterWindowDays, MaxClusterWindowDays);
+        var mlOn = ParseBool(db, SettingKeys.MlEnabled) ?? _defaults.MlEnabled;
 
         return new KasaRuntimeSettings(enabled, interval, broadcastText, addrs, autoAdd,
             user, !string.IsNullOrEmpty(password), creds, retention, tariff,
@@ -233,7 +267,11 @@ public sealed class KasaSettingsService : IKasaSettingsService
             burst,
             rwOn,
             rwUrl.Trim(),
-            rwCreds);
+            rwCreds,
+            nilmOn,
+            minEvent,
+            clusterDays,
+            mlOn);
     }
 
     /// <summary>An encrypted value from the database (empty = cleared), else the configuration value.</summary>
@@ -312,6 +350,16 @@ public sealed class KasaSettingsService : IKasaSettingsService
             if (!string.IsNullOrEmpty(update.NewRemoteWritePassword))
                 await repo.SetAsync(SettingKeys.RemoteWritePassword, _protector.Protect(update.NewRemoteWritePassword), ct);
         }
+        if (update.NilmEnabled is { } nilmOn)
+            await repo.SetAsync(SettingKeys.NilmEnabled, nilmOn ? "true" : "false", ct);
+        if (update.MinEventDeltaW is { } minEvent)
+            await repo.SetAsync(SettingKeys.MinEventDeltaW,
+                Math.Clamp(minEvent, MinEventDeltaWMin, MinEventDeltaWMax).ToString(CultureInfo.InvariantCulture), ct);
+        if (update.ClusterWindowDays is { } clusterDays)
+            await repo.SetAsync(SettingKeys.ClusterWindowDays,
+                Math.Clamp(clusterDays, MinClusterWindowDays, MaxClusterWindowDays).ToString(CultureInfo.InvariantCulture), ct);
+        if (update.MlEnabled is { } mlOn)
+            await repo.SetAsync(SettingKeys.MlEnabled, mlOn ? "true" : "false", ct);
     }
 
     /// <summary>Comma-separated IPv4 addresses; returns the valid ones and the rejected tokens.</summary>

@@ -63,6 +63,12 @@ public sealed class LiveRepository : ILiveRepository
             .ToListAsync(ct);
     }
 
+    public async Task<DateTimeOffset?> FirstSampleTsAsync(Guid plugId, CancellationToken ct)
+    {
+        var first = await _db.LiveSamples.AsNoTracking().Where(s => s.PlugId == plugId).OrderBy(s => s.Ts).Select(s => (long?)s.Ts).FirstOrDefaultAsync(ct);
+        return first is { } ts ? DateTimeOffset.FromUnixTimeSeconds(ts) : null;
+    }
+
     public async Task<IReadOnlyList<LiveMinuteAggregate>> ListMinutesAsync(Guid plugId, DateTimeOffset fromUtc, DateTimeOffset toUtc, CancellationToken ct)
     {
         long from = fromUtc.ToUnixTimeSeconds(), to = toUtc.ToUnixTimeSeconds();

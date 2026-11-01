@@ -142,6 +142,18 @@ else
                                         <label class="form-check-label" for="stream-@p.Id">flux 1 s</label>
                                     </div>
                                 }
+                                @if (p.IsSupported && !p.IsArchived && p.Role == PlugRole.Plug)
+                                {
+                                    var nilmIgnored = KasaMonitor.Core.Nilm.PlugNilmStates.IsIgnored(p.NilmState);
+                                    <div class="form-check form-check-inline small mt-1 me-0" title="Schimbările prizei etichetează evenimentele contorului general și antrenează modelul (pagina Consumatori)">
+                                        <input class="form-check-input" type="checkbox" id="nilm-@p.Id" checked="@(!nilmIgnored)" @onchange="e => SetNilmAsync(p, e.Value is true)" />
+                                        <label class="form-check-label" for="nilm-@p.Id">învățare consumatori</label>
+                                    </div>
+                                    @if (KasaMonitor.Core.Nilm.PlugNilmStates.Badge(p.NilmState) is { } nilmBadge)
+                                    {
+                                        <span class="badge text-bg-warning" title="O priză cu sarcină variabilă (ex. UPS) se potrivește cu prea multe evenimente; bifează „învățare consumatori” ca să anulezi">@nilmBadge</span>
+                                    }
+                                }
                                 @if (p.Role != PlugRole.MainMeter && p.Protocol == PlugProtocols.ShellyRpc && !p.IsArchived)
                                 {
                                     <div><button class="btn btn-link btn-sm p-0" @onclick="() => SetRoleAsync(p, PlugRole.MainMeter)" title="Un singur contor general: cel de acum devine sub-contor"><i class="bi bi-house-door me-1"></i>Setează ca contor general</button></div>
@@ -352,6 +364,17 @@ else
         using (var scope = ScopeFactory.CreateScope())
             await scope.ServiceProvider.GetRequiredService<IPlugRepository>().SetStreamEnabledAsync(p.Id, enabled, CancellationToken.None);
         _message = $"„{p.Alias}”: flux live {(enabled ? "pornit" : "oprit")} (se aplică în ≤ 10 s).";
+        await ReloadAsync();
+    }
+
+    private async Task SetNilmAsync(Plug p, bool use)
+    {
+        var state = use ? KasaMonitor.Core.Nilm.PlugNilmState.AlwaysUse : KasaMonitor.Core.Nilm.PlugNilmState.IgnoredManual;
+        using (var scope = ScopeFactory.CreateScope())
+            await scope.ServiceProvider.GetRequiredService<IPlugRepository>().SetNilmStateAsync(p.Id, state, CancellationToken.None);
+        _message = use
+            ? $"„{p.Alias}” etichetează din nou consumatorii (nu se mai exclude automat)."
+            : $"„{p.Alias}” e exclusă din învățarea consumatorilor.";
         await ReloadAsync();
     }
 

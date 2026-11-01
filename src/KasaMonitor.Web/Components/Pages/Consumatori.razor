@@ -1,0 +1,429 @@
+@page "/consumatori"
+@rendermode InteractiveServer
+@using KasaMonitor.Core.Nilm
+@using KasaMonitor.Workers.Nilm
+@using KasaMonitor.Web.Ui
+@inject NilmService Nilm
+@implements IDisposable
+
+<PageTitle>KasaMonitor — Consumatori</PageTitle>
+
+<div class="d-flex flex-wrap align-items-center justify-content-between gap-2 mb-3">
+    <h1 class="h3 mb-0"><i class="bi bi-lightbulb me-2"></i>Consumatori detectați</h1>
+    <div class="d-flex align-items-center gap-3">
+        @if (_overview?.MainMeterAlias is { } main)
+        {
+            <span class="small text-secondary">din contorul general: @main</span>
+        }
+        <button class="btn btn-sm btn-outline-secondary" @onclick="LoadAsync" disabled="@Blocked"><i class="bi bi-arrow-clockwise me-1"></i>Reîmprospătează</button>
+    </div>
+</div>
+
+@if (_error is not null)
+{
+    <div class="alert alert-danger small">@_error</div>
+}
+
+@if (_overview is null)
+{
+    <p class="text-secondary"><span class="spinner-border spinner-border-sm me-2"></span>Se încarcă…</p>
+}
+else if (!_overview.Settings.Enabled)
+{
+    <div class="alert alert-secondary">Detecția consumatorilor e oprită în <a href="/settings">Setări</a> („Consumatori detectați”).</div>
+}
+else if (_overview.MainMeterAlias is null)
+{
+    <div class="alert alert-secondary">
+        Detecția pornește din puterea casei la secundă: setează întâi contorul general în <a href="/plugs">Prize</a>.
+    </div>
+}
+else
+{
+    @if (_overview.Busy)
+    {
+        <div class="alert alert-info small py-2"><span class="spinner-border spinner-border-sm me-2"></span>Procesare în curs (istoric sau regruparea de noapte): datele de mai jos se completează pe parcurs.</div>
+    }
+    <p class="small text-secondary mb-2">
+        Fiecare schimbare stabilă a puterii casei de cel puțin @_overview.Settings.MinEventDeltaW W e un <b>eveniment</b> (pornire +ΔP, oprire −ΔP);
+        evenimentele asemănătoare (ΔP, putere reactivă ΔQ, vârful de pornire) formează o <b>semnătură</b> = un consumator. Când o singură priză face
+        în ±15 s o treaptă curată cu același ΔP, evenimentul primește numele prizei; dacă cel puțin @SignatureNaming.MinPlugEvents evenimente și ≥ 60 % din evenimentele unei semnături vin de la aceeași priză,
+        semnătura e <b>măsurată de priză</b> (consumul exact e al prizei) și nu mai apare printre consumatorii detectați.
+    </p>
+
+    <NilmSummaryCard CssClass="mb-3" />
+
+    <div class="card mb-3">
+        <div class="card-header fw-semibold d-flex flex-wrap justify-content-between align-items-center gap-2">
+            <span><i class="bi bi-collection me-2"></i>Consumatori detectați (@_overview.DetectedTotal)</span>
+            <div class="d-flex flex-wrap align-items-center gap-2 fw-normal small">
+                <label class="form-check-label"><input class="form-check-input me-1" type="checkbox" @bind="_showHidden" /> arată și ascunsele</label>
+                <span class="text-secondary">Unește</span>
+                <select class="form-select form-select-sm w-auto" @bind="_mergeFrom" disabled="@Blocked">
+                    <option value="0">…</option>
+                    @foreach (var s in _overview.AllSignatures.OrderBy(s => s.Name))
+                    {
+                        <option value="@s.Id">@s.Name</option>
+                    }
+                </select>
+                <span class="text-secondary">în</span>
+                <select class="form-select form-select-sm w-auto" @bind="_mergeInto" disabled="@Blocked">
+                    <option value="0">…</option>
+                    @foreach (var s in _overview.AllSignatures.Where(s => s.Id != _mergeFrom).OrderBy(s => s.Name))
+                    {
+                        <option value="@s.Id">@s.Name</option>
+                    }
+                </select>
+                <button class="btn btn-sm btn-warning" @onclick="MergeAsync" disabled="@(Blocked || _mergeFrom == 0 || _mergeInto == 0 || _mergeFrom == _mergeInto)"
+                        title="Evenimentele primei semnături trec în a doua">Unește</button>
+            </div>
+        </div>
+        @if (!VisibleDetected.Any())
+        {
+            <div class="card-body small text-secondary">Încă niciun consumator detectat: apar după primele evenimente (la ~30 s după o pornire/oprire).</div>
+        }
+        else
+        {
+            <div class="table-responsive">
+                <table class="table table-sm align-middle mb-0 small">
+                    <thead class="table-light">
+                        <tr>
+                            <th>Nume</th><th>Categorie</th>
+                            <th class="text-end" title="|ΔP| mediu al pornirilor și opririlor">ΔP</th>
+                            <th class="text-end" title="Puterea reactivă (din partea pornirii)">ΔQ</th>
+                            <th class="text-end" title="Vârful din primele 2 s / ΔP (motoare 3–8, rezistențe ≈ 1)">Tranz.</th>
+                            <th class="text-end" title="Evenimente în fereastra de @_overview.Settings.ClusterWindowDays zile">Evenim.</th><th>Ultima</th>
+                            <th class="text-end" title="Energie estimată din rulările pornire → oprire">Azi</th>
+                            <th class="text-end">30 zile</th>
+                            <th>Sursă</th><th></th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var r in VisibleDetected)
+                        {
+                            var s = r.Signature;
+                            <tr class="@(s.Hidden ? "text-body-tertiary" : "")">
+                                <td style="min-width: 12rem">
+                                    <div class="input-group input-group-sm">
+                                        <span class="input-group-text"><i class="bi @s.Icon"></i></span>
+                                        <input class="form-control" value="@s.Name" maxlength="@SignatureNaming.MaxNameLength" @onchange="e => RenameAsync(s.Id, e.Value?.ToString())" disabled="@Blocked" />
+                                    </div>
+                                    @if (r.ActiveW is { } w)
+                                    {
+                                        <span class="badge text-bg-success mt-1">pornit acum · @w.ToString("0") W</span>
+                                    }
+                                    @if (r.UncertainRuns > 0)
+                                    {
+                                        <span class="badge text-bg-warning mt-1" title="Rulări fără oprire văzută în @ApplianceRunBuilder.MaxOpen.TotalHours.ToString("0") h: închise fără energie (nu intră în „Azi”, în metrici și în „Neidentificat”)">@r.UncertainRuns rulări incerte</span>
+                                    }
+                                    @if (r.PossiblePlug is { } maybe)
+                                    {
+                                        <span class="badge text-bg-light border mt-1" title="Câteva evenimente s-au potrivit cu această priză, dar sub pragul de legare (minim @SignatureNaming.MinPlugEvents evenimente și 60 %)">posibil @maybe</span>
+                                    }
+                                </td>
+                                <td>
+                                    <select class="form-select form-select-sm" value="@s.Category" @onchange="e => SetCategoryAsync(s.Id, e.Value?.ToString())" disabled="@Blocked">
+                                        @foreach (var c in ApplianceCategories.All)
+                                        {
+                                            <option value="@c.Key">@c.Name</option>
+                                        }
+                                    </select>
+                                </td>
+                                <td class="text-end">@s.MeanDeltaP.ToString("0") W</td>
+                                <td class="text-end">@s.MeanDeltaQ.ToString("0") VAR</td>
+                                <td class="text-end">@(s.MeanTransient > 0 ? s.MeanTransient.ToString("0.0") : "—")</td>
+                                <td class="text-end">@s.Count</td>
+                                <td class="text-nowrap">@(s.LastSeenUtc is { } ls ? UiFormat.FullLocal(ls) : "—")</td>
+                                <td class="text-end text-nowrap">@EnergyFormat.Kwh((long)Math.Round(r.TodayWh)) kWh</td>
+                                <td class="text-end text-nowrap">@EnergyFormat.Kwh((long)Math.Round(r.Last30DaysWh)) kWh</td>
+                                <td><span class="badge @(s.LabelSource == SignatureLabelSource.User ? "text-bg-primary" : "text-bg-light border")">@NilmSources.Name(s.LabelSource)</span></td>
+                                <td class="text-nowrap">
+                                    <button class="btn btn-sm btn-outline-secondary" @onclick="() => SplitAsync(s.Id)" disabled="@Blocked" title="Regrupează doar evenimentele acestei semnături, cu toleranță pe jumătate"><i class="bi bi-scissors"></i></button>
+                                    <button class="btn btn-sm btn-outline-secondary" @onclick="() => SetHiddenAsync(s.Id, !s.Hidden)" disabled="@Blocked" title="@(s.Hidden ? "Arată" : "Ascunde (nu mai apare în carduri și metrici; energia rămâne neidentificată)")">
+                                        <i class="bi @(s.Hidden ? "bi-eye" : "bi-eye-slash")"></i>
+                                    </button>
+                                </td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+            @if (_overview.PageCount > 1)
+            {
+                <div class="card-footer d-flex align-items-center gap-2 small">
+                    <button class="btn btn-sm btn-outline-secondary" @onclick="() => GoAsync(_page - 1, _eventsPage)" disabled="@(_page == 0)"><i class="bi bi-chevron-left"></i></button>
+                    <span>pagina @(_overview.Page + 1) din @_overview.PageCount (câte @NilmService.PageSize, după numărul de evenimente)</span>
+                    <button class="btn btn-sm btn-outline-secondary" @onclick="() => GoAsync(_page + 1, _eventsPage)" disabled="@(_page >= _overview.PageCount - 1)"><i class="bi bi-chevron-right"></i></button>
+                </div>
+            }
+        }
+        @if (_message is not null)
+        {
+            <div class="card-footer small">@_message</div>
+        }
+    </div>
+
+    <div class="card mb-3">
+        <div class="card-header fw-semibold"><i class="bi bi-plug me-2"></i>Măsurate de prize (@_overview.PlugMeasured.Count)</div>
+        <div class="card-body small text-secondary pb-1">
+            Semnături ale căror evenimente vin, în cel puțin @SignatureNaming.MinPlugEvents cazuri și 60 % din ele, de la aceeași priză: consumul exact e al prizei (cardul ei, metricile
+            <code>kasa_*</code>), așa că nu apar în „Acum pornite”, în energia detectată și nici în <code>kasa_appliance_*</code>. Redenumirea nu schimbă legătura cu priza.
+        </div>
+        @if (_overview.PlugMeasured.Count > 0)
+        {
+            <div class="table-responsive">
+                <table class="table table-sm align-middle mb-0 small">
+                    <thead class="table-light"><tr><th>Nume</th><th>Priza</th><th class="text-end">ΔP</th><th class="text-end">Evenim.</th><th>Ultima</th></tr></thead>
+                    <tbody>
+                        @foreach (var r in _overview.PlugMeasured)
+                        {
+                            var s = r.Signature;
+                            <tr>
+                                <td style="min-width: 12rem">
+                                    <input class="form-control form-control-sm" value="@s.Name" maxlength="@SignatureNaming.MaxNameLength" @onchange="e => RenameAsync(s.Id, e.Value?.ToString())" disabled="@Blocked" />
+                                </td>
+                                <td>@(_overview.Plugs.FirstOrDefault(p => p.PlugId == s.PlugId)?.Alias ?? "—")</td>
+                                <td class="text-end">@s.MeanDeltaP.ToString("0") W</td>
+                                <td class="text-end">@s.Count</td>
+                                <td class="text-nowrap">@(s.LastSeenUtc is { } ls ? UiFormat.FullLocal(ls) : "—")</td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+        }
+    </div>
+
+    <div class="card mb-3">
+        <div class="card-header fw-semibold"><i class="bi bi-mortarboard me-2"></i>Prize folosite la învățare</div>
+        <div class="card-body small">
+            <div class="text-secondary mb-2">
+                O priză care se potrivește cu peste @PlugNilmStates.MaxMatchesPerHour evenimente într-o oră (o sarcină variabilă, ex. un UPS) e exclusă automat:
+                etichetele ei nu se mai pun și nu intră în antrenarea modelului. Poți anula excluderea sau exclude o priză oricând (și din pagina Prize).
+            </div>
+            <div class="d-flex flex-wrap gap-2">
+                @foreach (var p in _overview.Plugs)
+                {
+                    var ignored = PlugNilmStates.IsIgnored(p.State);
+                    <span class="badge @(ignored ? "text-bg-warning" : "text-bg-light border") d-inline-flex align-items-center gap-1" title="@(PlugNilmStates.Badge(p.State) ?? "folosită la învățare")">
+                        @p.Alias@(p.State == PlugNilmState.IgnoredAuto ? " (exclusă automat)" : p.State == PlugNilmState.IgnoredManual ? " (exclusă)" : "")
+                        <button class="btn btn-link btn-sm p-0 ms-1" @onclick="() => SetPlugAsync(p.PlugId, ignored ? PlugNilmState.AlwaysUse : PlugNilmState.IgnoredManual)" disabled="@Blocked"
+                                title="@(ignored ? "Anulează excluderea (nu se mai exclude automat)" : "Exclude din învățare")"><i class="bi @(ignored ? "bi-arrow-counterclockwise" : "bi-x-circle")"></i></button>
+                    </span>
+                }
+            </div>
+        </div>
+    </div>
+
+    <div class="card mb-3">
+        <div class="card-header fw-semibold">
+            <i class="bi bi-clock-history me-2"></i>Evenimente, ultimele 24 h (@_overview.EventsInWindow)
+        </div>
+        @if (_overview.Events.Count == 0)
+        {
+            <div class="card-body small text-secondary">Niciun eveniment în ultimele 24 de ore.</div>
+        }
+        else
+        {
+            <datalist id="nilm-names">
+                @foreach (var n in _overview.AllSignatures.Select(x => x.Name).Distinct())
+                {
+                    <option value="@n"></option>
+                }
+            </datalist>
+            <div class="table-responsive">
+                <table class="table table-sm align-middle mb-0 small">
+                    <thead class="table-light">
+                        <tr><th>Ora</th><th class="text-end">ΔP</th><th class="text-end">ΔQ</th><th class="text-end">Tranz.</th><th class="text-end">Urcare</th><th>Semnătura</th><th>Eticheta</th><th style="min-width: 14rem">A fost…</th></tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var row in _overview.Events)
+                        {
+                            var e = row.Event;
+                            <tr>
+                                <td class="text-nowrap">@UiFormat.FullLocal(e.TsUtc)</td>
+                                <td class="text-end text-nowrap @(e.IsOn ? "text-success" : "text-danger")">@e.DeltaP.ToString("+0;-0") W</td>
+                                <td class="text-end">@e.DeltaQ.ToString("+0;-0;0")</td>
+                                <td class="text-end">@(e.IsOn ? e.TransientRatio.ToString("0.0") : "—")</td>
+                                <td class="text-end">@e.RiseSeconds.ToString("0") s</td>
+                                <td>@(row.SignatureName ?? "—")</td>
+                                <td>@(e.Label ?? "—") @if (e.Source != EventLabelSource.None) { <span class="badge text-bg-light border">@NilmSources.Name(e.Source)</span> }</td>
+                                <td>
+                                    <div class="input-group input-group-sm">
+                                        <input class="form-control" list="nilm-names" placeholder="ex. boiler" maxlength="@SignatureNaming.MaxNameLength"
+                                               value="@_eventLabel.GetValueOrDefault(e.Id)"
+                                               @oninput="ev => _eventLabel[e.Id] = ev.Value?.ToString() ?? string.Empty"
+                                               @onkeydown="ev => OnLabelKeyAsync(ev, e.Id)" disabled="@Blocked" />
+                                        <button class="btn btn-outline-primary" @onclick="() => LabelEventAsync(e.Id)" disabled="@Blocked">Etichetează</button>
+                                    </div>
+                                </td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+            @if (_overview.EventsPageCount > 1)
+            {
+                <div class="card-footer d-flex align-items-center gap-2 small">
+                    <button class="btn btn-sm btn-outline-secondary" @onclick="() => GoAsync(_page, _eventsPage - 1)" disabled="@(_eventsPage == 0)"><i class="bi bi-chevron-left"></i></button>
+                    <span>pagina @(_overview.EventsPage + 1) din @_overview.EventsPageCount (cele mai noi întâi)</span>
+                    <button class="btn btn-sm btn-outline-secondary" @onclick="() => GoAsync(_page, _eventsPage + 1)" disabled="@(_eventsPage >= _overview.EventsPageCount - 1)"><i class="bi bi-chevron-right"></i></button>
+                </div>
+            }
+        }
+    </div>
+
+    <div class="card mb-3">
+        <div class="card-header fw-semibold"><i class="bi bi-cpu me-2"></i>Model ML (clasificator antrenat noaptea)</div>
+        <div class="card-body small">
+            @if (!_overview.Settings.MlEnabled)
+            {
+                <span class="text-secondary">Modelul e oprit în Setări.</span>
+            }
+            else if (_overview.Model is not { } m)
+            {
+                <span class="text-secondary">
+                    Încă neantrenat: are nevoie de cel puțin @NilmClassifier.MinExamples evenimente etichetate (din prize sau de tine) în cel puțin
+                    @NilmClassifier.MinClasses clase; acum: @_overview.LabeledEvents evenimente în @_overview.LabeledClasses clase. Se antrenează în fiecare noapte la 03:30.
+                </span>
+            }
+            else
+            {
+                <div class="mb-2">
+                    Antrenat la @UiFormat.FullLocal(m.TrainedUtc) pe @m.Examples evenimente etichetate, @m.Classes.Count clase.
+                    Acuratețe măsurată (validare încrucișată @m.Folds-fold): <b>@((m.Accuracy * 100).ToString("0.0")) %</b>
+                    <span class="text-warning-emphasis">— măsurată doar pe aparatele cu priză sau etichetate de tine, nu pe toată casa.</span>
+                    Un eveniment nou primește predicția doar dacă probabilitatea e ≥ @((NilmClassifier.MinProbability * 100).ToString("0")) % și e aproape de
+                    centrul clasei prezise; altfel rămâne în gruparea automată.
+                </div>
+                <div class="text-secondary mb-1">Matricea de confuzie (rând = clasa reală, coloane = predicția):</div>
+                <pre class="small border rounded p-2 bg-body-tertiary mb-0">@ConfusionText(m)</pre>
+            }
+        </div>
+    </div>
+}
+
+@code {
+    private NilmOverview? _overview;
+    private bool _busy;
+    private bool _showHidden;
+    private string? _error;
+    private string? _message;
+    private int _page, _eventsPage;
+    private long _mergeFrom, _mergeInto;
+    private readonly Dictionary<long, string> _eventLabel = new();
+    private System.Threading.Timer? _timer;
+
+    /// <summary>Actions are off while an action runs here or the detection is busy (backfill, nightly job).</summary>
+    private bool Blocked => _busy || _overview?.Busy == true;
+
+    private IEnumerable<SignatureRow> VisibleDetected =>
+        _overview?.Detected.Where(r => _showHidden || !r.Signature.Hidden) ?? Enumerable.Empty<SignatureRow>();
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadAsync();
+        _timer = new System.Threading.Timer(_ => InvokeAsync(async () => { if (!_busy) { await LoadAsync(); StateHasChanged(); } }), null, 30_000, 30_000);
+    }
+
+    private async Task LoadAsync()
+    {
+        try
+        {
+            _overview = await Nilm.GetOverviewAsync(_page, _eventsPage, CancellationToken.None);
+            _page = _overview.Page;
+            _eventsPage = _overview.EventsPage;
+            _error = null;
+        }
+        catch (Exception ex)
+        {
+            _error = ex.Message;
+        }
+    }
+
+    private async Task GoAsync(int page, int eventsPage)
+    {
+        _page = Math.Max(0, page);
+        _eventsPage = Math.Max(0, eventsPage);
+        await LoadAsync();
+    }
+
+    private async Task RunAsync(Func<Task<string?>> action)
+    {
+        _busy = true;
+        _message = null;
+        try
+        {
+            _message = await action();
+            await LoadAsync();
+        }
+        catch (Exception ex)
+        {
+            _error = ex.Message;
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private Task RenameAsync(long id, string? name) => string.IsNullOrWhiteSpace(name)
+        ? Task.CompletedTask
+        : RunAsync(async () => { await Nilm.RenameAsync(id, name, CancellationToken.None); return null; });
+
+    private Task SetCategoryAsync(long id, string? category) =>
+        RunAsync(async () => { await Nilm.SetCategoryAsync(id, category ?? ApplianceCategories.Other, CancellationToken.None); return null; });
+
+    private Task SetHiddenAsync(long id, bool hidden) =>
+        RunAsync(async () => { await Nilm.SetHiddenAsync(id, hidden, CancellationToken.None); return null; });
+
+    private Task SetPlugAsync(Guid plugId, PlugNilmState state) =>
+        RunAsync(async () => { await Nilm.SetPlugStateAsync(plugId, state, CancellationToken.None); return null; });
+
+    private Task MergeAsync() => RunAsync(async () =>
+    {
+        var ok = await Nilm.MergeAsync(_mergeFrom, _mergeInto, CancellationToken.None);
+        _mergeFrom = _mergeInto = 0;
+        return ok ? "Semnăturile au fost unite." : "Nu s-au putut uni (semnătura nu mai există).";
+    });
+
+    private Task SplitAsync(long id) => RunAsync(async () =>
+    {
+        var parts = await Nilm.SplitAsync(id, CancellationToken.None);
+        return parts > 1 ? $"Semnătura a fost despărțită în {parts} părți." : "Evenimentele semnăturii nu formează grupuri distincte: nu s-a despărțit.";
+    });
+
+    private async Task OnLabelKeyAsync(KeyboardEventArgs ev, long eventId)
+    {
+        if (ev.Key == "Enter") await LabelEventAsync(eventId);
+    }
+
+    private Task LabelEventAsync(long eventId) => RunAsync(async () =>
+    {
+        var label = _eventLabel.GetValueOrDefault(eventId);
+        if (string.IsNullOrWhiteSpace(label)) return "Scrie întâi ce aparat a fost.";
+        await Nilm.LabelEventAsync(eventId, label, CancellationToken.None);
+        _eventLabel.Remove(eventId);
+        return $"Evenimentul a fost etichetat „{SignatureNaming.CleanName(label)}”.";
+    });
+
+    private static string ConfusionText(NilmModelInfo m)
+    {
+        var width = Math.Max(8, m.Classes.Max(c => c.Length) + 1);
+        var sb = new System.Text.StringBuilder();
+        sb.Append("".PadRight(width));
+        foreach (var c in m.Classes) sb.Append(Short(c).PadLeft(8));
+        sb.AppendLine();
+        foreach (var row in m.Confusion)
+        {
+            sb.Append(row.Actual.PadRight(width));
+            foreach (var n in row.Predicted) sb.Append(n.ToString().PadLeft(8));
+            sb.AppendLine();
+        }
+        return sb.ToString();
+    }
+
+    private static string Short(string s) => s.Length <= 7 ? s : s[..7];
+
+    public void Dispose() => _timer?.Dispose();
+}

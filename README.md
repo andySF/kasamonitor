@@ -7,7 +7,7 @@ plugs and energy meters (e.g. Shelly EM Gen3, local JSON-RPC; the only write is 
 with SQLite, a web UI on port 8910 and a Prometheus `/metrics` endpoint. An optional Prometheus + Grafana stack
 with a ready-made dashboard and alert rules is included.
 
-Version: **0.6.0** (`Directory.Build.props`). Docker image: `duobit/kasamonitor`.
+Version: **0.7.0** (`Directory.Build.props`). Docker image: `duobit/kasamonitor`.
 
 ## Quick start
 
@@ -51,7 +51,11 @@ TP-Link (Tapo app) account in `/settings` and press **Scanează acum** on `/plug
 - **Gas boiler** (`/centrala`, menu „Centrală”): a Viessmann boiler through the ViCare cloud API: burner, modulation,
   temperatures, hot water, messages, gas per day for hot water vs heating with cost, raw features. See
   [Gas boiler (Viessmann ViCare)](#gas-boiler-viessmann-vicare).
-- **Version in the menu**: „v0.6.0” at the right of the navigation bar; the tooltip shows the commit and the build time.
+- **Appliance detection (NILM)** (`/consumatori`, menu „Consumatori”): switch-on/off events of the appliances found in
+  the main meter's 1-second power, grouped into signatures (one per appliance), labelled automatically from the plugs,
+  by you, or by a nightly ML.NET classifier; runs, energy per day, „unidentified” energy; cards „Acum pornite” and
+  „Azi” on the Dashboard and `/contor`. See [Appliance detection (NILM)](#appliance-detection-nilm).
+- **Version in the menu**: „v0.7.0” at the right of the navigation bar; the tooltip shows the commit and the build time.
 - **Browser errors in the server log**: JavaScript errors and the Blazor error banner are reported to
   `POST /api/client-error` and logged at Warning (category `KasaMonitor.ClientErrors`), so `docker logs` shows them.
 
@@ -84,6 +88,10 @@ not been saved from `/settings`.
 | Remote write | `KasaMonitor__RemoteWriteEnabled` | `false` | Prometheus remote write of the live samples (`kasa_live_*`) |
 | Remote write URL | `KasaMonitor__RemoteWriteUrl` | — | e.g. `http://192.168.1.10:9090/api/v1/write` |
 | Remote write user / password | `KasaMonitor__RemoteWriteUser`, `KasaMonitor__RemoteWritePassword` | — | optional basic auth; stored encrypted |
+| Appliance detection | `KasaMonitor__NilmEnabled` | `true` | events, signatures and runs from the main meter (needs a main meter with the live stream) |
+| Event threshold (W) | `KasaMonitor__MinEventDeltaW` | `30` | 5–10000; smallest steady-state step of the house power recorded as an event |
+| Re-clustering window (days) | `KasaMonitor__ClusterWindowDays` | `30` | 1–365; events grouped again every night at 03:30 |
+| ML model | `KasaMonitor__MlEnabled` | `true` | nightly ML.NET classifier over the labelled events; saved as `<db dir>/nilm-model.zip` |
 | Keep raw readings (months) | `KasaMonitor__ReadingsRetentionMonths` | `0` = unlimited | raw 10-second readings only; daily history and minute aggregates are never deleted. Saving a value that would delete existing readings asks for confirmation with the exact row count |
 | Gas boiler | `KasaMonitor__HeatingEnabled` | `true` | reads the Viessmann boiler once the ViCare account is connected (`/centrala`) |
 | Viessmann Client ID | `KasaMonitor__ViessmannClientId` | — | client of the Viessmann developer portal; the OAuth tokens are never configured, they come from „Conectează ViCare” and are stored encrypted |
@@ -158,7 +166,8 @@ Stat panels (power now, plugs online/total, energy and cost for 24 h and 30 days
 W, V, A, kWh 24 h / 30 d, cost, last online, `model`, `protocol`), and per-plug time series for power, energy per day,
 online/offline, relay, voltage and current (legend `{{alias}}`). Row **Contor general** (`role="main"`): house power,
 rest of the house (house − plugs), grid voltage with 207/253 V thresholds, power factor, energy per day. Row
-**Sub-contoare** (`role="sub"`): power and energy per day per sub-meter channel. Dashboard variables at the top: `tariff` (price per
+**Sub-contoare** (`role="sub"`): power and energy per day per sub-meter channel. Row **Consumatori detectați**: power
+of the detected appliances (stacked), their energy in the selected range, unidentified energy and events in 24 h. Dashboard variables at the top: `tariff` (price per
 kWh, default 1.11) and `currency` (only used in titles).
 
 Energy is computed as the **sum of the counter's 5-minute increases, clamped at 0**:
@@ -215,6 +224,22 @@ increase method above, not `rate()`/`increase()`, for energy.
 Withdrawn or unsupported plugs have no series. Renaming a plug removes the series with the old alias.
 
 The gas boiler has its own `heating_*` family, see [Gas boiler (Viessmann ViCare)](#gas-boiler-viessmann-vicare).
+
+Appliance detection (see [Appliance detection (NILM)](#appliance-detection-nilm)):
+
+| Metric | Type | Unit | Labels | Meaning |
+|---|---|---|---|---|
+| `kasa_appliance_power_w` | gauge | W | `appliance`, `category`, `source` | power (switch-on step) of each detected appliance running now |
+| `kasa_appliance_energy_wh_total` | counter | Wh | `appliance`, `category` | energy of the finished runs since KasaMonitor started |
+| `kasa_nilm_events_total` | counter | events | — | events recorded (starts from the stored count) |
+| `kasa_nilm_unidentified_wh_total` | counter | Wh | — | house energy not explained by plugs or detected appliances, cumulative since start |
+
+Only **detected** appliances that you named or that have at least 10 events in the window are exported (appliances
+measured by a plug have their own `kasa_*` series; hidden ones are left out). `appliance` is the name normalised for
+Prometheus (diacritics removed, only letters, digits, space, `_` and `-`, at most 40 characters: „Necunoscut #12” →
+`Necunoscut 12`), `category` one of `fridge`, `boiler`, `cooking`, `washer`, `hvac`, `lighting`, `electronics`, `other`,
+`source` = `user` (named by you) or `cluster` („Necunoscut #n”). Series of an appliance that is renamed, hidden, merged
+or no longer exported are removed. These counters restart at 0 with the application: use `increase()`.
 
 ### Live samples via remote write (`kasa_live_*`)
 
@@ -497,6 +522,101 @@ sum(heating_heat_production_kwh{period="lastmonth"}) / (sum(heating_gas_consumpt
 The Grafana dashboard `kasamonitor` has a row **Centrală**: burner, modulation, gas today (hot water vs heating),
 online/API calls, temperatures, modulation over time and gas per day for 30 days (stacked bars).
 
+## Appliance detection (NILM)
+
+KasaMonitor recognises appliances in the power of the whole house (non-intrusive load monitoring) with a
+deterministic, explainable pipeline, and uses the plugs it already measures as automatic labels. It needs a **main
+meter** (`/plugs`) with the live stream on (1 s). Page `/consumatori`, menu „Consumatori”.
+
+1. **Events** (`MeterEventDetector`, table `MeterEvents`): steady-state transitions of the main meter's 1-second
+   power. The level *before* is the mean of the last 5 s of a steady state; a second outside max(5 W, 3 %) of it
+   starts a transition, which ends when 3 consecutive seconds are within max(5 W, 3 %) of their mean (the level
+   *after*). An event when |ΔP| ≥ `MinEventDeltaW` (default **30 W**). Features: ΔP (signed W), ΔQ (reactive power
+   |Q| = √(S² − P²) from the apparent power, after − before), Δpf, transient ratio (peak in the first 2 s / ΔP; motors
+   3–8, resistive loads ≈ 1), rise seconds, time. A plateau of ≥ 2 s inside a transition that is left in the same
+   direction (two appliances switched 2 s apart) gives two events; a peak that falls back (motor inrush) gives one
+   event with a high transient ratio. Slow drift moves the level without an event. Missing seconds (the raw table
+   keeps a row only on change, or every 60 s) are filled with the previous value for up to 65 s. An event within
+   ±2 s of a stored one, in the same direction and of the same size, is a duplicate (a second re-processed after a
+   restart) and is not stored again.
+2. **Backfill**: at start, the stored `LiveSamples` of the main meter after the marker `NilmLastProcessedTs` (Settings
+   table; the first time: all of them, i.e. `LiveRawRetentionDays`) go through the detector in 6-hour batches (the
+   plugs' readings of a batch are loaded once); a backfill of more than 6 hours is re-clustered right away. The page
+   stays usable meanwhile (it reads its own snapshot and shows „Procesare în curs”).
+3. **Plug labels**: 45 s after an event (the ±15 s window plus two polls), the plugs' 10-second readings around it (kept in memory for the last
+   3 minutes; loaded per batch during a backfill) are compared. A plug labels the event (source `auto-plug`) when it
+   made a **clean step**: the middle of the interval between its two readings is within ±15 s of the event, the
+   readings before and after the step agree with it (a variable load is not a step), the step is ΔP ± max(10 W, 15 %),
+   it is the **only** plug that moved in the same direction by ≥ 60 % of |ΔP| in that window (counting every plug,
+   also those excluded from learning: a UPS that moved at the same time makes the event ambiguous), and that plug step
+   has not labelled another event. Events detected late (after a long backfill or nightly job) read the plugs'
+   readings from `Samples`. A plug that matches **more than 20 events in an hour** (a UPS, a PC: a variable load) is
+   excluded from learning automatically (`Plugs.NilmIgnored`; badge on `/plugs` and `/consumatori`, with a button to
+   undo it — an undone plug is never excluded automatically again; a plug can also be excluded by hand). Excluding
+   only stops new labels and training: the plug's labels no longer count for linking new signatures or for the
+   classifier, but signatures already linked to it stay „measured by the plug”.
+4. **Signatures** (`ApplianceSignatures`): DBSCAN (own implementation) over |ΔP| (relative, i.e. log scale), ΔQ seen
+   from the switch-on side and the transient ratio of switch-ons; eps(|ΔP|) = 8 % of |ΔP| + 3 W, eps(ΔQ) = 8 % of |ΔP|
+   + 15 VAR, minPts 3; a cluster wider than (1 + 2 × 8 %) × its smallest |ΔP| + 6 W is cut into narrower bands (a dense
+   band of small loads would otherwise chain into one cluster). Each point enters the expansion queue once (memory
+   O(n)). Switch-ons and switch-offs of the same magnitude join the same signature. A new event joins the nearest
+   signature within eps, otherwise a new „Necunoscut #n”. Every night at 03:30 the **newest 20,000 events** of the last
+   `ClusterWindowDays` (30) are clustered again on a low-priority thread, outside the processing lock (clusters keep the
+   signature, name and category most of their events had; model labels are re-evaluated; empty automatic signatures
+   are deleted). Counts and means are SQL aggregates over the window.
+5. **Measured by a plug**: when at least 3 events and ≥ 60 % of a signature's events were labelled by the same (not
+   excluded) plug, the signature is linked to that plug (below 3 it stays „Necunoscut #n”, marked „posibil <plug>” on
+   the page; `ApplianceSignatures.PlugId`; it takes the plug's name unless you named it).
+   The link is by `PlugId`, not by name: renaming does not change it. These signatures are listed separately on
+   `/consumatori` („Măsurate de prize”): the exact consumption is the plug's own (its card, `kasa_*`), so they are not
+   in „Acum pornite”, not in the detected energy, not in `kasa_appliance_*`, and never subtracted twice from the rest
+   of the house.
+6. **Your labels** (`/consumatori`): rename a signature, choose its category (fridge, boiler, hob/oven, washing
+   machine, AC/heat pump, lighting, electronics, other), hide it, merge one into another (one selector above the
+   table), split it (re-clustered alone with half the eps), and label any event of the last 24 h („a fost boilerul”;
+   Enter or the button): the event moves to the signature with that name if there is one; otherwise its own signature
+   takes the name when it is an automatic one, else a new signature is created. Names are trimmed to 64 characters.
+   Signatures you named or merged are kept as they are by the nightly re-clustering. A hidden signature is left out of
+   the cards and the metrics (its energy stays „unidentified”). Lists are paged by 50.
+7. **ML model** (`MlEnabled`): with ≥ 20 events labelled by plugs or by you in ≥ 2 classes, a multiclass ML.NET
+   classifier (`SdcaMaximumEntropy`; features ΔP, log |ΔP|, ΔQ, transient, rise, hour of day as sin/cos, day of week)
+   is trained every night on the newest 20,000 labelled events (low-priority thread); its accuracy is measured by
+   5-fold cross-validation and shown on the page with a confusion matrix — **measured only on the appliances that have
+   a plug or that you labelled**, not on the whole house. A new event without a plug label gets the prediction only
+   when the probability is ≥ 0.7 **and** the event is within 2 × eps of that class's centre (an open-set check: an
+   appliance no plug has seen is otherwise forced into the nearest known class); it then joins the signature with that
+   name, otherwise it stays in its DBSCAN signature. Saved as `<db dir>/nilm-model.zip`. ML.NET adds ≈ 5.5 MB to the
+   published application (measured `dotnet publish -r linux-x64`: 31 MB in total); the trainer is managed code.
+8. **Runs and energy** (`ApplianceRuns`): a switch-on opens a run; it closes with the next switch-off of the same
+   signature whose magnitude is within eps (first in, first out; `EndReason` 0), or with any switch-off that brings the
+   house back to (or below) its level before that switch-on, within the detector's tolerance (`EndReason` 1: whatever
+   turned off, that appliance cannot still be on; a simple heuristic, wrong when something else turned on in between
+   and off again). A run open longer than **6 hours** is closed as uncertain (`EndReason` 2) with **no energy** (its
+   switch-off was never seen): it is not in „Azi”, in `kasa_appliance_energy_wh_total` or in „Neidentificat”, only
+   counted as „rulări incerte” next to its signature, and no longer shown as running. When the nightly job rebuilds
+   the runs, only those that ended in the last 24 hours get the house-power correction. Energy = ΔP × duration; for a paired run with no other event during it,
+   the house's mean power above its level before the switch-on is used instead (kept only between ½ and 2× the
+   nominal value). Energy per day per signature (a run across midnight is split proportionally), and
+   **„Neidentificat”** = house today − Σ plugs − Σ runs of the detected appliances (never below 0). The house energy
+   comes from the minute aggregates (only the minutes the stream ran), so Σ plugs (the Kasa/Tapo day counters, like the
+   Dashboard header; Shelly plugs have none and are not subtracted) is scaled to the same covered share of the day.
+9. **Cards** „Acum pornite” (detected appliances running now, with W) and „Azi” (top 5 + unidentified) on the
+   Dashboard and `/contor`; metrics `kasa_appliance_*`, `kasa_nilm_*` (see Metrics).
+10. **Retention**: events and finished runs older than 365 days are deleted every night (signatures stay).
+
+**Limits.** Appliances with a variable power (induction hobs, inverter compressors and heat pumps, dimmers, PCs)
+have no steady state: their changes either do not settle within 30 s (no event) or appear as many small events.
+Appliances switched within 2 s of each other in opposite directions give one event (the net step). Steps below the
+threshold (30 W) are ignored; the measured main meter moves by a median 17 W per second, and at 15 W a 16-minute test
+gave 76 events, mostly from a UPS. **Known limit:** small loads in the 15–50 W band (a UPS, lamps, chargers, a PC)
+have nearly the same ΔP, ΔQ and transient, so their signatures stay mixed (measured on the real house: the clusters
+are cut into narrow |ΔP| bands, but each band holds events of several appliances). A slow ramp faster than ~3 W/s on a low base can be seen as a step. **ΔQ is a
+whole-house difference**: |Q| is computed for the house, so a capacitive load (a switched-mode supply) switched on in
+an inductive house lowers |Q| while the same load in a house with Q ≈ 0 raises it — its sign depends on what else is
+running; that is why its eps is wider. The run pairing assumes one switch-off per switch-on (multi-stage appliances
+such as a washing machine appear as several signatures). The plug labels need the plug's clean step and the house step
+in the same ±15 s, so a plug offline, or two plugs moving together, give no label.
+
 ## Data retention
 
 | Data | Table | Written | Deleted |
@@ -505,6 +625,7 @@ online/API calls, temperatures, modulation over time and gas per day for 30 days
 | Raw live samples (on change or every 60 s) | `LiveSamples` | ≈ 146 bytes per row: quiet plug ≈ 0.2 MB/day, cycling load ≈ 4–5 MB/day, main meter ≈ 12 MB/day | after `LiveRawRetentionDays` (default 30; `0` = never), daily |
 | Live minute aggregates | `LiveMinuteAggregates` | 1,440 rows per streamed channel per day | never |
 | Relay commands | `RelayCommands` | one row per command | never |
+| Appliance events, signatures, runs | `MeterEvents`, `ApplianceSignatures`, `ApplianceRuns` | one row per event (≥ 30 W step of the house) / appliance / run | events and finished runs after 365 days (nightly); signatures never |
 | Minute aggregates | `OneMinuteAggregates` | ≈ 120 bytes per plug-minute ≈ 65 MB per plug per year | never |
 | Daily / monthly energy | `DailyEnergy`, `MonthlyEnergy` | one row per plug per day / month | never |
 
@@ -535,15 +656,15 @@ dotnet test KasaMonitor.sln
 From the repository root, with Docker running and `docker login` done once:
 
 ```powershell
-.\deploy\build-and-push.ps1 -Version 0.6.0          # build :0.4.0 + :latest and push both
-.\deploy\build-and-push.ps1 -Version 0.6.0 -NoPush  # local build only
+.\deploy\build-and-push.ps1 -Version 0.7.0          # build :0.7.0 + :latest and push both
+.\deploy\build-and-push.ps1 -Version 0.7.0 -NoPush  # local build only
 ```
 
 or manually:
 
 ```bash
-docker build -t duobit/kasamonitor:0.6.0 -t duobit/kasamonitor:latest -f deploy/Dockerfile .
-docker push duobit/kasamonitor:0.6.0
+docker build -t duobit/kasamonitor:0.7.0 -t duobit/kasamonitor:latest -f deploy/Dockerfile .
+docker push duobit/kasamonitor:0.7.0
 docker push duobit/kasamonitor:latest
 ```
 
@@ -564,7 +685,9 @@ To publish under your own Docker Hub account, change the image name (`-Repo` par
    After the update, set the main meter on `/plugs` and change Grafana dashboards that used
    `model!~"S3EM.*|SPEM.*"` to `role="plug"`. Prometheus series written before the upgrade have no `role` label, so
    `{role="plug"}` does not see them: for the 30-day panels use `{role!~"main|sub", model!~"S3EM.*|SPEM.*"}` until
-   30 days have passed after the upgrade, then `{role="plug"}`.
+   30 days have passed after the upgrade, then `{role="plug"}`. Upgrading to 0.7.0 runs `AddNilm`: it adds `Plugs.NilmIgnored`
+   (0) and creates the empty tables `MeterEvents`, `ApplianceSignatures`, `ApplianceRuns`; at the first start the
+   detector processes the stored `LiveSamples` of the main meter (backfill), then re-clusters them.
 2. `docker compose -f deploy/docker-compose.yml pull && docker compose -f deploy/docker-compose.yml up -d`
    (Portainer: *Update the stack* with *Re-pull image and redeploy*).
 3. Check `http://<host>:8910/health`, `/plugs` (Scan now) and `curl -s http://<host>:8910/metrics | grep kasa_online`.

@@ -77,7 +77,11 @@ builder.Services.AddSingleton(new KasaSettingsDefaults(
     RemoteWriteEnabled: builder.Configuration.GetValue("KasaMonitor:RemoteWriteEnabled", false),
     RemoteWriteUrl: builder.Configuration["KasaMonitor:RemoteWriteUrl"] ?? "",
     RemoteWriteUser: builder.Configuration["KasaMonitor:RemoteWriteUser"],
-    RemoteWritePassword: builder.Configuration["KasaMonitor:RemoteWritePassword"]));
+    RemoteWritePassword: builder.Configuration["KasaMonitor:RemoteWritePassword"],
+    NilmEnabled: builder.Configuration.GetValue("KasaMonitor:NilmEnabled", true),
+    MinEventDeltaW: builder.Configuration.GetValue("KasaMonitor:MinEventDeltaW", KasaSettingsDefaults.DefaultMinEventDeltaW),
+    ClusterWindowDays: builder.Configuration.GetValue("KasaMonitor:ClusterWindowDays", KasaSettingsDefaults.DefaultClusterWindowDays),
+    MlEnabled: builder.Configuration.GetValue("KasaMonitor:MlEnabled", true)));
 
 var pollIntervalSec = builder.Configuration.GetValue("KasaMonitor:PollIntervalSeconds", 10);
 
@@ -167,6 +171,15 @@ builder.Services.AddSingleton(sp => new HeatingPollWorker(
     sp.GetRequiredService<HeatingState>(),
     sp.GetRequiredService<ILogger<HeatingPollWorker>>()));
 builder.Services.AddHostedService(sp => sp.GetRequiredService<HeatingPollWorker>());
+// Appliance detection (NILM) from the main meter's 1 s stream; the classifier is saved next to the database.
+builder.Services.AddSingleton(sp => new KasaMonitor.Workers.Nilm.NilmService(
+    sp.GetRequiredService<IServiceScopeFactory>(),
+    sp.GetRequiredService<IKasaSettingsService>(),
+    sp.GetRequiredService<ILiveStreamBroadcaster>(),
+    sp.GetRequiredService<IPlugStateBroadcaster>(),
+    sp.GetRequiredService<ILogger<KasaMonitor.Workers.Nilm.NilmService>>(),
+    Path.Combine(dataDir, "nilm-model.zip")));
+builder.Services.AddHostedService(sp => sp.GetRequiredService<KasaMonitor.Workers.Nilm.NilmService>());
 
 // The only write to a device: Shelly Switch.Set, after a confirmation in the UI (setting AllowRelayControl).
 builder.Services.AddSingleton(sp => new RelayControlService(
@@ -189,6 +202,7 @@ builder.Services.AddSingleton<PrometheusTargetsChecker>();
 var app = builder.Build();
 RemoteWriteMetrics.Register(app.Services.GetRequiredService<PrometheusRemoteWriter>());
 HeatingMetrics.Register(app.Services.GetRequiredService<HeatingState>());
+NilmMetrics.Register(app.Services.GetRequiredService<KasaMonitor.Workers.Nilm.NilmService>());
 
 using (var scope = app.Services.CreateScope())
 {

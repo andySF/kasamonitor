@@ -25,7 +25,8 @@ public class MigrationTests
         tables.Should().Contain(new[]
         {
             "DailyEnergy", "MonthlyEnergy", "OneHourAggregates", "OneMinuteAggregates",
-            "Plugs", "Samples", "Settings", "LiveSamples", "LiveMinuteAggregates", "RelayCommands"
+            "Plugs", "Samples", "Settings", "LiveSamples", "LiveMinuteAggregates", "RelayCommands",
+            "MeterEvents", "ApplianceSignatures", "ApplianceRuns"
         });
     }
 

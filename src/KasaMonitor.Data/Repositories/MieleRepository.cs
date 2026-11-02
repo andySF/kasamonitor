@@ -144,6 +144,23 @@ public sealed class MieleRepository : IMieleRepository
     public Task<int> CountClosedCyclesAsync(string deviceId, CancellationToken ct) =>
         _db.MieleCycles.AsNoTracking().CountAsync(c => c.DeviceId == deviceId && c.EndTs != null, ct);
 
+    public async Task<IReadOnlyList<MieleCycle>> ListCyclesBetweenAsync(string deviceId, DateTimeOffset fromUtc, DateTimeOffset toUtc, CancellationToken ct)
+    {
+        long from = fromUtc.ToUnixTimeSeconds(), to = toUtc.ToUnixTimeSeconds();
+        var rows = await _db.MieleCycles.AsNoTracking().Where(c => c.DeviceId == deviceId && c.StartTs >= from && c.StartTs <= to)
+            .OrderBy(c => c.StartTs).ThenBy(c => c.Id).ToListAsync(ct);
+        return rows.Select(ToModel).ToList();
+    }
+
+    public async Task<MieleCyclePage> ListCyclesPageAsync(IReadOnlyCollection<string> deviceIds, int skip, int take, CancellationToken ct)
+    {
+        var ids = deviceIds.ToList();
+        var q = _db.MieleCycles.AsNoTracking().Where(c => ids.Contains(c.DeviceId));
+        var total = await q.CountAsync(ct);
+        var rows = await q.OrderByDescending(c => c.StartTs).ThenByDescending(c => c.Id).Skip(Math.Max(0, skip)).Take(Math.Max(1, take)).ToListAsync(ct);
+        return new MieleCyclePage(rows.Select(ToModel).ToList(), total);
+    }
+
     private static MieleDevice ToModel(MieleDeviceEntity e) => new(e.Id, e.TypeRaw, e.TypeText, e.TechType, e.DeviceName,
         e.Alias, e.PlugId, e.IsArchived, e.LastSeenUtc is { } s ? DateTimeOffset.FromUnixTimeSeconds(s) : null);
 
@@ -166,11 +183,46 @@ public sealed class MieleRepository : IMieleRepository
         e.WaterL = c.WaterL;
         e.PlugEnergyWh = c.PlugEnergyWh;
         e.EndReason = c.EndReason;
+        e.Source = string.IsNullOrEmpty(c.Source) ? MieleCycleSources.Observed : c.Source;
+        e.ApiStartTs = c.ApiStartUtc?.ToUnixTimeSeconds();
+        e.ApiEndTs = c.ApiEndUtc?.ToUnixTimeSeconds();
+        e.ApiEnergyKwh = c.ApiEnergyKwh;
+        e.ApiWaterL = c.ApiWaterL;
+        e.EnergyProfileJson = c.EnergyProfile is { Count: > 0 } p ? ProfileToJson(p) : null;
     }
 
     private static MieleCycle ToModel(MieleCycleEntity e) => new(e.Id, e.DeviceId, DateTimeOffset.FromUnixTimeSeconds(e.StartTs),
         e.EndTs is { } end ? DateTimeOffset.FromUnixTimeSeconds(end) : null, DateTimeOffset.FromUnixTimeSeconds(e.LastRunningTs),
-        e.ProgramRaw, e.Program, PhasesFromJson(e.PhasesJson), e.EnergyKwh, e.WaterL, e.PlugEnergyWh, e.EndReason);
+        e.ProgramRaw, e.Program, PhasesFromJson(e.PhasesJson), e.EnergyKwh, e.WaterL, e.PlugEnergyWh, e.EndReason)
+    {
+        Source = string.IsNullOrEmpty(e.Source) ? MieleCycleSources.Observed : e.Source,
+        ApiStartUtc = e.ApiStartTs is { } s ? DateTimeOffset.FromUnixTimeSeconds(s) : null,
+        ApiEndUtc = e.ApiEndTs is { } t ? DateTimeOffset.FromUnixTimeSeconds(t) : null,
+        ApiEnergyKwh = e.ApiEnergyKwh,
+        ApiWaterL = e.ApiWaterL,
+        EnergyProfile = ProfileFromJson(e.EnergyProfileJson),
+    };
+
+    private sealed record ProfileRow(
+        [property: JsonPropertyName("ts")] long Ts,
+        [property: JsonPropertyName("kwh")] double Kwh);
+
+    public static string ProfileToJson(IReadOnlyList<MieleEnergySlot> profile) =>
+        JsonSerializer.Serialize(profile.Select(p => new ProfileRow(p.StartUtc.ToUnixTimeSeconds(), p.Kwh)), Json);
+
+    public static IReadOnlyList<MieleEnergySlot>? ProfileFromJson(string? json)
+    {
+        if (string.IsNullOrWhiteSpace(json)) return null;
+        try
+        {
+            var rows = JsonSerializer.Deserialize<List<ProfileRow>>(json, Json);
+            return rows is null || rows.Count == 0 ? null : rows.Select(r => new MieleEnergySlot(DateTimeOffset.FromUnixTimeSeconds(r.Ts), r.Kwh)).ToList();
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
 
     private sealed record PhaseRow(
         [property: JsonPropertyName("phaseRaw")] int? PhaseRaw,

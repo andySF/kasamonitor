@@ -25,6 +25,24 @@ public static class MieleApi
     /// <summary>One SSE subscription for every appliance of the account (the docs recommend it to keep connections few).</summary>
     public static string EventsUrl => ApiBase + "/devices/all/events";
 
+    /// <summary>
+    /// <c>GET /v1/devices/{id}/lastUsedPrograms</c>: up to five finished runs, newest first (start/end UTC, calculated
+    /// water and energy, optionally the 15-min energy profile with <c>calculateEnergyMonitoring=true</c>).
+    /// </summary>
+    public static string LastUsedProgramsUrl(string deviceId, bool calculateEnergyMonitoring) =>
+        ApiBase + "/devices/" + Uri.EscapeDataString(deviceId) + "/lastUsedPrograms" + (calculateEnergyMonitoring ? "?calculateEnergyMonitoring=true" : "");
+
+    /// <summary>The program history is read at connection, then this often (and <see cref="HistoryAfterCycleDelay"/> after a cycle ended).</summary>
+    public static readonly TimeSpan HistorySyncInterval = TimeSpan.FromHours(6);
+    /// <summary>Wait after an observed cycle ended before asking for the history (so Miele has the run).</summary>
+    public static readonly TimeSpan HistoryAfterCycleDelay = TimeSpan.FromMinutes(2);
+    /// <summary>After 429/503 without <c>Retry-After</c> (or after a failed history read) the next history call waits this long.</summary>
+    public static readonly TimeSpan HistoryBackoff = TimeSpan.FromHours(1);
+    /// <summary>An API run and an observed cycle are the same run when their starts are at most this far apart …</summary>
+    public static readonly TimeSpan HistoryMatchWindow = TimeSpan.FromMinutes(10);
+    /// <summary>… or when they overlap by at least this share of the shorter one.</summary>
+    public const double HistoryMatchOverlap = 0.5;
+
     /// <summary>User-Agent of every request (best practices ask for an own one).</summary>
     public const string UserAgent = "KasaMonitor";
 

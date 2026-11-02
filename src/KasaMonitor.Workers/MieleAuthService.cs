@@ -133,6 +133,22 @@ public sealed class MieleAuthService
         return await RefreshAsync(force: true, ct);
     }
 
+    /// <summary>Calls the API with the access token; after a 401 one forced refresh and one retry.</summary>
+    public async Task<T> WithTokenAsync<T>(Func<string, Task<T>> call, CancellationToken ct)
+    {
+        var token = await GetAccessTokenAsync(ct);
+        try
+        {
+            return await call(token);
+        }
+        catch (MieleAuthException)
+        {
+            _log.LogInformation("Miele: API answered 401, refreshing the token once");
+            token = await ForceRefreshAsync(ct);
+            return await call(token);
+        }
+    }
+
     /// <summary>„Deconectează”: <c>POST /logout</c> (best effort), tokens cleared, the worker drops the stream.</summary>
     public async Task LogoutAsync(CancellationToken ct)
     {

@@ -67,6 +67,18 @@ public sealed class MieleState
     /// <summary>Why nothing is read right now (null while reading normally).</summary>
     public string? Status { get { lock (_sync) return _status; } }
 
+    /// <summary>The last finished read of the program history (<c>lastUsedPrograms</c>).</summary>
+    public DateTimeOffset? HistorySyncUtc { get; private set; }
+    /// <summary>What went wrong at the last history read (consent missing, limit reached …), null when it worked.</summary>
+    public string? HistoryMessage { get; private set; }
+
+    public void SetHistory(DateTimeOffset? lastSyncUtc, string? message)
+    {
+        HistorySyncUtc = lastSyncUtc;
+        HistoryMessage = message;
+        Raise();
+    }
+
     public void Publish(MieleApplianceLive live)
     {
         lock (_sync) _appliances[live.Device.Id] = live;

@@ -32,6 +32,11 @@ public sealed class MieleRecorder
         _log = log;
     }
 
+    /// <summary>After every read of the appliances (GET /devices or an SSE devices event), with its time.</summary>
+    public event Action<DateTimeOffset>? DevicesRead;
+    /// <summary>An observed cycle was closed (device id, processing time): the history sync reads the API 2 minutes later.</summary>
+    public event Action<string, DateTimeOffset>? CycleClosed;
+
     /// <summary>After a restart: the stored appliances, their open cycles, counts, last cycle and last state.</summary>
     public async Task LoadAsync(CancellationToken ct)
     {
@@ -76,7 +81,63 @@ public sealed class MieleRecorder
             _lock.Release();
         }
         _state.MarkRead(nowUtc);
+        Notify(() => DevicesRead?.Invoke(nowUtc));
         return states.Count;
+    }
+
+    /// <summary>
+    /// Unites the runs of <c>lastUsedPrograms</c> with the stored cycles of an appliance (<see cref="MieleHistoryMerge"/>):
+    /// merged cycles are updated, runs KasaMonitor did not see become cycles with source api (with the linked plug's
+    /// energy over the run, when the plug has data then). Serialized with the live recording, so a cycle the tracker
+    /// still holds open is never touched (its run waits for the next read).
+    /// </summary>
+    public async Task<MieleHistoryPlan> MergeHistoryAsync(string deviceId, IReadOnlyList<MieleProgramRun> runs, CancellationToken ct)
+    {
+        if (runs.Count == 0) return new MieleHistoryPlan(Array.Empty<MieleCycle>(), Array.Empty<MieleCycle>(), 0, 0);
+        await _lock.WaitAsync(ct);
+        try
+        {
+            using var scope = _scopes.CreateScope();
+            var repo = scope.ServiceProvider.GetRequiredService<IMieleRepository>();
+            var device = (await repo.ListDevicesAsync(includeArchived: true, ct)).FirstOrDefault(d => d.Id == deviceId);
+            if (device is null) return new MieleHistoryPlan(Array.Empty<MieleCycle>(), Array.Empty<MieleCycle>(), 0, 0);
+            var from = runs.Min(r => r.StartUtc) - TimeSpan.FromDays(1);
+            var to = runs.Max(r => r.EndUtc) + TimeSpan.FromDays(1);
+            var existing = (await repo.ListCyclesBetweenAsync(deviceId, from, to, ct)).ToList();
+            // The tracker's open cycle is authoritative (the stored row may lag behind it, or be missing).
+            if (_trackers.TryGetValue(deviceId, out var t) && t.Open is { } open)
+            {
+                existing.RemoveAll(c => open.Id > 0 && c.Id == open.Id);
+                existing.Add(open);
+            }
+            var plan = MieleHistoryMerge.Plan(deviceId, existing, runs);
+            foreach (var u in plan.Updates) await repo.UpdateCycleAsync(u, ct);
+            foreach (var i in plan.Inserts)
+            {
+                var row = i;
+                if (device.PlugId is { } plug && i.EndUtc is { } end)
+                    row = i with { PlugEnergyWh = await PlugEnergyAsync(scope.ServiceProvider, plug, i.StartUtc, end, ct) };
+                await repo.AddCycleAsync(row, ct);
+            }
+            if (plan.Updates.Count > 0 || plan.Inserts.Count > 0)
+            {
+                _log.LogInformation("Miele {Alias}: program history merged ({Merged} updated, {Added} added from the API, {Unchanged} already stored, {Deferred} waiting for an open cycle)",
+                    device.Alias, plan.Updates.Count, plan.Inserts.Count, plan.Unchanged, plan.Deferred);
+                var current = _state.Get(deviceId);
+                await PublishAsync(repo, device, current?.Values, current?.StateUtc, ct);
+            }
+            return plan;
+        }
+        finally
+        {
+            _lock.Release();
+        }
+    }
+
+    private void Notify(Action raise)
+    {
+        try { raise(); }
+        catch (Exception ex) { _log.LogDebug(ex, "Miele recorder event handler failed"); }
     }
 
     /// <summary>Closes the cycles of appliances not Running for 30 minutes (also when they went silent).</summary>
@@ -93,7 +154,7 @@ public sealed class MieleRecorder
                 var repo = scope.ServiceProvider.GetRequiredService<IMieleRepository>();
                 var device = (await repo.ListDevicesAsync(includeArchived: true, ct)).FirstOrDefault(d => d.Id == deviceId);
                 if (device is null) continue;
-                await ApplyAsync(scope.ServiceProvider, repo, device, tracker, change, ct);
+                await ApplyAsync(scope.ServiceProvider, repo, device, tracker, change, ct, nowUtc);
                 var current = _state.Get(deviceId);
                 await PublishAsync(repo, device, current?.Values, current?.StateUtc, ct);
             }
@@ -154,11 +215,12 @@ public sealed class MieleRecorder
 
         if (!_trackers.TryGetValue(device.Id, out var tracker)) _trackers[device.Id] = tracker = new MieleCycleTracker(device.Id);
         var change = tracker.Observe(now, values);
-        await ApplyAsync(scope.ServiceProvider, repo, device, tracker, change, ct);
+        await ApplyAsync(scope.ServiceProvider, repo, device, tracker, change, ct, now);
         await PublishAsync(repo, device, values, now, ct);
     }
 
-    private async Task ApplyAsync(IServiceProvider sp, IMieleRepository repo, MieleDevice device, MieleCycleTracker tracker, MieleCycleChange change, CancellationToken ct)
+    private async Task ApplyAsync(IServiceProvider sp, IMieleRepository repo, MieleDevice device, MieleCycleTracker tracker, MieleCycleChange change,
+        CancellationToken ct, DateTimeOffset nowUtc)
     {
         if (change.Opened is { } opened)
         {
@@ -178,8 +240,9 @@ public sealed class MieleRecorder
                 closed = closed with { PlugEnergyWh = await PlugEnergyAsync(sp, plug, closed.StartUtc, end, ct) };
             if (closed.Id == 0) await repo.AddCycleAsync(closed, ct);
             else await repo.UpdateCycleAsync(closed, ct);
-            _log.LogInformation("Miele {Alias}: cycle ended ({Reason}, {Minutes:0} min, API {Kwh} kWh, plug {Wh} Wh)", device.Alias,
+            _log.LogInformation("Miele {Alias}: cycle ended ({Reason}, {Minutes:0} min, ecoFeedback {Kwh} kWh, plug {Wh} Wh)", device.Alias,
                 closed.EndReason, closed.Duration?.TotalMinutes ?? 0, closed.EnergyKwh?.ToString("0.00") ?? "—", closed.PlugEnergyWh?.ToString("0") ?? "—");
+            Notify(() => CycleClosed?.Invoke(device.Id, nowUtc));
         }
     }
 

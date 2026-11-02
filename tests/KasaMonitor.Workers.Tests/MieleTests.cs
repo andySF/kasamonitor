@@ -19,6 +19,8 @@ internal sealed class FakeMieleClient : IMieleClient
     /// <summary>Each OpenEvents call takes the next script; null entry = throw (connection refused).</summary>
     public Queue<string[]?> Streams { get; } = new();
     public List<string> RefreshTokensSeen { get; } = new();
+    /// <summary>lastUsedPrograms answer per (deviceId, calculateEnergyMonitoring); default: no history.</summary>
+    public Func<string, bool, string> LastUsed { get; set; } = (_, _) => "[]";
 
     public Task<MieleToken> ExchangeCodeAsync(string clientId, string clientSecret, string code, string redirectUri, CancellationToken ct)
     {
@@ -43,6 +45,12 @@ internal sealed class FakeMieleClient : IMieleClient
     {
         Calls.Add("devices");
         return Task.FromResult(Devices());
+    }
+
+    public Task<string> GetLastUsedProgramsJsonAsync(string accessToken, string deviceId, bool calculateEnergyMonitoring, CancellationToken ct)
+    {
+        Calls.Add("lastUsed " + deviceId + (calculateEnergyMonitoring ? " em" : ""));
+        return Task.FromResult(LastUsed(deviceId, calculateEnergyMonitoring));
     }
 
     public Task<IMieleEventStream> OpenEventsAsync(string accessToken, CancellationToken ct)
@@ -83,6 +91,9 @@ internal sealed class MieleRig : IDisposable
         Auth = new MieleAuthService(Settings, Client, NullLogger<MieleAuthService>.Instance, () => Now);
         Recorder = new MieleRecorder(Scopes, State, NullLogger<MieleRecorder>.Instance);
     }
+
+    public MieleHistorySync History() => new(Auth, Client, Recorder, State, Scopes, NullLogger<MieleHistorySync>.Instance, () => Now,
+        (d, _) => { Now += d; return Task.CompletedTask; });
 
     public MieleStreamWorker Worker(List<TimeSpan>? waits = null) => new(Settings, Auth, Client, Recorder, State,
         NullLogger<MieleStreamWorker>.Instance, () => Now, (d, _) => { waits?.Add(d); Now += d; return Task.CompletedTask; }, TimeSpan.FromSeconds(1));

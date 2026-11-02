@@ -62,6 +62,14 @@ public class MieleMetricsTests
         lines.Should().Contain("miele_program_phase_info{" + l + ",phase=\"Centrifugare\"} 1");
         lines.Should().NotContain(x => x.StartsWith("miele_spin_rpm{"), "no value, no series");
         lines.Should().Contain("miele_cycles_total{" + l + "} 4");
+
+        // Once the API history has the run, the last-cycle metrics take its values (the ecoFeedback ones stay in the cycle).
+        var live = Live("000148508574", "Masina test A", Running("Centrifugare"), cycles: 4);
+        state.Publish(live with { LastCycle = live.LastCycle! with { Source = MieleCycleSources.Merged, ApiEnergyKwh = 0.82, ApiWaterL = 44.5 } });
+        MieleMetrics.Update(state, Now);
+        lines = await LinesAsync("Masina test A");
+        lines.Should().Contain("miele_last_cycle_energy_kwh{" + l + "} 0.82");
+        lines.Should().Contain("miele_last_cycle_water_l{" + l + "} 44.5");
     }
 
     [Fact]

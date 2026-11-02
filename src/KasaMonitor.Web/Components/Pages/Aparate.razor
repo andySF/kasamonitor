@@ -200,48 +200,106 @@ else
         }
     </div>
 
-    @foreach (var a in _appliances)
-    {
-        <div class="card mt-3">
-            <div class="card-header fw-semibold">Istoric cicluri — @a.Device.Alias</div>
-            <div class="card-body p-0">
-                @if (!_cycles.TryGetValue(a.Device.Id, out var cycles) || cycles.Count == 0)
-                {
-                    <p class="text-secondary small p-3 mb-0">Niciun ciclu înregistrat încă.</p>
-                }
-                else
-                {
-                    <div class="table-responsive">
-                        <table class="table table-sm align-middle mb-0 small">
-                            <thead>
-                                <tr><th>Început</th><th>Durată</th><th>Program</th><th style="min-width: 14rem">Faze</th><th class="text-end">Energie aparat</th><th class="text-end">Energie priză</th><th class="text-end">Apă</th><th class="text-end">Cost</th><th>Sfârșit</th></tr>
-                            </thead>
-                            <tbody>
-                                @foreach (var c in cycles)
-                                {
-                                    <tr>
-                                        <td class="text-nowrap">@c.StartUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm")</td>
-                                        <td class="text-nowrap">@(c.EndUtc is { } end ? UiFormat.DurationRo((end - c.StartUtc).TotalSeconds) : "în curs")</td>
-                                        <td>@(c.Program ?? "—")</td>
-                                        <td>@PhaseBand(c, DateTimeOffset.UtcNow)</td>
-                                        <td class="text-end text-nowrap">@(c.EnergyKwh is { } e ? e.ToString("0.00") + " kWh" : "—")</td>
-                                        <td class="text-end text-nowrap">@(c.PlugEnergyWh is { } pw ? (pw / 1000).ToString("0.00") + " kWh" : "—")</td>
-                                        <td class="text-end text-nowrap">@(c.WaterL is { } wl ? wl.ToString("0") + " l" : "—")</td>
-                                        <td class="text-end text-nowrap" title="@(c.PlugEnergyWh is not null ? "după priză" : "după aparat")">@Cost(c)</td>
-                                        <td class="text-secondary">@(c.IsOpen ? "—" : MieleEndReasons.Name(c.EndReason))</td>
-                                    </tr>
-                                }
-                            </tbody>
-                        </table>
-                    </div>
-                }
+    <div class="card mt-3">
+        <div class="card-header d-flex flex-wrap align-items-center gap-2">
+            <span class="fw-semibold"><i class="bi bi-clock-history me-2"></i>Istoric cicluri</span>
+            @if (State.HistorySyncUtc is { } hs)
+            {
+                <span class="small text-secondary" title="@UiFormat.FullLocal(hs)">istoricul Miele citit @UiFormat.RelativeRo(hs, DateTimeOffset.UtcNow)</span>
+            }
+            <div class="ms-auto d-flex align-items-center gap-2">
+                <label class="small text-secondary mb-0" for="history-device">Aparat</label>
+                <select class="form-select form-select-sm w-auto" id="history-device" value="@_filter" @onchange="FilterChangedAsync">
+                    <option value="">toate</option>
+                    @foreach (var a in _appliances)
+                    {
+                        <option value="@a.Device.Id">@a.Device.Alias</option>
+                    }
+                </select>
             </div>
         </div>
-    }
+        <div class="card-body p-0">
+            @if (State.HistoryMessage is { } hm)
+            {
+                <div class="small text-warning-emphasis px-3 pt-2">@hm</div>
+            }
+            @if (_page.Items.Count == 0)
+            {
+                <p class="text-secondary small p-3 mb-0">Niciun ciclu înregistrat încă.</p>
+            }
+            else
+            {
+                var showDevice = _filter.Length == 0 && _appliances.Count > 1;
+                var columns = showDevice ? 13 : 12;
+                <div class="table-responsive">
+                    <table class="table table-sm align-middle mb-0 small">
+                        <thead>
+                            <tr>
+                                <th></th><th>Început</th>
+                                @if (showDevice) { <th>Aparat</th> }
+                                <th>Durată</th><th>Program</th><th>Sursă</th><th style="min-width: 14rem">Faze</th>
+                                <th class="text-end">Energie</th><th class="text-end">Priză</th><th class="text-end">Apă</th><th class="text-end">Cost</th><th>Sfârșit</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @foreach (var c in _page.Items)
+                            {
+                                var cycle = c;
+                                var expanded = _expanded.Contains(c.Id);
+                                var (energy, energySource) = EnergyCell(c);
+                                var (water, waterSource) = WaterCell(c);
+                                <tr>
+                                    <td>
+                                        <button type="button" class="btn btn-link btn-sm p-0 text-secondary" title="@(expanded ? "Ascunde detaliul" : "Detaliu: estimarea Miele față de priză")"
+                                                aria-expanded="@(expanded ? "true" : "false")" @onclick="() => ToggleAsync(cycle)">
+                                            <i class="bi @(expanded ? "bi-chevron-down" : "bi-chevron-right")"></i>
+                                        </button>
+                                    </td>
+                                    <td class="text-nowrap">@c.StartUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm")</td>
+                                    @if (showDevice) { <td>@DeviceAlias(c.DeviceId)</td> }
+                                    <td class="text-nowrap">@(c.EndUtc is { } end ? UiFormat.DurationRo((end - c.StartUtc).TotalSeconds) : "în curs")</td>
+                                    <td>@(c.Program ?? "—")</td>
+                                    <td><span class="badge rounded-pill border text-secondary fw-normal" title="@SourceTitle(c.Source)">@MieleCycleSources.Name(c.Source)</span></td>
+                                    <td>
+                                        @if (c.Phases.Count > 0) { @PhaseBand(c, DateTimeOffset.UtcNow) }
+                                        else { <span class="text-secondary">—</span> }
+                                    </td>
+                                    <td class="text-end text-nowrap" title="sursa: @energySource">@energy</td>
+                                    <td class="text-end text-nowrap" title="măsurat de priza legată pe durata ciclului">@(c.PlugEnergyWh is { } pw ? (pw / 1000).ToString("0.00") + " kWh" : "—")</td>
+                                    <td class="text-end text-nowrap" title="sursa: @waterSource">@water</td>
+                                    <td class="text-end text-nowrap" title="@(c.PlugEnergyWh is not null ? "după priză" : "după Miele")">@Cost(c)</td>
+                                    <td class="text-secondary">@(c.IsOpen ? "—" : MieleEndReasons.Name(c.EndReason))</td>
+                                </tr>
+                                @if (expanded)
+                                {
+                                    <tr>
+                                        <td colspan="@columns" class="bg-body-tertiary">@CycleDetailView(c)</td>
+                                    </tr>
+                                }
+                            }
+                        </tbody>
+                    </table>
+                </div>
+            }
+        </div>
+        <div class="card-footer small text-secondary d-flex flex-wrap align-items-center gap-2">
+            <span>Miele oferă ultimele 5 rulări; de la conectare încolo KasaMonitor păstrează tot.</span>
+            @if (_page.Total > PageSize)
+            {
+                <div class="btn-group btn-group-sm ms-auto" role="group" aria-label="Pagini">
+                    <button type="button" class="btn btn-outline-secondary" disabled="@(_pageIndex == 0)" @onclick="() => GoToPageAsync(_pageIndex - 1)">◀</button>
+                    <span class="btn btn-outline-secondary disabled">pagina @(_pageIndex + 1) din @PageCount · @_page.Total cicluri</span>
+                    <button type="button" class="btn btn-outline-secondary" disabled="@(_pageIndex >= PageCount - 1)" @onclick="() => GoToPageAsync(_pageIndex + 1)">▶</button>
+                </div>
+            }
+        </div>
+    </div>
     <p class="small text-secondary mt-3">
         Fazele și numele lor vin dintr-o listă a comunității (Home Assistant), nu din documentația Miele; o fază necunoscută apare cu numele dat de API
-        (în engleză) sau ca „faza &lt;cod&gt;”. Energia „aparat” e calculată de mașină (ecoFeedback), „priză” e măsurată de priza legată pe durata ciclului;
-        costul folosește energia prizei când există și tariful din Setări.
+        (în engleză) sau ca „faza &lt;cod&gt;”. „Energie” = valoarea din istoricul API Miele când rularea apare acolo, altfel energia măsurată de priză,
+        altfel ecoFeedback din timpul ciclului; „Apă” = istoricul API, altfel ecoFeedback (tooltip-ul spune sursa). Detaliul unui ciclu arată toate trei
+        separat: istoricul API, ecoFeedback și priza. Costul folosește energia prizei când există și tariful din Setări. Sursa: „observat” = văzut de KasaMonitor, „din API” = doar în istoricul Miele (fără faze), „ambele” = văzut și
+        găsit în istoric.
     </p>
 }
 
@@ -256,7 +314,12 @@ else
 
     private MieleRuntimeSettings? _settings;
     private IReadOnlyList<MieleApplianceLive> _appliances = Array.Empty<MieleApplianceLive>();
-    private Dictionary<string, IReadOnlyList<MieleCycle>> _cycles = new();
+    private const int PageSize = 50;
+    private MieleCyclePage _page = new(Array.Empty<MieleCycle>(), 0);
+    private string _filter = "";
+    private int _pageIndex;
+    private readonly HashSet<long> _expanded = new();
+    private readonly Dictionary<long, CycleDetail> _details = new();
     private IReadOnlyList<Plug> _plugs = Array.Empty<Plug>();
     private readonly Dictionary<string, DeviceEdit> _edits = new();
     private readonly Dictionary<string, string> _saveMessage = new();
@@ -292,9 +355,14 @@ else
             _appliances = State.Appliances;
             using var scope = ScopeFactory.CreateScope();
             var repo = scope.ServiceProvider.GetRequiredService<IMieleRepository>();
-            var cycles = new Dictionary<string, IReadOnlyList<MieleCycle>>();
-            foreach (var a in _appliances) cycles[a.Device.Id] = await repo.ListCyclesAsync(a.Device.Id, 30, CancellationToken.None);
-            _cycles = cycles;
+            if (_filter.Length > 0 && _appliances.All(a => a.Device.Id != _filter)) _filter = "";
+            var ids = _filter.Length > 0 ? new[] { _filter } : _appliances.Select(a => a.Device.Id).ToArray();
+            _page = await repo.ListCyclesPageAsync(ids, _pageIndex * PageSize, PageSize, CancellationToken.None);
+            if (_pageIndex > 0 && _page.Items.Count == 0 && _page.Total > 0)
+            {
+                _pageIndex = PageCount - 1;
+                _page = await repo.ListCyclesPageAsync(ids, _pageIndex * PageSize, PageSize, CancellationToken.None);
+            }
             if (_plugs.Count == 0)
                 _plugs = (await scope.ServiceProvider.GetRequiredService<IPlugRepository>().ListAllAsync(CancellationToken.None))
                     .Where(p => !p.IsArchived && p.Role != PlugRole.MainMeter).OrderBy(p => p.Alias, StringComparer.CurrentCultureIgnoreCase).ToList();
@@ -343,6 +411,187 @@ else
         await LoadAsync();
     }
 
+    private int PageCount => Math.Max(1, (_page.Total + PageSize - 1) / PageSize);
+
+    private async Task FilterChangedAsync(ChangeEventArgs e)
+    {
+        _filter = e.Value?.ToString() ?? "";
+        _pageIndex = 0;
+        await LoadAsync();
+    }
+
+    private async Task GoToPageAsync(int index)
+    {
+        _pageIndex = Math.Clamp(index, 0, PageCount - 1);
+        await LoadAsync();
+    }
+
+    private string DeviceAlias(string deviceId) => _appliances.FirstOrDefault(a => a.Device.Id == deviceId)?.Device.Alias ?? deviceId;
+
+    private static string SourceTitle(string source) => source switch
+    {
+        MieleCycleSources.Api => "Doar din istoricul Miele (lastUsedPrograms): rulare pe care KasaMonitor n-a văzut-o, fără faze.",
+        MieleCycleSources.Merged => "Văzut de KasaMonitor și găsit în istoricul Miele: în tabel energia și apa vin din istoric.",
+        _ => "Văzut de KasaMonitor (flux SSE); încă negăsit în istoricul Miele.",
+    };
+
+    private const string ApiSource = "istoricul API Miele, lastUsedPrograms (calculat de Miele)";
+    private const string EcoSource = "aparatul, ecoFeedback văzut în timpul ciclului (calculat de Miele)";
+    private const string PlugSource = "priza legată (măsurat)";
+
+    /// <summary>Energy in the table: the API history's, else the plug's, else ecoFeedback; with its source for the tooltip.</summary>
+    private static (string Text, string Source) EnergyCell(MieleCycle c)
+    {
+        if (c.ApiEnergyKwh is { } api) return (Kwh(api), ApiSource);
+        if (c.PlugEnergyWh is { } wh) return (Kwh(wh / 1000), PlugSource);
+        if (c.EnergyKwh is { } eco) return (Kwh(eco), EcoSource);
+        return ("—", "nicio valoare");
+    }
+
+    /// <summary>Water in the table: the API history's, else ecoFeedback (a plug measures no water).</summary>
+    private static (string Text, string Source) WaterCell(MieleCycle c)
+    {
+        if (c.ApiWaterL is { } api) return (Litres(api), ApiSource);
+        if (c.WaterL is { } eco) return (Litres(eco), EcoSource);
+        return ("—", "nicio valoare");
+    }
+
+    private static string Kwh(double? kwh) => kwh is { } k ? k.ToString("0.00") + " kWh" : "—";
+    private static string Litres(double? l) => l is { } v ? v.ToString("0.#") + " l" : "—";
+
+    public sealed record PowerPoint(long Ms, decimal? W);
+
+    /// <summary>The detail of a cycle: Miele's 15-min estimate vs the plug's power on the same interval.</summary>
+    private sealed record CycleDetail(
+        IReadOnlyList<PowerPoint> Plug,
+        IReadOnlyList<PowerPoint> Miele,
+        IReadOnlyList<MieleEnergyComparison.SlotCompare> Slots,
+        ApexChartOptions<PowerPoint> Options,
+        string? PlugAlias,
+        string? Error);
+
+    private async Task ToggleAsync(MieleCycle c)
+    {
+        if (_expanded.Remove(c.Id)) return;
+        _expanded.Add(c.Id);
+        // Reloaded at every opening: a later history read may have added Miele's profile.
+        _details[c.Id] = await LoadDetailAsync(c);
+    }
+
+    private async Task<CycleDetail> LoadDetailAsync(MieleCycle c)
+    {
+        var profile = c.EnergyProfile ?? Array.Empty<MieleEnergySlot>();
+        var from = c.StartUtc;
+        var to = c.EndUtc ?? DateTimeOffset.UtcNow;
+        if (profile.Count > 0)
+        {
+            if (profile[0].StartUtc < from) from = profile[0].StartUtc;
+            var last = profile[^1].StartUtc + MieleEnergyComparison.Slot;
+            if (last > to) to = last;
+        }
+        var device = _appliances.FirstOrDefault(a => a.Device.Id == c.DeviceId)?.Device;
+        IReadOnlyList<LiveMinuteAggregate> minutes = Array.Empty<LiveMinuteAggregate>();
+        IReadOnlyList<Sample> samples = Array.Empty<Sample>();
+        string? error = null;
+        try
+        {
+            if (device?.PlugId is { } plug)
+            {
+                using var scope = ScopeFactory.CreateScope();
+                minutes = await scope.ServiceProvider.GetRequiredService<ILiveRepository>().ListMinutesAsync(plug, from.AddMinutes(-1), to, CancellationToken.None);
+                if (minutes.Count == 0)
+                    samples = await scope.ServiceProvider.GetRequiredService<ISampleRepository>().ListByPlugAsync(plug, from - MielePlugEnergy.MaxHold, to, CancellationToken.None);
+            }
+        }
+        catch (Exception ex)
+        {
+            error = ex.Message;
+        }
+        var plugPoints = MieleEnergyComparison.PlugPower(minutes, samples, from, to)
+            .Select(p => new PowerPoint(p.TsUtc.ToUnixTimeMilliseconds(), (decimal)Math.Round(p.W, 0))).ToList();
+        var mielePoints = MieleEnergyComparison.ProfilePower(profile)
+            .Select(p => new PowerPoint(p.TsUtc.ToUnixTimeMilliseconds(), (decimal)Math.Round(p.W, 0))).ToList();
+        var options = new ApexChartOptions<PowerPoint>
+        {
+            Chart = new Chart { Toolbar = new Toolbar { Show = false }, Animations = new Animations { Enabled = false }, Zoom = new Zoom { Enabled = false } },
+            Stroke = new Stroke { Width = 2, Curve = Curve.Stepline },
+            DataLabels = new DataLabels { Enabled = false },
+            Xaxis = new XAxis { Min = from.ToUnixTimeMilliseconds(), Max = to.ToUnixTimeMilliseconds(), Labels = new XAxisLabels { DatetimeUTC = false } },
+            Yaxis = new List<YAxis> { new() { Min = 0, DecimalsInFloat = 0, Title = new AxisTitle { Text = "W" } } },
+            Tooltip = new Tooltip { Shared = true, X = new TooltipX { Format = "dd.MM HH:mm" } },
+        };
+        return new CycleDetail(plugPoints, mielePoints, MieleEnergyComparison.Slots(profile, minutes, samples), options,
+            device?.PlugId is { } p ? PlugAlias(p) : null, error);
+    }
+
+    private RenderFragment CycleDetailView(MieleCycle c) => __builder =>
+    {
+        _details.TryGetValue(c.Id, out var d);
+        <div class="py-1">
+            <div class="d-flex flex-wrap gap-3 mb-1">
+                <span><span class="text-secondary">Sursa:</span> @SourceTitle(c.Source)</span>
+                @if (c.ApiStartUtc is { } aStart)
+                {
+                    <span><span class="text-secondary">În istoricul Miele:</span> @aStart.ToLocalTime().ToString("yyyy-MM-dd HH:mm")–@(c.ApiEndUtc?.ToLocalTime().ToString("HH:mm") ?? "?")</span>
+                }
+            </div>
+            <table class="table table-sm table-borderless w-auto mb-1">
+                <thead><tr><th class="fw-normal text-secondary">Sursa</th><th class="fw-normal text-secondary text-end">Energie</th><th class="fw-normal text-secondary text-end">Apă</th></tr></thead>
+                <tbody>
+                    <tr><td>Istoric API Miele (lastUsedPrograms, calculat)</td><td class="text-end">@Kwh(c.ApiEnergyKwh)</td><td class="text-end">@Litres(c.ApiWaterL)</td></tr>
+                    <tr><td>ecoFeedback în timpul ciclului (calculat de Miele)</td><td class="text-end">@Kwh(c.EnergyKwh)</td><td class="text-end">@Litres(c.WaterL)</td></tr>
+                    <tr><td>Priza legată (măsurat)</td><td class="text-end">@Kwh(c.PlugEnergyWh / 1000)</td><td class="text-end">—</td></tr>
+                </tbody>
+            </table>
+            <div class="d-flex flex-wrap gap-3 mb-1">
+                @if (d is not null && d.Slots.Count > 0)
+                {
+                    var mieleWh = d.Slots.Sum(x => x.MieleWh);
+                    double? plugWh = d.Slots.All(x => x.PlugWh is null) ? null : d.Slots.Sum(x => x.PlugWh ?? 0);
+                    <span><span class="text-secondary">Pe intervalele de 15 min:</span> Miele estimează @((mieleWh / 1000).ToString("0.00")) kWh, priza a măsurat @(plugWh is { } pwh ? (pwh / 1000).ToString("0.00") + " kWh" : "—")</span>
+                }
+            </div>
+            @if (d is null)
+            {
+                <span class="text-secondary"><span class="spinner-border spinner-border-sm me-2"></span>Se încarcă…</span>
+            }
+            else
+            {
+                @if (d.Error is { } err)
+                {
+                    <div class="text-warning-emphasis">Datele prizei nu au putut fi citite: @err</div>
+                }
+                @if (d.Miele.Count == 0)
+                {
+                    <div class="text-secondary">Miele n-a trimis profilul de energie pe 15 minute pentru această rulare.</div>
+                }
+                @if (d.PlugAlias is null)
+                {
+                    <div class="text-secondary">Fără priză legată: nu există măsurătoare de comparat.</div>
+                }
+                else if (d.Plug.Count == 0)
+                {
+                    <div class="text-secondary">Priza @d.PlugAlias nu are citiri în acest interval.</div>
+                }
+                @if (d.Miele.Count > 0 || d.Plug.Count > 0)
+                {
+                    <div style="max-width: 44rem">
+                        <ApexChart @key="c.Id" TItem="PowerPoint" Options="d.Options" Height="180" XAxisType="XAxisType.Datetime">
+                            @if (d.Plug.Count > 0)
+                            {
+                                <ApexPointSeries TItem="PowerPoint" Items="d.Plug" Name="@("Priza " + d.PlugAlias + " (W, măsurat)")" Color="#0072B2" SeriesType="SeriesType.Line" XValue="@(p => p.Ms)" YValue="@(p => p.W)" />
+                            }
+                            @if (d.Miele.Count > 0)
+                            {
+                                <ApexPointSeries TItem="PowerPoint" Items="d.Miele" Name="Miele (W medii pe 15 min, estimat)" Color="#D55E00" SeriesType="SeriesType.Line" XValue="@(p => p.Ms)" YValue="@(p => p.W)" />
+                            }
+                        </ApexChart>
+                    </div>
+                }
+            }
+        </div>
+    };
+
     private string PlugAlias(Guid id) => _plugs.FirstOrDefault(p => p.Id == id)?.Alias ?? "(arhivată)";
 
     private double? PlugPowerW(Guid id) =>
@@ -351,7 +600,7 @@ else
 
     private string Cost(MieleCycle c)
     {
-        var kwh = c.PlugEnergyWh is { } wh ? wh / 1000 : c.EnergyKwh;
+        var kwh = c.PlugEnergyWh is { } wh ? wh / 1000 : c.MieleEnergyKwh;
         return kwh is { } k ? EnergyFormat.Lei((decimal)k * _tariff) : "—";
     }
 

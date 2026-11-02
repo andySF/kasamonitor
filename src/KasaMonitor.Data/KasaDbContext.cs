@@ -196,6 +196,8 @@ public sealed class KasaDbContext : DbContext
             e.Property(x => x.Id).ValueGeneratedOnAdd();
             e.HasIndex(x => new { x.DeviceId, x.StartTs });
             e.HasIndex(x => x.EndTs);
+            // A run of the API history is stored once per appliance (NULL for cycles the API has not reported).
+            e.HasIndex(x => new { x.DeviceId, x.ApiStartTs }).IsUnique();
         });
     }
 }

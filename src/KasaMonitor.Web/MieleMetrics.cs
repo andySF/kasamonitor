@@ -27,9 +27,9 @@ public static class MieleMetrics
     public static readonly KasaMetrics.MetricInfo EcoWaterInfo = G("miele_eco_water_l", "l", "Water used by the running program so far (ecoFeedback; resets when the program ends).");
     public static readonly KasaMetrics.MetricInfo EnergyForecastInfo = G("miele_eco_energy_forecast_ratio", "0..1", "Energy forecast of the selected program, relative 0..1 (ecoFeedback.energyForecast; not kWh).");
     public static readonly KasaMetrics.MetricInfo WaterForecastInfo = G("miele_eco_water_forecast_ratio", "0..1", "Water forecast of the selected program, relative 0..1 (ecoFeedback.waterForecast; not litres).");
-    public static readonly KasaMetrics.MetricInfo CyclesInfo = new("miele_cycles_total", "counter", "cycles", "Program cycles completed (stored in MieleCycles).");
-    public static readonly KasaMetrics.MetricInfo LastEnergyInfo = G("miele_last_cycle_energy_kwh", "kWh", "Energy of the last completed cycle reported by the appliance (ecoFeedback).");
-    public static readonly KasaMetrics.MetricInfo LastWaterInfo = G("miele_last_cycle_water_l", "l", "Water of the last completed cycle reported by the appliance (ecoFeedback).");
+    public static readonly KasaMetrics.MetricInfo CyclesInfo = new("miele_cycles_total", "counter", "cycles", "Program cycles completed (stored in MieleCycles: observed, from the API history and merged, each run once).");
+    public static readonly KasaMetrics.MetricInfo LastEnergyInfo = G("miele_last_cycle_energy_kwh", "kWh", "Energy of the last completed cycle reported by Miele (API history lastUsedPrograms when it has it, else ecoFeedback).");
+    public static readonly KasaMetrics.MetricInfo LastWaterInfo = G("miele_last_cycle_water_l", "l", "Water of the last completed cycle reported by Miele (API history lastUsedPrograms when it has it, else ecoFeedback).");
     public static readonly KasaMetrics.MetricInfo DoorInfo = G("miele_door_open", "0/1", "Door open (signalDoor).");
     public static readonly KasaMetrics.MetricInfo ConnectedInfo = G("miele_connected", "0/1", "The SSE stream to Miele is open (no labels).");
 
@@ -87,8 +87,8 @@ public static class MieleMetrics
 
                 Online.WithLabels(labels).Set(state.IsOnline(a, now) ? 1 : 0);
                 Cycles.WithLabels(labels).IncTo(a.CyclesTotal);
-                Set(LastEnergy, labels, a.LastCycle?.EnergyKwh);
-                Set(LastWater, labels, a.LastCycle?.WaterL);
+                Set(LastEnergy, labels, a.LastCycle?.MieleEnergyKwh);
+                Set(LastWater, labels, a.LastCycle?.MieleWaterL);
 
                 var v = a.Values;
                 Info(Status, labels, v?.StatusRaw is { } st ? MieleTexts.StatusCode(st) : null);

@@ -28,4 +28,12 @@ public interface IMieleRepository
     /// <summary>The newest cycles of an appliance, newest first.</summary>
     Task<IReadOnlyList<MieleCycle>> ListCyclesAsync(string deviceId, int take, CancellationToken ct);
     Task<int> CountClosedCyclesAsync(string deviceId, CancellationToken ct);
+
+    /// <summary>Every cycle of an appliance starting in [from, to], oldest first (the candidates of the history merge).</summary>
+    Task<IReadOnlyList<MieleCycle>> ListCyclesBetweenAsync(string deviceId, DateTimeOffset fromUtc, DateTimeOffset toUtc, CancellationToken ct);
+
+    /// <summary>One page of the cycles of the given appliances, newest first, and how many there are in all.</summary>
+    Task<MieleCyclePage> ListCyclesPageAsync(IReadOnlyCollection<string> deviceIds, int skip, int take, CancellationToken ct);
 }
+
+public sealed record MieleCyclePage(IReadOnlyList<MieleCycle> Items, int Total);

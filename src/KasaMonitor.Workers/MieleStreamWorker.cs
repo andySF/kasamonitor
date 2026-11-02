@@ -10,7 +10,8 @@ namespace KasaMonitor.Workers;
 /// ~20 s of silence) = dead connection; reconnection waits 5 s, 10 s, 20 s … at most 5 minutes after consecutive
 /// failures. After 3 failed streams in a row it falls back to <c>GET /v1/devices</c> every 60 s until a stream works
 /// again. The stream is also closed (and reopened with the new token) when the access token is due for refresh, and
-/// at „Deconectează”. An API 401 triggers one forced refresh and one retry. No other periodic call is made.
+/// at „Deconectează”. An API 401 triggers one forced refresh and one retry. The only other periodic call is the
+/// program history (<see cref="MieleHistorySync"/>).
 /// </summary>
 public sealed class MieleStreamWorker : BackgroundService
 {
@@ -286,21 +287,8 @@ public sealed class MieleStreamWorker : BackgroundService
         }
     }
 
-    /// <summary>Calls with the access token; after a 401 one forced refresh and one retry.</summary>
-    private async Task<T> WithTokenAsync<T>(Func<string, Task<T>> call, CancellationToken ct)
-    {
-        var token = await _auth.GetAccessTokenAsync(ct);
-        try
-        {
-            return await call(token);
-        }
-        catch (MieleAuthException)
-        {
-            _log.LogInformation("Miele: API answered 401, refreshing the token once");
-            token = await _auth.ForceRefreshAsync(ct);
-            return await call(token);
-        }
-    }
+    /// <summary>Calls with the access token; after a 401 one forced refresh and one retry (<see cref="MieleAuthService.WithTokenAsync"/>).</summary>
+    private Task<T> WithTokenAsync<T>(Func<string, Task<T>> call, CancellationToken ct) => _auth.WithTokenAsync(call, ct);
 
     private static bool IsTransient(Exception ex, CancellationToken ct) =>
         !ct.IsCancellationRequested && ex is MieleException or HttpRequestException or TimeoutException or IOException

@@ -101,8 +101,12 @@ public sealed record MielePhaseSpan(int? PhaseRaw, string PhaseText, DateTimeOff
 /// <summary>
 /// One program run (table <c>MieleCycles</c>): from the status turning Running to End programmed / Idle / Off, or to
 /// <see cref="MieleApi.CycleTimeout"/> without Running. <see cref="EnergyKwh"/>/<see cref="WaterL"/> = the highest
-/// <c>ecoFeedback</c> current consumption seen during the cycle (the counters reset when the program ends);
-/// <see cref="PlugEnergyWh"/> = what the linked plug measured over the cycle.
+/// <c>ecoFeedback</c> current consumption seen live during the cycle (the counters reset when the program ends; never
+/// overwritten by the history); <see cref="ApiEnergyKwh"/>/<see cref="ApiWaterL"/> = the run's values in
+/// <c>lastUsedPrograms</c> once the API history has it (<see cref="Source"/> merged or api);
+/// <see cref="PlugEnergyWh"/> = what the linked plug measured over the cycle. Three separate pairs, never mixed. A run
+/// known only from the API history (<see cref="Source"/> api) has no phases and no ecoFeedback values.
+/// <see cref="ApiStartUtc"/> is the dedupe key of the API runs.
 /// </summary>
 public sealed record MieleCycle(
     long Id,
@@ -118,9 +122,61 @@ public sealed record MieleCycle(
     double? PlugEnergyWh,
     string? EndReason)
 {
+    /// <summary><see cref="MieleCycleSources"/>: observed (SSE), api (lastUsedPrograms only) or merged (both).</summary>
+    public string Source { get; init; } = MieleCycleSources.Observed;
+    /// <summary>The run's <c>startAt</c> in the API history (seconds), when the API reported it.</summary>
+    public DateTimeOffset? ApiStartUtc { get; init; }
+    /// <summary>The run's <c>endAt</c> in the API history.</summary>
+    public DateTimeOffset? ApiEndUtc { get; init; }
+    /// <summary>Miele's estimated energy per 15-minute slot (<c>energyMonitoring</c>), when it was returned.</summary>
+    public IReadOnlyList<MieleEnergySlot>? EnergyProfile { get; init; }
+    /// <summary>The run's calculated energy in the API history (<c>energyConsumption</c>); <see cref="EnergyKwh"/> stays the ecoFeedback value.</summary>
+    public double? ApiEnergyKwh { get; init; }
+    /// <summary>The run's calculated water in the API history (<c>waterConsumption</c>); <see cref="WaterL"/> stays the ecoFeedback value.</summary>
+    public double? ApiWaterL { get; init; }
+
+    /// <summary>Miele's best energy value: the API history's, else the ecoFeedback maximum seen live.</summary>
+    public double? MieleEnergyKwh => ApiEnergyKwh ?? EnergyKwh;
+    /// <summary>Miele's best water value: the API history's, else the ecoFeedback maximum seen live.</summary>
+    public double? MieleWaterL => ApiWaterL ?? WaterL;
+
     public bool IsOpen => EndUtc is null;
     public TimeSpan? Duration => EndUtc is { } end ? end - StartUtc : null;
 }
+
+/// <summary>Where a cycle comes from (column <c>MieleCycles.Source</c>).</summary>
+public static class MieleCycleSources
+{
+    /// <summary>Seen live (SSE / GET /devices) by KasaMonitor.</summary>
+    public const string Observed = "observed";
+    /// <summary>Only in the API history (<c>lastUsedPrograms</c>): a run KasaMonitor did not see.</summary>
+    public const string Api = "api";
+    /// <summary>Seen live and found in the API history.</summary>
+    public const string Merged = "merged";
+
+    public static string Name(string? source) => source switch
+    {
+        Api => "din API",
+        Merged => "ambele",
+        _ => "observat",
+    };
+}
+
+/// <summary>One 15-minute slot of Miele's estimated energy profile (<c>energyMonitoring.data</c>: slot start UTC, kWh).</summary>
+public sealed record MieleEnergySlot(DateTimeOffset StartUtc, double Kwh);
+
+/// <summary>
+/// One run of <c>GET /v1/devices/{id}/lastUsedPrograms</c>. Water and energy are calculated by Miele (not measured), null
+/// when not available; <see cref="EnergyProfile"/> only with <c>calculateEnergyMonitoring=true</c>.
+/// </summary>
+public sealed record MieleProgramRun(
+    int? ProgramRaw,
+    string? Program,
+    DateTimeOffset StartUtc,
+    DateTimeOffset EndUtc,
+    double? EnergyKwh,
+    double? WaterL,
+    IReadOnlyList<MieleEnergySlot>? EnergyProfile);
 
 /// <summary>Why a cycle was closed (column <c>MieleCycles.EndReason</c>).</summary>
 public static class MieleEndReasons

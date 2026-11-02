@@ -51,7 +51,11 @@ public sealed class MieleStateSnapshotEntity
 
 /// <summary>
 /// One program run (table MieleCycles). Times = unix seconds; <see cref="PhasesJson"/> =
-/// <c>[{"phaseRaw":260,"phaseText":"Spălare principală","fromTs":…,"toTs":…}]</c>.
+/// <c>[{"phaseRaw":260,"phaseText":"Spălare principală","fromTs":…,"toTs":…}]</c>; <see cref="Source"/> =
+/// observed | api | merged; (DeviceId, ApiStartTs) is unique (the dedupe key of the API history); three separate
+/// consumption pairs: <see cref="EnergyKwh"/>/<see cref="WaterL"/> = ecoFeedback seen live, <see cref="ApiEnergyKwh"/>/
+/// <see cref="ApiWaterL"/> = lastUsedPrograms, <see cref="PlugEnergyWh"/> = the linked plug;
+/// <see cref="EnergyProfileJson"/> = <c>[{"ts":…,"kwh":0.13}]</c> (Miele's 15-minute estimate).
 /// </summary>
 public sealed class MieleCycleEntity
 {
@@ -67,4 +71,10 @@ public sealed class MieleCycleEntity
     public double? WaterL { get; set; }
     public double? PlugEnergyWh { get; set; }
     public string? EndReason { get; set; }
+    public string Source { get; set; } = "observed";
+    public long? ApiStartTs { get; set; }
+    public long? ApiEndTs { get; set; }
+    public double? ApiEnergyKwh { get; set; }
+    public double? ApiWaterL { get; set; }
+    public string? EnergyProfileJson { get; set; }
 }

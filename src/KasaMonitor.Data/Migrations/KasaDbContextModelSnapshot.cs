@@ -473,6 +473,18 @@ namespace KasaMonitor.Data.Migrations
                         .ValueGeneratedOnAdd()
                         .HasColumnType("INTEGER");
 
+                    b.Property<long?>("ApiEndTs")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<double?>("ApiEnergyKwh")
+                        .HasColumnType("REAL");
+
+                    b.Property<long?>("ApiStartTs")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<double?>("ApiWaterL")
+                        .HasColumnType("REAL");
+
                     b.Property<string>("DeviceId")
                         .IsRequired()
                         .HasColumnType("TEXT");
@@ -485,6 +497,9 @@ namespace KasaMonitor.Data.Migrations
 
                     b.Property<double?>("EnergyKwh")
                         .HasColumnType("REAL");
+
+                    b.Property<string>("EnergyProfileJson")
+                        .HasColumnType("TEXT");
 
                     b.Property<long>("LastRunningTs")
                         .HasColumnType("INTEGER");
@@ -502,6 +517,10 @@ namespace KasaMonitor.Data.Migrations
                     b.Property<int?>("ProgramRaw")
                         .HasColumnType("INTEGER");
 
+                    b.Property<string>("Source")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
                     b.Property<long>("StartTs")
                         .HasColumnType("INTEGER");
 
@@ -511,6 +530,9 @@ namespace KasaMonitor.Data.Migrations
                     b.HasKey("Id");
 
                     b.HasIndex("EndTs");
+
+                    b.HasIndex("DeviceId", "ApiStartTs")
+                        .IsUnique();
 
                     b.HasIndex("DeviceId", "StartTs");
 

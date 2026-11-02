@@ -199,6 +199,15 @@ builder.Services.AddSingleton(sp => new MieleStreamWorker(
     sp.GetRequiredService<MieleState>(),
     sp.GetRequiredService<ILogger<MieleStreamWorker>>()));
 builder.Services.AddHostedService(sp => sp.GetRequiredService<MieleStreamWorker>());
+// Program history (lastUsedPrograms, last 5 runs per appliance): at connection, every 6 h and 2 min after a cycle ended.
+builder.Services.AddSingleton(sp => new MieleHistorySync(
+    sp.GetRequiredService<MieleAuthService>(),
+    sp.GetRequiredService<KasaMonitor.Core.Miele.IMieleClient>(),
+    sp.GetRequiredService<MieleRecorder>(),
+    sp.GetRequiredService<MieleState>(),
+    sp.GetRequiredService<IServiceScopeFactory>(),
+    sp.GetRequiredService<ILogger<MieleHistorySync>>()));
+builder.Services.AddHostedService(sp => sp.GetRequiredService<MieleHistorySync>());
 builder.Services.AddSingleton(sp => new MieleGroundTruth(sp.GetRequiredService<MieleState>()));
 
 // Appliance detection (NILM) from the main meter's 1 s stream; the classifier is saved next to the database.

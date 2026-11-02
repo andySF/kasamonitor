@@ -7,7 +7,7 @@ plugs and energy meters (e.g. Shelly EM Gen3, local JSON-RPC; the only write is 
 with SQLite, a web UI on port 8910 and a Prometheus `/metrics` endpoint. An optional Prometheus + Grafana stack
 with a ready-made dashboard and alert rules is included.
 
-Version: **0.8.5** (`Directory.Build.props`). Docker image: `duobit/kasamonitor`.
+Version: **0.8.6** (`Directory.Build.props`). Docker image: `duobit/kasamonitor`.
 
 ## Quick start
 
@@ -63,7 +63,7 @@ TP-Link (Tapo app) account in `/settings` and press **Scanează acum** on `/plug
   the house) and „Rapoarte” on `/centrala` (gas, boiler electricity, heat produced), per day (hours), week, month
   (days) or year (months), with ◀ ▶ navigation, the change against the previous period and the cost. See
   [Reports](#reports-history-casă-and-centrala-rapoarte).
-- **Version in the menu**: „v0.8.5” at the right of the navigation bar; the tooltip shows the commit and the build time.
+- **Version in the menu**: „v0.8.6” at the right of the navigation bar; the tooltip shows the commit and the build time.
 - **Browser errors in the server log**: JavaScript errors and the Blazor error banner are reported to
   `POST /api/client-error` and logged at Warning (category `KasaMonitor.ClientErrors`), so `docker logs` shows them.
 - **HTTP API for the appliance detection** (`/api/nilm/*`, LAN only): list, sheet, label, merge, add to, hide, regroup,
@@ -603,7 +603,7 @@ online/API calls, temperatures, modulation over time and gas per day for 30 days
 ## Miele appliances
 
 KasaMonitor reads Miele appliances (washing machine, tumble dryer, washer-dryer; any appliance of the account is
-listed) through the **Miele 3rd Party API** (developer.miele.com). Read-only in 0.8.5: no program is started or
+listed) through the **Miele 3rd Party API** (developer.miele.com). Read-only (since 0.8.5): no program is started or
 stopped (scope `openid mcs_thirdparty_read`; writing needs `mcs_thirdparty_write`, a later version).
 
 **One-time setup**
@@ -639,8 +639,26 @@ documented consistently (docs: PING / IDENT / ACTION; the wire, as read by pymie
 both are accepted, any case, and a nameless event is classified by its data. No line for 60 s (PING comes after
 20 s of silence) = dead connection. Reconnection waits 5 s, 10 s, 20 s … at most 5 minutes; after 3 failed streams
 in a row KasaMonitor polls `GET /v1/devices` every 60 s until a stream works again. The stream is reopened when the
-token is due for refresh. An API 401 triggers one forced refresh and one retry. No other periodic call. The labels
-`value_localized` come in English (Romanian is not among the API languages).
+token is due for refresh. An API 401 triggers one forced refresh and one retry. The only other periodic call is the
+program history below. The labels `value_localized` come in English (Romanian is not among the API languages).
+
+**Program history (since 0.8.6).** Miele keeps the last **five** finished runs per appliance server-side
+(`GET /v1/devices/{id}/lastUsedPrograms`, washing machines, tumble dryers, dishwashers, washer-dryers): program,
+`startAt`/`endAt` (UTC), calculated water (l) and energy (kWh) — `null` without EcoFeedback; washer-dryers return
+program and times only — and, with `calculateEnergyMonitoring=true`, a coarse **estimated** energy profile in fixed
+15-minute slots (not a measured load profile). KasaMonitor reads it once after the first read of the appliances after
+start or after connecting the account, then **every 6 hours** and **2 minutes after an observed cycle ended** (one
+call per appliance not archived; no other calls). An appliance that answers 400/404 to `calculateEnergyMonitoring` is
+logged once and read without it from then on; 429/503 is logged and nothing is called before `Retry-After` (else
+1 hour); 403 means the *appliance statistics* consent is missing in the Miele app (shown on `/aparate`). The runs are
+united with `MieleCycles`: a run whose `startAt` is within 10 minutes of an observed cycle's start, or that overlaps it
+by at least 50 % of the shorter one, is the same run — the cycle keeps its phases, its ecoFeedback values and the
+plug's energy and takes the API's start/end (`ApiStartTs`/`ApiEndTs`), energy and water (`ApiEnergyKwh`/`ApiWaterL`),
+the energy profile (`EnergyProfileJson`, `[{ts, kwh}]`) and the program if it had none (`Source = merged`). A run
+without such a cycle becomes a cycle of its own (`Source = api`, no phases, no ecoFeedback values, the linked plug's
+energy over the run if the plug has data then). A run matching a cycle still open waits for the next read. `(DeviceId, ApiStartTs)` is unique, so reading the
+same five runs again never duplicates them. So the API shows the last five runs from the first day, and from the
+connection on KasaMonitor keeps every run.
 
 **What is stored**
 
@@ -654,7 +672,10 @@ token is due for refresh. An API 401 triggers one forced refresh and one retry. 
   It keeps the program, the phases as `[{phaseRaw, phaseText, fromTs, toTs}]`, the highest `ecoFeedback` energy and
   water seen during the run (the appliance's estimate; the counters reset when the program ends), the energy the linked
   plug measured over the run (live minute aggregates, else the 10 s polls) and the end reason. An open cycle survives a
-  restart.
+  restart. Since 0.8.6 also the source (`observed` | `api` | `merged`), the run's start/end, energy and water in the
+  API history and Miele's 15-minute energy profile (see *Program history*). Three separate consumption pairs, never
+  overwritten by each other: `EnergyKwh`/`WaterL` = ecoFeedback seen live, `ApiEnergyKwh`/`ApiWaterL` = the API
+  history, `PlugEnergyWh` = the plug.
 
 **Texts.** Status and appliance type follow the official enums. **Program phases are not documented by Miele**: the
 numbers → names come from the community (Home Assistant's `miele` integration, e.g. washing machine 260/11004 main
@@ -667,8 +688,15 @@ Deconectează); per appliance a card with alias, model, status (coloured), progr
 switches on: heating element in pre-wash / main wash, motor in the spin, pump in the drain — informative), remaining
 time with a progress bar, target temperature / spin, door, the appliance's energy and water so far and the forecasts
 (relative 0–100 %), the current cycle as a coloured phase band, and the plug that feeds it (selector) with its power
-now; then „Istoric cicluri” per appliance: start, duration, program, phases band, energy by the appliance vs by the
-plug, water, cost (the plug's energy when linked, else the appliance's, at the tariff of `/settings`) and end reason.
+now; then „Istoric cicluri”: one table for all appliances or one (filter), 50 cycles per page, newest first: start,
+duration, program, the source (discreet badge: observat / din API / ambele), phases band, energy (the API history's,
+else the plug's, else ecoFeedback) and water (the API history's, else ecoFeedback), the tooltip naming the source, the
+plug's measured energy, cost (the plug's energy when linked, else Miele's, at the tariff of `/settings`) and end
+reason. A row opens its detail: where it comes from, its start/end in the Miele history, the three values side by
+side (API history, ecoFeedback, plug), and a
+small chart of Miele's estimated profile (average W per 15-minute slot) next to the linked plug's power on the same
+interval (live minute averages, else the 10 s polls), with both totals over the slots. Under the table: „Miele oferă
+ultimele 5 rulări; de la conectare încolo KasaMonitor păstrează tot.”
 
 **Ground truth for the appliance detection.** For an appliance with a linked plug, a main-meter event that the plug
 already confirmed (the plug's level changed by the same ΔP, `LabelPlugId`) while the appliance was *Running* is
@@ -688,8 +716,8 @@ the serial is never a label):
 | `miele_target_temperature_c`, `miele_spin_rpm` | gauge | program settings |
 | `miele_eco_energy_kwh`, `miele_eco_water_l` | gauge | the running program so far (ecoFeedback; reset at the end) |
 | `miele_eco_energy_forecast_ratio`, `miele_eco_water_forecast_ratio` | gauge | forecast of the selected program, relative 0..1 (not kWh / litres) |
-| `miele_cycles_total` | counter | completed cycles |
-| `miele_last_cycle_energy_kwh`, `miele_last_cycle_water_l` | gauge | last completed cycle (appliance's values) |
+| `miele_cycles_total` | counter | completed cycles, including the runs known only from the API history (each run once) |
+| `miele_last_cycle_energy_kwh`, `miele_last_cycle_water_l` | gauge | last completed cycle: the API history's values when it has them, else ecoFeedback |
 | `miele_door_open` | gauge | 0/1 |
 | `miele_connected` | gauge | no labels; 1 = SSE stream open |
 
@@ -1012,15 +1040,15 @@ dotnet test KasaMonitor.sln
 From the repository root, with Docker running and `docker login` done once:
 
 ```powershell
-.\deploy\build-and-push.ps1 -Version 0.8.5          # build :0.8.5 + :latest and push both
-.\deploy\build-and-push.ps1 -Version 0.8.5 -NoPush  # local build only
+.\deploy\build-and-push.ps1 -Version 0.8.6          # build :0.8.6 + :latest and push both
+.\deploy\build-and-push.ps1 -Version 0.8.6 -NoPush  # local build only
 ```
 
 or manually:
 
 ```bash
-docker build -t duobit/kasamonitor:0.8.5 -t duobit/kasamonitor:latest -f deploy/Dockerfile .
-docker push duobit/kasamonitor:0.8.5
+docker build -t duobit/kasamonitor:0.8.6 -t duobit/kasamonitor:latest -f deploy/Dockerfile .
+docker push duobit/kasamonitor:0.8.6
 docker push duobit/kasamonitor:latest
 ```
 

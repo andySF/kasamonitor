@@ -30,8 +30,14 @@ public sealed class MieleAuthException : MieleException
 public sealed class MieleApiException : MieleException
 {
     public int StatusCode { get; }
+    /// <summary>The answer's <c>Retry-After</c> (seconds or date), when it had one.</summary>
+    public TimeSpan? RetryAfter { get; }
 
-    public MieleApiException(int statusCode, string message) : base(message) => StatusCode = statusCode;
+    public MieleApiException(int statusCode, string message, TimeSpan? retryAfter = null) : base(message)
+    {
+        StatusCode = statusCode;
+        RetryAfter = retryAfter;
+    }
 }
 
 /// <summary>An open <c>text/event-stream</c> response, read line by line.</summary>
@@ -57,6 +63,9 @@ public interface IMieleClient
 
     /// <summary>GET /v1/devices/all/events (SSE). The caller disposes the stream.</summary>
     Task<IMieleEventStream> OpenEventsAsync(string accessToken, CancellationToken ct);
+
+    /// <summary>GET /v1/devices/{id}/lastUsedPrograms (optionally with <c>calculateEnergyMonitoring=true</c>). Returns the raw JSON.</summary>
+    Task<string> GetLastUsedProgramsJsonAsync(string accessToken, string deviceId, bool calculateEnergyMonitoring, CancellationToken ct);
 }
 
 /// <summary>HTTP client of the Miele OAuth provider and 3rd Party API. Read-only: no command is ever sent to an appliance.</summary>
@@ -115,6 +124,18 @@ public sealed class MieleClient : IMieleClient
         using var resp = await _http.SendAsync(req, cts.Token);
         var body = await resp.Content.ReadAsStringAsync(cts.Token);
         ThrowIfFailed(resp, body, "devices");
+        return body;
+    }
+
+    public async Task<string> GetLastUsedProgramsJsonAsync(string accessToken, string deviceId, bool calculateEnergyMonitoring, CancellationToken ct)
+    {
+        using var cts = Timed(ct);
+        using var req = new HttpRequestMessage(HttpMethod.Get, MieleApi.LastUsedProgramsUrl(deviceId, calculateEnergyMonitoring));
+        req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
+        req.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+        using var resp = await _http.SendAsync(req, cts.Token);
+        var body = await resp.Content.ReadAsStringAsync(cts.Token);
+        ThrowIfFailed(resp, body, "lastUsedPrograms");
         return body;
     }
 
@@ -184,7 +205,20 @@ public sealed class MieleClient : IMieleClient
         if (resp.IsSuccessStatusCode) return;
         var status = (int)resp.StatusCode;
         if (resp.StatusCode == HttpStatusCode.Unauthorized) throw new MieleAuthException(what + " HTTP 401");
-        throw new MieleApiException(status, what + " HTTP " + status + (ApiMessage(body) is { } m ? ": " + m : ""));
+        throw new MieleApiException(status, what + " HTTP " + status + (ApiMessage(body) is { } m ? ": " + m : ""), RetryAfter(resp));
+    }
+
+    /// <summary>The <c>Retry-After</c> of an answer as a wait (a date in the past = zero), or null without one.</summary>
+    private static TimeSpan? RetryAfter(HttpResponseMessage resp)
+    {
+        var h = resp.Headers.RetryAfter;
+        if (h?.Delta is { } d) return d < TimeSpan.Zero ? TimeSpan.Zero : d;
+        if (h?.Date is { } date)
+        {
+            var wait = date - DateTimeOffset.UtcNow;
+            return wait < TimeSpan.Zero ? TimeSpan.Zero : wait;
+        }
+        return null;
     }
 
     private async Task<MieleToken> TokenAsync(Dictionary<string, string> form, string? previousRefresh, CancellationToken ct)

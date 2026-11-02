@@ -77,6 +77,73 @@ public class MieleRepositoryTests
     }
 
     [Fact]
+    public void AddMieleCycleSource_On085_ExistingCyclesBecomeObserved_ApiStartUniquePerDevice()
+    {
+        using var conn = new SqliteConnection("Filename=:memory:");
+        conn.Open();
+        using var ctx = new KasaDbContext(new DbContextOptionsBuilder<KasaDbContext>().UseSqlite(conn).Options);
+        ctx.GetService<Microsoft.EntityFrameworkCore.Migrations.IMigrator>().Migrate("20261102113425_AddMiele");
+        ctx.Database.ExecuteSqlRaw("INSERT INTO MieleCycles (DeviceId, StartTs, EndTs, LastRunningTs, PhasesJson) VALUES ('dev', 100, 200, 200, '[]')");
+
+        ctx.Database.Migrate();
+
+        ctx.Database.SqlQueryRaw<string>("SELECT Source AS Value FROM MieleCycles").ToList().Should().Equal("observed");
+        ctx.Database.SqlQueryRaw<int>("SELECT COUNT(*) AS Value FROM MieleCycles WHERE ApiStartTs IS NULL AND ApiEndTs IS NULL AND ApiEnergyKwh IS NULL AND ApiWaterL IS NULL AND EnergyProfileJson IS NULL").ToList().Should().Equal(1);
+        // NULL keys never collide (observed cycles), a second row with the same (DeviceId, ApiStartTs) does.
+        ctx.Database.ExecuteSqlRaw("INSERT INTO MieleCycles (DeviceId, StartTs, LastRunningTs, PhasesJson, Source) VALUES ('dev', 300, 300, '[]', 'observed')");
+        ctx.Database.ExecuteSqlRaw("INSERT INTO MieleCycles (DeviceId, StartTs, LastRunningTs, PhasesJson, Source, ApiStartTs) VALUES ('dev', 400, 400, '[]', 'api', 400)");
+        ctx.Database.ExecuteSqlRaw("INSERT INTO MieleCycles (DeviceId, StartTs, LastRunningTs, PhasesJson, Source, ApiStartTs) VALUES ('other', 400, 400, '[]', 'api', 400)");
+        var duplicate = () => ctx.Database.ExecuteSqlRaw("INSERT INTO MieleCycles (DeviceId, StartTs, LastRunningTs, PhasesJson, Source, ApiStartTs) VALUES ('dev', 401, 401, '[]', 'api', 400)");
+        duplicate.Should().Throw<SqliteException>().Where(e => e.Message.Contains("UNIQUE"));
+    }
+
+    [Fact]
+    public async Task Cycle_SourceApiTimesAndProfile_RoundTrip_BetweenAndPaged()
+    {
+        using var db = new TestDbFactory();
+        var repo = new MieleRepository(db.CreateContext());
+        var profile = new[] { new MieleEnergySlot(T0, 0.13), new MieleEnergySlot(T0.AddMinutes(15), 0.045) };
+        var api = await repo.AddCycleAsync(new MieleCycle(0, "dev", T0, T0.AddHours(2), T0.AddHours(2), 13, "QuickPowerWash", Array.Empty<MielePhaseSpan>(), null, null, 310, null)
+        {
+            Source = MieleCycleSources.Api,
+            ApiEnergyKwh = 0.29,
+            ApiWaterL = 46,
+            ApiStartUtc = T0,
+            ApiEndUtc = T0.AddHours(2),
+            EnergyProfile = profile,
+        }, CancellationToken.None);
+        var stored = (await repo.ListCyclesAsync("dev", 5, CancellationToken.None)).Should().ContainSingle().Subject;
+        stored.Source.Should().Be(MieleCycleSources.Api);
+        stored.ApiStartUtc.Should().Be(T0);
+        stored.ApiEndUtc.Should().Be(T0.AddHours(2));
+        stored.EnergyProfile.Should().BeEquivalentTo(profile);
+        (stored.ApiEnergyKwh, stored.ApiWaterL, stored.EnergyKwh, stored.WaterL, stored.PlugEnergyWh).Should().Be((0.29, 46, null, null, 310), "three separate pairs");
+        MieleRepository.ProfileToJson(profile).Should().StartWith("[{\"ts\":").And.Contain("\"kwh\":0.13");
+        MieleRepository.ProfileFromJson("broken").Should().BeNull();
+
+        // A plain observed cycle keeps the defaults.
+        var observed = await repo.AddCycleAsync(new MieleCycle(0, "dev", T0.AddDays(1), null, T0.AddDays(1), 1, "Cottons", Array.Empty<MielePhaseSpan>(), null, null, null, null), CancellationToken.None);
+        var o = (await repo.ListCyclesBetweenAsync("dev", T0.AddHours(12), T0.AddDays(2), CancellationToken.None)).Should().ContainSingle().Subject;
+        o.Id.Should().Be(observed.Id);
+        o.Source.Should().Be(MieleCycleSources.Observed);
+        o.ApiStartUtc.Should().BeNull();
+        o.EnergyProfile.Should().BeNull();
+        await repo.UpdateCycleAsync(o with { Source = MieleCycleSources.Merged, ApiStartUtc = T0.AddDays(1).AddMinutes(3) }, CancellationToken.None);
+        (await repo.ListCyclesBetweenAsync("dev", T0.AddHours(12), T0.AddDays(2), CancellationToken.None))[0].Source.Should().Be(MieleCycleSources.Merged);
+
+        for (var i = 0; i < 60; i++)
+            await repo.AddCycleAsync(new MieleCycle(0, "other", T0.AddDays(-i - 1), T0.AddDays(-i - 1).AddHours(1), T0, null, null, Array.Empty<MielePhaseSpan>(), null, null, null, null), CancellationToken.None);
+        var page1 = await repo.ListCyclesPageAsync(new[] { "dev", "other" }, 0, 50, CancellationToken.None);
+        page1.Total.Should().Be(62);
+        page1.Items.Should().HaveCount(50);
+        page1.Items[0].Id.Should().Be(observed.Id, "newest first");
+        var page2 = await repo.ListCyclesPageAsync(new[] { "dev", "other" }, 50, 50, CancellationToken.None);
+        page2.Items.Should().HaveCount(12);
+        (await repo.ListCyclesPageAsync(new[] { "dev" }, 0, 50, CancellationToken.None)).Items.Select(c => c.Id).Should().Equal(observed.Id, api.Id);
+        (await repo.ListCyclesPageAsync(Array.Empty<string>(), 0, 50, CancellationToken.None)).Total.Should().Be(0);
+    }
+
+    [Fact]
     public async Task Snapshots_StoredAndListed_LatestFirstForTheDevice()
     {
         using var db = new TestDbFactory();

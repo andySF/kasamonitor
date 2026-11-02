@@ -39,11 +39,11 @@ public sealed record NilmMetricSnapshot(IReadOnlyList<NilmMetricItem> Appliances
 }
 
 /// <summary>
-/// One signature on /consumatori, with its energy today and over 30 days. <see cref="PossiblePlug"/>: a plug that labelled
-/// some of its events but not enough to link it (fewer than 3, or under 60 %), shown as „posibil &lt;priză&gt;”.
+/// One signature on /consumatori, with its energy today, over 7 and over 30 days. <see cref="PossiblePlug"/>: a plug that
+/// labelled some of its events but not enough to link it (fewer than 3, or under 60 %), shown as „posibil &lt;priză&gt;”.
 /// </summary>
 public sealed record SignatureRow(ApplianceSignature Signature, double TodayWh, double Last30DaysWh, double? ActiveW, string? PossiblePlug = null,
-    int UncertainRuns = 0);
+    int UncertainRuns = 0, double Last7DaysWh = 0);
 
 /// <summary>One event of the last 24 h on /consumatori.</summary>
 public sealed record EventRow(MeterEvent Event, string? SignatureName);
@@ -51,11 +51,14 @@ public sealed record EventRow(MeterEvent Event, string? SignatureName);
 /// <summary>A plug and whether it teaches the detection.</summary>
 public sealed record PlugNilmRow(Guid PlugId, string Alias, PlugNilmState State);
 
+/// <param name="DetectedTotal">Every detected signature (not measured by a plug), listed or not.</param>
+/// <param name="RareCount">Detected signatures left out of the default list (<see cref="SignatureListing.ShownByDefault"/>).</param>
+/// <param name="CleanableCount">Signatures the cleaning would delete (<see cref="SignatureListing.IsRareAndOld"/>).</param>
 public sealed record NilmOverview(IReadOnlyList<SignatureRow> Detected, int DetectedTotal, int Page, int PageCount,
     IReadOnlyList<SignatureRow> PlugMeasured, IReadOnlyList<ApplianceSignature> AllSignatures,
     IReadOnlyList<EventRow> Events, int EventsInWindow, int EventsPage, int EventsPageCount,
     NilmModelInfo? Model, int LabeledEvents, int LabeledClasses, NilmSummary Summary, string? MainMeterAlias, NilmSettings Settings,
-    IReadOnlyList<PlugNilmRow> Plugs, bool Busy);
+    IReadOnlyList<PlugNilmRow> Plugs, bool Busy, int RareCount = 0, int CleanableCount = 0, bool ShowRare = false);
 
 /// <summary>The NILM settings in effect.</summary>
 public sealed record NilmSettings(bool Enabled, int MinEventDeltaW, int ClusterWindowDays, bool MlEnabled);
@@ -852,10 +855,11 @@ public sealed class NilmService : BackgroundService
 
     /// <summary>
     /// The page's data, read in its own scope without waiting for the processing lock (a snapshot: the nightly job or a
-    /// backfill never blocks the page). Detected signatures paged by <see cref="PageSize"/>, most events first; events of
-    /// the last 24 h paged newest first.
+    /// backfill never blocks the page). Detected signatures: by default only those of <see cref="SignatureListing.ShownByDefault"/>
+    /// (every one with <paramref name="showRare"/>), largest energy over 7 days first, paged by <see cref="PageSize"/>;
+    /// events of the last 24 h paged newest first.
     /// </summary>
-    public async Task<NilmOverview> GetOverviewAsync(int page, int eventsPage, CancellationToken ct)
+    public async Task<NilmOverview> GetOverviewAsync(int page, int eventsPage, CancellationToken ct, bool showRare = false)
     {
         var now = _clock();
         using var scope = _scopes.CreateScope();
@@ -863,24 +867,27 @@ public sealed class NilmService : BackgroundService
         var signatures = await repo.ListSignaturesAsync(ct);
         var midnight = LocalMidnightUtc(now);
         var from30 = now.AddDays(-30);
+        var from7 = now.AddDays(-7);
         var runs = (await repo.ListRunsAsync(from30, now, ct)).ToLookup(r => r.SignatureId);
         var open = _openSnapshot.GroupBy(r => r.SignatureId).ToDictionary(g => g.Key, g => g.Sum(r => r.PowerW));
         SignatureRow Row(ApplianceSignature s) => new(s,
             runs[s.Id].Sum(r => ApplianceEnergy.InRange(r, midnight, now, now)),
             runs[s.Id].Sum(r => ApplianceEnergy.InRange(r, from30, now, now)),
             open.TryGetValue(s.Id, out var w) ? w : null,
-            UncertainRuns: runs[s.Id].Count(r => r.EndReason == RunEndReason.Timeout));
+            UncertainRuns: runs[s.Id].Count(r => r.EndReason == RunEndReason.Timeout),
+            Last7DaysWh: runs[s.Id].Sum(r => ApplianceEnergy.InRange(r, from7, now, now)));
 
-        var detected = signatures.Where(s => !s.ConfirmedByPlug).OrderByDescending(s => s.Count).ThenBy(s => s.Id).ToList();
-        var pages = Math.Max(1, (detected.Count + PageSize - 1) / PageSize);
+        // The "posibil <priză>" badge of every detected signature (one grouped query): it keeps a rare one in the list.
+        var detectedAll = signatures.Where(s => !s.ConfirmedByPlug).ToList();
+        var possible = await PossiblePlugsAsync(scope.ServiceProvider, repo, detectedAll.Select(s => s.Id).ToList(), now, ct);
+        var rows = detectedAll.Select(s => Row(s) with { PossiblePlug = possible.GetValueOrDefault(s.Id) }).ToList();
+        var listed = SignatureListing.Ordered(rows.Where(r => showRare || SignatureListing.ShownByDefault(r.Signature, r.PossiblePlug is not null)),
+            r => r.Signature, r => r.Last7DaysWh).ToList();
+        var pages = Math.Max(1, (listed.Count + PageSize - 1) / PageSize);
         page = Math.Clamp(page, 0, pages - 1);
-        var shown = detected.Skip(page * PageSize).Take(PageSize).Select(Row).ToList();
-        var plugsNow = _plugs.Count > 0 ? _plugs : await scope.ServiceProvider.GetRequiredService<IPlugRepository>().ListAllAsync(ct);
-        var possible = (await repo.PlugSharesAsync(shown.Select(r => r.Signature.Id).ToList(), WindowStart(now),
-                plugsNow.Where(p => PlugNilmStates.IsIgnored(p.NilmState)).Select(p => p.Id).ToList(), ct))
-            .Where(x => x.TopPlugId is not null && x.TopPlugEvents > 0)
-            .ToDictionary(x => x.SignatureId, x => plugsNow.FirstOrDefault(p => p.Id == x.TopPlugId)?.Alias ?? x.TopLabel);
-        shown = shown.Select(r => possible.TryGetValue(r.Signature.Id, out var alias) ? r with { PossiblePlug = alias } : r).ToList();
+        var shown = listed.Skip(page * PageSize).Take(PageSize).ToList();
+        var rare = rows.Count(r => !SignatureListing.ShownByDefault(r.Signature, r.PossiblePlug is not null));
+        var cleanable = rows.Count(r => SignatureListing.IsRareAndOld(r.Signature, now, r.PossiblePlug is not null));
         var measured = signatures.Where(s => s.ConfirmedByPlug).OrderByDescending(s => s.Count).Select(Row).ToList();
 
         var names = signatures.ToDictionary(s => s.Id, s => s.Name);
@@ -895,8 +902,8 @@ public sealed class NilmService : BackgroundService
         var main = plugs.FirstOrDefault(p => p.Role == PlugRole.MainMeter && !p.IsArchived)?.Alias;
         var plugRows = plugs.Where(p => p.IsPolled && p.Role == PlugRole.Plug).OrderBy(p => p.Alias)
             .Select(p => new PlugNilmRow(p.Id, p.Alias, p.NilmState)).ToList();
-        return new NilmOverview(shown, detected.Count, page, pages, measured, signatures, events, eventsTotal, eventsPage, eventPages,
-            ModelInfo, labeled, classes, Summary, main, _current, plugRows, _busy);
+        return new NilmOverview(shown, detectedAll.Count, page, pages, measured, signatures, events, eventsTotal, eventsPage, eventPages,
+            ModelInfo, labeled, classes, Summary, main, _current, plugRows, _busy, rare, cleanable, showRare);
     }
 
     /// <summary>Runs a UI action under the processing lock; throws <see cref="NilmBusyException"/> after <see cref="ActionWait"/>.</summary>
@@ -950,6 +957,38 @@ public sealed class NilmService : BackgroundService
         _plugMatches.Remove(plugId);
         await LoadPlugsAsync(ct);
         return true;
+    }, ct);
+
+    /// <summary>The „posibil &lt;priză&gt;” badge of the given signatures (one grouped query): signature → plug alias.</summary>
+    private async Task<Dictionary<long, string>> PossiblePlugsAsync(IServiceProvider sp, INilmRepository repo, IReadOnlyCollection<long> ids,
+        DateTimeOffset now, CancellationToken ct)
+    {
+        if (ids.Count == 0) return new Dictionary<long, string>();
+        var plugs = _plugs.Count > 0 ? _plugs : await sp.GetRequiredService<IPlugRepository>().ListAllAsync(ct);
+        return (await repo.PlugSharesAsync(ids, WindowStart(now), plugs.Where(p => PlugNilmStates.IsIgnored(p.NilmState)).Select(p => p.Id).ToList(), ct))
+            .Where(x => x.TopPlugId is not null && x.TopPlugEvents > 0)
+            // Never a null value: the badge, the default list and the cleaning all test the same key.
+            .ToDictionary(x => x.SignatureId, x => plugs.FirstOrDefault(p => p.Id == x.TopPlugId)?.Alias ?? x.TopLabel ?? "priză");
+    }
+
+    /// <summary>
+    /// „Curăță semnăturile rare”: deletes the signatures of <see cref="SignatureListing.IsRareAndOld"/> (at most 2 events,
+    /// the newest older than 7 days, no plug, no name of their own, no „posibil &lt;priză&gt;” badge) with their runs;
+    /// their events stay, without a signature.
+    /// Returns how many were deleted.
+    /// </summary>
+    public Task<int> CleanRareSignaturesAsync(CancellationToken ct) => UnderGateAsync(async (sp, repo) =>
+    {
+        var now = _clock();
+        var candidates = (await repo.ListSignaturesAsync(ct)).Where(s => SignatureListing.IsRareAndOld(s, now, possiblePlug: false)).ToList();
+        var possible = await PossiblePlugsAsync(sp, repo, candidates.Select(s => s.Id).ToList(), now, ct);
+        var rare = candidates.Where(s => !possible.ContainsKey(s.Id)).Select(s => s.Id).ToList();
+        foreach (var id in rare) await repo.DeleteSignatureAsync(id, ct);
+        _signatures.RemoveAll(s => rare.Contains(s.Id));
+        if (rare.Count > 0)
+            _log.LogInformation("NILM: deleted {Count} rare signatures (at most {Events} events, last seen more than {Days} days ago); their events stay unlinked",
+                rare.Count, SignatureListing.RareMaxEvents, SignatureListing.RareMinAge.TotalDays);
+        return rare.Count;
     }, ct);
 
     /// <summary>

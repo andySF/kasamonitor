@@ -37,6 +37,15 @@ public sealed class HeatingState
     /// <summary>Current poll interval (set by the worker), used for "online" (last success within three intervals).</summary>
     public int PollIntervalSeconds { get; set; } = KasaMonitor.Core.Heating.ViessmannApi.DefaultPollIntervalSeconds;
 
+    /// <summary>
+    /// The zone of the boiler's day (setting <c>BoilerTimeZone</c>, set by the worker at every cycle): the boiler's gas,
+    /// electricity and heat are attributed to days in this zone (reports, the 30-day chart, <c>_total</c>).
+    /// </summary>
+    public TimeZoneInfo BoilerTimeZone { get; set; } = BoilerClock.DefaultTimeZone;
+
+    /// <summary>Today in the boiler's zone.</summary>
+    public DateOnly BoilerToday(DateTimeOffset nowUtc) => BoilerClock.DayOf(nowUtc, BoilerTimeZone);
+
     public event Action? Changed;
 
     public HeatingLive? Current { get { lock (_sync) return _current; } }

@@ -7,7 +7,7 @@ plugs and energy meters (e.g. Shelly EM Gen3, local JSON-RPC; the only write is 
 with SQLite, a web UI on port 8910 and a Prometheus `/metrics` endpoint. An optional Prometheus + Grafana stack
 with a ready-made dashboard and alert rules is included.
 
-Version: **0.8.0** (`Directory.Build.props`). Docker image: `duobit/kasamonitor`.
+Version: **0.8.1** (`Directory.Build.props`). Docker image: `duobit/kasamonitor`.
 
 ## Quick start
 
@@ -59,7 +59,7 @@ TP-Link (Tapo app) account in `/settings` and press **Scanează acum** on `/plug
   the house) and „Rapoarte” on `/centrala` (gas, boiler electricity, heat produced), per day (hours), week, month
   (days) or year (months), with ◀ ▶ navigation, the change against the previous period and the cost. See
   [Reports](#reports-history-casă-and-centrala-rapoarte).
-- **Version in the menu**: „v0.8.0” at the right of the navigation bar; the tooltip shows the commit and the build time.
+- **Version in the menu**: „v0.8.1” at the right of the navigation bar; the tooltip shows the commit and the build time.
 - **Browser errors in the server log**: JavaScript errors and the Blazor error banner are reported to
   `POST /api/client-error` and logged at Warning (category `KasaMonitor.ClientErrors`), so `docker logs` shows them.
 
@@ -104,6 +104,7 @@ not been saved from `/settings`.
 | Gas calorific factor (kWh / m³) | `KasaMonitor__GasKwhPerM3` | `10.55` | converts the boiler's m³ to kWh |
 | Gas unit fallback | `KasaMonitor__GasUnit` | `m3` | `m3` or `kWh`; only used when the API sends a gas value without `unit` |
 | Keep boiler readings (days) | `KasaMonitor__HeatingReadingsRetentionDays` | `0` = unlimited | `HeatingReadings` older than this are deleted once a day; daily gas history is never deleted |
+| Boiler time zone | `KasaMonitor__BoilerTimeZone` | `Europe/Berlin` | IANA zone of the boiler's day: its „today” counters reset at midnight there (Viessmann: Central European Time, 00:00 CET/CEST = 01:00 Romanian time); every daily attribution of the boiler's gas, electricity and heat uses it |
 | — | `KasaMonitor__DbPath` | `/data/kasa.db` (image) | |
 
 The DataProtection keys are kept next to the database, in `<db dir>/dp-keys` (`/data/dp-keys` in the container,
@@ -487,13 +488,39 @@ under *Nemapate* on `/centrala`; unknown features are not an error.
 this/last month, this/last year) in **m³** (other models: kWh; the unit comes from the answer, `GasUnit` is only a
 fallback), plus heat produced (`heating.heat.production.summary.*`, kWh) and its own electricity
 (`heating.power.consumption.summary.*`, kWh). The Vitodens 050-W has no `day[]` series, so **the daily history is built
-by KasaMonitor**: every poll writes the boiler's "today" value on the **local day of KasaMonitor's reading** (the
-container's `TZ`; the feature's timestamp is not used, the gateway re-sends features in bulk) into `HeatingEnergyDaily`,
-which keeps per purpose the day's highest value (`GasHeatingMaxM3`, `GasDhwMaxM3`) and the last value seen
-(`…LastM3`). A closed day counts with its highest value, the current day with its last value; a value lower than the
-stored highest in the same local day (e.g. the boiler resetting its counter some time after midnight) is logged at
-Information with both values, so the first nights show how the boiler behaves. Boilers with a `day[]` series (day[0] =
-today) fill every day of the series. The period values are stored as they come (`HeatingEnergyPeriods`). The page shows hot water
+by KasaMonitor**: every poll writes the boiler's "today" value on the **boiler's day of KasaMonitor's reading** (the
+feature's timestamp is not used, the gateway re-sends features in bulk) into `HeatingEnergyDaily`, which keeps per
+purpose the day's highest value (`GasHeatingMaxM3`, `GasDhwMaxM3`) and the last value seen (`…LastM3`). A closed day
+counts with its highest value, the current day with its last value. Boilers with a `day[]` series (day[0] = today) fill
+every day of the series.
+
+**The boiler's day (since 0.8.1).** The Vitodens resets its „today” counters at **00:00 in its own time zone**, Central
+European Time (measured on 2 Nov 2026: the reset arrives at 23:00 UTC = 01:00 Romanian time; in summer 00:00 CEST =
+01:00 EEST, the difference stays one hour). Setting `BoilerTimeZone` (default `Europe/Berlin`, `/settings` → Centrală)
+is that zone, and **every daily attribution of the boiler's gas, electricity and heat uses it**, not the container's
+`TZ`: the daily rows, the „Rapoarte” day/week/month/year, the hourly profile (labelled in local time: a boiler day runs
+01:00–01:00 Romanian time; the reports say „zi = după ceasul centralei (CET), se încheie la 01:00 ora României”), the
+30-day chart, the comparisons and `heating_gas_consumption_m3_total`. The electricity reports of the plugs and the meter
+stay on the local day. In the first 30 minutes after the boiler's midnight (the end of the reset window) a „today”
+value that is still ≥ 90 % of the previous day's highest (or not lower than its last value) is **yesterday's total read
+late**: it goes to the previous day (it may raise it) and the new day starts with the first lower value
+(`BoilerClock.IsStale`; gas, heat and electricity). After a day of about zero (under 0.05 m³ of gas, 0.5 kWh of heat,
+0.05 kWh of electricity) nothing is stale, so a new small value is never counted twice. A gas value lower than the
+day's stored highest is the boiler's **reset** only when the boiler's time is between 23:45 and 00:30: the day then
+gets highest = last = the new value (a reset seen in 23:45–24:00 belongs to the next day; one seen in 00:00–00:30
+carries the stored highest, yesterday's total read after midnight, back to the previous day). Any other drop, a drop
+under 20 % during the day included, **leaves the day as it is** (highest and last) until the boiler's value passes it
+again, so the day and `_total` never go down; it is logged at Warning once per purpose and boiler day (the hourly
+profile still counts a drop under 20 % with no reset in the 20 hours before as a reset). At startup and once a day
+(30 minutes after the boiler's midnight) KasaMonitor **repairs** the current boiler day when its highest still holds
+the previous day's total: highest > last and either last ≤ 50 % of highest or the highest equals the previous day's
+highest within max(0.05, 1 %). The previous day gets max(its highest, that value), the current day highest = last;
+the heat produced and the electricity of that day equal to the previous day's (same tolerance) go to the previous day
+and are cleared on the current day (the next reading writes them again). Every repair is logged at Information. This
+fixes the day written by 0.8.0 on 2 Nov 2026 (highest 1.4 m³ from the readings 00:00–01:00, last 0.7–0.8 m³, and
+yesterday's heat and electricity).
+
+The period values are stored as they come (`HeatingEnergyPeriods`). The page shows hot water
 vs heating for today / 7 days / month / last month / year with the cost, a stacked bar chart of the last 30 days and
 the apparent efficiency of last month (heat produced / gas × kWh/m³). **The consumption is estimated by the boiler's
 controller, not measured by a gas meter**: compare it with the gas bill before relying on it.
@@ -519,7 +546,7 @@ boiler does not report has no series):
 | `heating_pressure_bar` | gauge | bar | `heating.sensors.pressure.supply` (only when connected) |
 | `heating_burner_starts_total`, `heating_burner_hours_total` | counter | starts, h | `heating.burners.0.statistics` |
 | `heating_gas_consumption_m3{purpose,period}` | gauge | m³ | summary values; `purpose` = `heating` / `dhw`, `period` = `day` / `last7days` / `month` / `lastmonth` / `year` / `lastyear` |
-| `heating_gas_consumption_m3_total{purpose}` | counter | m³ | built by KasaMonitor: Σ highest value of the closed days + last value of today; exported as a counter that never goes down (a lower sum, e.g. a stale value replaced by a late reset, holds the counter until the sum passes it again) |
+| `heating_gas_consumption_m3_total{purpose}` | counter | m³ | built by KasaMonitor: Σ highest value of the closed boiler days + last value of the current boiler day (`BoilerTimeZone`), recomputed from the database at every poll; a lower sum (a correction of today's value, a repair) is logged at Warning once per day, and the exported counter never goes down (it waits until the sum passes it again) |
 | `heating_heat_production_kwh{purpose,period}`, `heating_heat_production_kwh_total{purpose}` | gauge, counter | kWh | `heating.heat.production.summary.*` |
 | `heating_power_consumption_kwh{purpose,period}`, `heating_power_consumption_kwh_total{purpose}` | gauge, counter | kWh | `heating.power.consumption.summary.*` |
 | `heating_dhw_mode_info{mode}`, `heating_program_info{program}` | gauge | 1 | hot water mode, active program of circuit 0 |
@@ -544,8 +571,8 @@ online/API calls, temperatures, modulation over time and gas per day for 30 days
 Both use one period selector, as in the ViCare app: **Zi** (bars per hour), **Săptămână** (Monday–Sunday, per day),
 **Lună** (per day) or **An** (per month), ◀ ▶ to move between periods (never past the current one), the period total,
 the change against the previous period (▲/▼ %, only when both periods have data; no percentage when the previous one is
-0) and the estimated cost. The periods are local calendar periods (`TZ`); a day has 23 or 25 hourly bars on the DST
-days. The queries live in `EnergyReportService` (a fixed number of grouped queries per report, never one per plug, day
+0) and the estimated cost. The periods are local calendar periods (`TZ`) for the house and **boiler days**
+(`BoilerTimeZone`, see above) for the boiler; a day has 23 or 25 hourly bars on the DST days. The queries live in `EnergyReportService` (a fixed number of grouped queries per report, never one per plug, day
 or month); the arithmetic is in `HouseReportBuilder` / `HeatingReportBuilder` (Core, unit tested).
 
 **History „Casă”** (shown when a channel has the main-meter role; otherwise a hint links to `/plugs`): stacked bars
@@ -573,14 +600,16 @@ curs”. Sources (also in the „ⓘ” tooltip):
   earlier days are empty, with the note „fără date înainte de …”);
 - hours („Zi”): the increases of the boiler's „today” counters between consecutive readings (~2 min). Since 0.8.0 every
   row of `HeatingReadings` stores them (`GasHeatingTodayM3`, `GasDhwTodayM3`, `PowerTodayKwh`, `HeatTodayKwh`; migration
-  `AddHeatingReadingCounters`). A drop is the daily reset only when the new value is under 20 % of the previous one and
-  the reading is between 23:50 and 00:30 local (the new value is then the use since the reset); any other drop is
-  ignored (the higher value stays the reference) and logged once at Warning.
+  `AddHeatingReadingCounters`). A drop is a reset by `BoilerClock.IsReset` (boiler time 23:45–00:30, or under 20 % of
+  the previous value with no reset in the 20 hours before; the new value is then the use since the reset); any other
+  drop is ignored (the higher value stays the reference) and logged at Warning once per counter and boiler day. A rise
+  in the first 30 minutes of a boiler day before its reset was seen is yesterday's total read late and adds nothing. A
+  boiler day's hours run 01:00–01:00 Romanian time and are labelled in local time.
   Electricity and heat per hour are totals (heating + hot water);
 - month: the stored days, with the boiler's own `currentMonth` as a check (both shown when they differ by more than 5 %);
   the previous month falls back to the boiler's `lastMonth` total when its days are missing;
 - year: the months from stored days, plus one bar „restul anului” = the boiler's `currentYear` minus those months;
-- the boiler's relative values are mapped to calendar periods by the local day they were read on (`last7days` is a
+- the boiler's relative values are mapped to calendar periods by the boiler day they were read on (`last7days` is a
   rolling window and is never used as a week).
 The Dashboard „Centrală” card shows today's gas with the change against yesterday **up to the same time** (from the
 stored „today” counters); without counters for yesterday it shows only yesterday's total.
@@ -640,7 +669,13 @@ meter** (`/plugs`) with the live stream on (1 s). Page `/consumatori`, menu „C
    Enter or the button): the event moves to the signature with that name if there is one; otherwise its own signature
    takes the name when it is an automatic one, else a new signature is created. Names are trimmed to 64 characters.
    Signatures you named or merged are kept as they are by the nightly re-clustering. A hidden signature is left out of
-   the cards and the metrics (its energy stays „unidentified”). Lists are paged by 50.
+   the cards and the metrics (its energy stays „unidentified”). Lists are paged by 50. The list of detected signatures
+   shows by default only those with **at least 3 events, a name of their own or a „posibil <plug>” badge**, ordered by
+   their energy over the last 7 days (largest first); „arată și semnăturile rare (n)” shows all of them. Mean ΔP and the
+   number of events are the first two columns. „Curăță semnăturile rare” (with a confirmation) deletes the signatures
+   with at most 2 events whose last event is older than 7 days (never one with a name, a „posibil <plug>” badge or
+   measured by a plug); their
+   runs go with them, their events stay, without a signature, and the nightly re-clustering may group them again.
 7. **ML model** (`MlEnabled`): with ≥ 20 events labelled by plugs or by you in ≥ 2 classes, a multiclass ML.NET
    classifier (`SdcaMaximumEntropy`; features ΔP, log |ΔP|, ΔQ, transient, rise, hour of day as sin/cos, day of week)
    is trained every night on the newest 20,000 labelled events (low-priority thread); its accuracy is measured by
@@ -719,15 +754,15 @@ dotnet test KasaMonitor.sln
 From the repository root, with Docker running and `docker login` done once:
 
 ```powershell
-.\deploy\build-and-push.ps1 -Version 0.8.0          # build :0.8.0 + :latest and push both
-.\deploy\build-and-push.ps1 -Version 0.8.0 -NoPush  # local build only
+.\deploy\build-and-push.ps1 -Version 0.8.1          # build :0.8.1 + :latest and push both
+.\deploy\build-and-push.ps1 -Version 0.8.1 -NoPush  # local build only
 ```
 
 or manually:
 
 ```bash
-docker build -t duobit/kasamonitor:0.8.0 -t duobit/kasamonitor:latest -f deploy/Dockerfile .
-docker push duobit/kasamonitor:0.8.0
+docker build -t duobit/kasamonitor:0.8.1 -t duobit/kasamonitor:latest -f deploy/Dockerfile .
+docker push duobit/kasamonitor:0.8.1
 docker push duobit/kasamonitor:latest
 ```
 
@@ -752,7 +787,10 @@ To publish under your own Docker Hub account, change the image name (`-Repo` par
    (0) and creates the empty tables `MeterEvents`, `ApplianceSignatures`, `ApplianceRuns`; at the first start the
    detector processes the stored `LiveSamples` of the main meter (backfill), then re-clusters them. Upgrading to 0.8.0
    runs `AddHeatingReadingCounters`: four nullable columns on `HeatingReadings` (older rows keep NULL, so hourly boiler
-   bars start with the first reading after the upgrade).
+   bars start with the first reading after the upgrade). Upgrading to 0.8.1 needs no migration: the new setting
+   `BoilerTimeZone` (default `Europe/Berlin`) moves the boiler's days to its own midnight (01:00 Romanian time), and at
+   the first start the current boiler day is repaired if 0.8.0 left yesterday's total in its highest value (logged at
+   Information). Rows of earlier days are not rewritten.
 2. `docker compose -f deploy/docker-compose.yml pull && docker compose -f deploy/docker-compose.yml up -d`
    (Portainer: *Update the stack* with *Re-pull image and redeploy*).
 3. Check `http://<host>:8910/health`, `/plugs` (Scan now) and `curl -s http://<host>:8910/metrics | grep kasa_online`.

@@ -13,6 +13,18 @@ public static class ReportFormat
     private static readonly string[] Days = { "duminică", "luni", "marți", "miercuri", "joi", "vineri", "sâmbătă" };
     private static readonly string[] DaysShort = { "dum", "lun", "mar", "mie", "joi", "vin", "sâm" };
 
+    /// <summary>
+    /// The note of the boiler reports: "zi = după ceasul centralei (CET), se încheie la 01:00 ora României" (the end of the
+    /// boiler's <paramref name="day"/> in local time; "CET" for Europe/Berlin, the zone id otherwise).
+    /// </summary>
+    public static string BoilerDayNote(TimeZoneInfo boilerTz, TimeZoneInfo localTz, DateOnly day)
+    {
+        var zone = boilerTz.Id is "Europe/Berlin" or "W. Europe Standard Time" ? "CET" : boilerTz.Id;
+        var end = TimeZoneInfo.ConvertTime(KasaMonitor.Core.Heating.BoilerClock.MidnightUtc(day.AddDays(1), boilerTz), localTz);
+        var where = localTz.Id is "Europe/Bucharest" or "GTB Standard Time" ? "ora României" : "ora locală";
+        return $"zi = după ceasul centralei ({zone}), se încheie la {end:HH:mm} {where}";
+    }
+
     public static string KindName(ReportGranularity kind) => kind switch
     {
         ReportGranularity.Day => "Zi",

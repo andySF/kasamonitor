@@ -154,7 +154,8 @@ builder.Services.AddSingleton(new HeatingSettingsDefaults(
     GasPricePerKwh: builder.Configuration.GetValue("KasaMonitor:GasPricePerKwh", 0.31m),
     GasUnit: builder.Configuration["KasaMonitor:GasUnit"] ?? KasaMonitor.Core.Heating.HeatingKinds.UnitM3,
     GasKwhPerM3: builder.Configuration.GetValue("KasaMonitor:GasKwhPerM3", KasaMonitor.Core.Heating.ViessmannApi.DefaultKwhPerM3),
-    HeatingReadingsRetentionDays: builder.Configuration.GetValue("KasaMonitor:HeatingReadingsRetentionDays", 0)));
+    HeatingReadingsRetentionDays: builder.Configuration.GetValue("KasaMonitor:HeatingReadingsRetentionDays", 0),
+    BoilerTimeZone: builder.Configuration["KasaMonitor:BoilerTimeZone"] ?? KasaMonitor.Core.Heating.BoilerClock.DefaultTimeZoneId));
 builder.Services.AddSingleton<IHeatingSettingsService, HeatingSettingsService>();
 builder.Services.AddSingleton<KasaMonitor.Core.Heating.IViessmannClient>(_ => new KasaMonitor.Core.Heating.ViessmannClient(TimeSpan.FromSeconds(20)));
 builder.Services.AddSingleton<HeatingState>();

@@ -20,14 +20,18 @@ public sealed class EnergyReportService
 
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly TimeZoneInfo _tz;
+    private readonly Func<TimeZoneInfo> _boilerTz;
     private readonly Func<DateTimeOffset> _clock;
     private readonly ILogger _log;
-    // Counter drops already logged (each is logged once, not at every report load).
-    private readonly HashSet<(string, string, DateTimeOffset)> _loggedDecreases = new();
+    // Counter drops already logged (once per kind, series and boiler day, not at every reading or report load).
+    private readonly HashSet<(string, string, DateOnly)> _loggedDecreases = new();
 
+    /// <param name="timeZone">The application's zone (house reports, hour labels).</param>
+    /// <param name="boilerTimeZone">The boiler's zone (<see cref="BoilerClock"/>; the boiler reports follow its day); default Europe/Berlin.</param>
     public EnergyReportService(IServiceScopeFactory scopeFactory, TimeZoneInfo? timeZone = null, Func<DateTimeOffset>? clock = null,
-        ILogger<EnergyReportService>? log = null)
+        ILogger<EnergyReportService>? log = null, Func<TimeZoneInfo>? boilerTimeZone = null)
     {
+        _boilerTz = boilerTimeZone ?? (() => BoilerClock.DefaultTimeZone);
         _scopeFactory = scopeFactory;
         _tz = timeZone ?? TimeZoneInfo.Local;
         _clock = clock ?? (() => DateTimeOffset.UtcNow);
@@ -35,6 +39,12 @@ public sealed class EnergyReportService
     }
 
     public TimeZoneInfo TimeZone => _tz;
+
+    /// <summary>The boiler's zone: its reports, days and hours follow the boiler's midnight.</summary>
+    public TimeZoneInfo BoilerTimeZone => _boilerTz();
+
+    /// <summary>Today in the boiler's zone (the boiler reports).</summary>
+    public DateOnly BoilerToday() => BoilerClock.DayOf(_clock(), BoilerTimeZone);
 
     /// <summary>Today in the report time zone.</summary>
     public DateOnly Today() => HeatingEnergy.DayOf(_clock(), _tz);
@@ -84,12 +94,13 @@ public sealed class EnergyReportService
         return HouseReportBuilder.Build(new HouseReportInput(period, _tz, main, plugs, subs, daily, monthly, byMonth, hours, _clock(), first));
     }
 
-    /// <summary>The boiler report of a device for a period.</summary>
+    /// <summary>The boiler report of a device for a period: boiler days (<see cref="BoilerTimeZone"/>), hours labelled in local time.</summary>
     public async Task<HeatingReport> GetHeatingReportAsync(Guid deviceId, ReportPeriod period, CancellationToken ct)
     {
         using var scope = _scopeFactory.CreateScope();
         var repo = scope.ServiceProvider.GetRequiredService<IHeatingRepository>();
-        var today = Today();
+        var boilerTz = BoilerTimeZone;
+        var today = BoilerClock.DayOf(_clock(), boilerTz);
         var previous = period.Previous();
 
         IReadOnlyList<HeatingEnergyDay> days = Array.Empty<HeatingEnergyDay>();
@@ -100,57 +111,59 @@ public sealed class EnergyReportService
         else
             days = await repo.ListDailyAsync(deviceId, previous.Start, period.LastDay, ct);
         if (period.Kind == ReportGranularity.Day)
-            readings = await repo.ListCounterReadingsAsync(deviceId, period.StartUtc(_tz) - ReadingLookBack, period.EndUtc(_tz), ct);
+            readings = await repo.ListCounterReadingsAsync(deviceId, period.StartUtc(boilerTz) - ReadingLookBack, period.EndUtc(boilerTz), ct);
 
         var api = await repo.ListPeriodsAsync(deviceId, ct);
         var first = await repo.FirstDailyDayAsync(deviceId, ct);
-        var report = HeatingReportBuilder.Build(new HeatingReportInput(period, _tz, today, days, months, api, readings, first));
-        LogDecreases(report.IgnoredDecreases);
+        var report = HeatingReportBuilder.Build(new HeatingReportInput(period, boilerTz, today, days, months, api, readings, first, _tz));
+        LogDecreases(report.IgnoredDecreases, boilerTz);
         return report;
     }
 
     /// <summary>
-    /// Gas used today vs yesterday up to the same local time (from the "today" counters stored with the readings, so the
+    /// Gas used today vs yesterday up to the same time (boiler days) (from the "today" counters stored with the readings, so the
     /// comparison is fair at any hour); <see cref="GasDayComparison.YesterdaySameTimeM3"/> is null when yesterday has no
     /// stored counters, and then only yesterday's whole-day total is shown.
     /// </summary>
     public async Task<GasDayComparison> GetGasTodayVsYesterdayAsync(Guid deviceId, CancellationToken ct)
     {
         var now = _clock();
-        var today = ReportPeriod.Containing(ReportGranularity.Day, Today());
+        var tz = BoilerTimeZone;
+        var today = ReportPeriod.Containing(ReportGranularity.Day, BoilerClock.DayOf(now, tz));
         var report = await GetHeatingReportAsync(deviceId, today, ct);
         var yesterday = today.Previous();
-        var localNow = TimeZoneInfo.ConvertTime(now, _tz).DateTime;
+        var localNow = TimeZoneInfo.ConvertTime(now, tz).DateTime;
         var sameLocal = yesterday.Start.ToDateTime(TimeOnly.FromDateTime(localNow));
-        while (_tz.IsInvalidTime(sameLocal)) sameLocal = sameLocal.AddMinutes(30);
-        var sameUtc = new DateTimeOffset(sameLocal, _tz.GetUtcOffset(sameLocal));
+        while (tz.IsInvalidTime(sameLocal)) sameLocal = sameLocal.AddMinutes(30);
+        var sameUtc = new DateTimeOffset(sameLocal, tz.GetUtcOffset(sameLocal));
 
         IReadOnlyList<HeatingCounterReading> readings;
         using (var scope = _scopeFactory.CreateScope())
             readings = await scope.ServiceProvider.GetRequiredService<IHeatingRepository>()
-                .ListCounterReadingsAsync(deviceId, yesterday.StartUtc(_tz) - ReadingLookBack, sameUtc, ct);
-        var buckets = yesterday.Buckets(_tz);
+                .ListCounterReadingsAsync(deviceId, yesterday.StartUtc(tz) - ReadingLookBack, sameUtc, ct);
+        var buckets = yesterday.Buckets(tz);
         double? sameTime = null;
-        if (readings.Any(r => r.TsUtc >= yesterday.StartUtc(_tz) && (r.GasHeatingM3 is not null || r.GasDhwM3 is not null)))
+        if (readings.Any(r => r.TsUtc >= yesterday.StartUtc(tz) && (r.GasHeatingM3 is not null || r.GasDhwM3 is not null)))
         {
-            var heating = HeatingReportBuilder.HourlyIncrements(readings.Select(r => (r.TsUtc, r.GasHeatingM3)), buckets, _tz);
-            var dhw = HeatingReportBuilder.HourlyIncrements(readings.Select(r => (r.TsUtc, r.GasDhwM3)), buckets, _tz);
+            var heating = HeatingReportBuilder.HourlyIncrements(readings.Select(r => (r.TsUtc, r.GasHeatingM3)), buckets, tz);
+            var dhw = HeatingReportBuilder.HourlyIncrements(readings.Select(r => (r.TsUtc, r.GasDhwM3)), buckets, tz);
             sameTime = ReportMath.SumOrNull(heating.Concat(dhw));
         }
         var todayM3 = report.Gas.Total;
         return new GasDayComparison(todayM3, sameTime, report.Gas.PreviousTotal, ReportMath.DeltaPct(todayM3, sameTime));
     }
 
-    private void LogDecreases(IReadOnlyList<CounterDecrease>? decreases)
+    private void LogDecreases(IReadOnlyList<CounterDecrease>? decreases, TimeZoneInfo boilerTz)
     {
         if (decreases is null) return;
         foreach (var d in decreases)
         {
             lock (_loggedDecreases)
-                if (!_loggedDecreases.Add((d.Kind, d.Series, d.TsUtc))) continue;
+                if (!_loggedDecreases.Add((d.Kind, d.Series, BoilerClock.DayOf(d.TsUtc, boilerTz)))) continue;
             _log.LogWarning(
-                "Heating {Kind} {Series} 'today' counter dropped from {Previous} to {Received} at {Local} local: not a reset (needs < 20 % of the previous value between 23:50 and 00:30), ignored in the hourly report",
-                d.Kind, d.Series, d.Previous, d.Received, TimeZoneInfo.ConvertTime(d.TsUtc, _tz).ToString("yyyy-MM-dd HH:mm:ss"));
+                "Heating {Kind} {Series} 'today' counter dropped from {Previous} to {Received} at {Boiler} boiler time ({Local} local): not a reset (needs 23:45-00:30 boiler time, or < 20 % with no reset in 20 h), ignored in the hourly report; logged once a day",
+                d.Kind, d.Series, d.Previous, d.Received, TimeZoneInfo.ConvertTime(d.TsUtc, boilerTz).ToString("yyyy-MM-dd HH:mm:ss"),
+                TimeZoneInfo.ConvertTime(d.TsUtc, _tz).ToString("yyyy-MM-dd HH:mm:ss"));
         }
     }
 }

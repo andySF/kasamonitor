@@ -409,7 +409,8 @@ else if (!_settings.HasClientId || _settings.Token is null)
         _periods = _live.Periods ?? await repo.ListPeriodsAsync(id, CancellationToken.None);
         _gasRows = HeatingFormat.GasRows(_periods);
 
-        var to = DateOnly.FromDateTime(DateTime.Today);
+        // Boiler days (the boiler's midnight, BoilerTimeZone).
+        var to = State.BoilerToday(DateTimeOffset.UtcNow);
         var days = await repo.ListDailyAsync(id, to.AddDays(-29), to, CancellationToken.None);
         // Closed days: the day's highest value; today: the last value seen.
         _days = days.Select(d => new GasDay(d.Day.ToString("yyyy-MM-dd"), Math.Round((decimal)(d.GasDhwFor(to) ?? 0), 2), Math.Round((decimal)(d.GasHeatingFor(to) ?? 0), 2))).ToList();

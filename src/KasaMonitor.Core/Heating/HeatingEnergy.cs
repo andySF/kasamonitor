@@ -17,8 +17,9 @@ public static class HeatingEnergy
         unit != EnergyUnit.Unknown ? unit : (assumedUnit == EnergyUnit.KilowattHour ? EnergyUnit.KilowattHour : EnergyUnit.CubicMeter);
 
     /// <summary>
-    /// The local day a "currentDay" value belongs to: the local day of KasaMonitor's own reading. The feature's
-    /// timestamp is not used: the gateway re-sends many features in bulk with a fresh timestamp.
+    /// The day of an instant in <paramref name="tz"/>. For a "currentDay" value: the day of KasaMonitor's own reading in
+    /// the boiler's zone (<see cref="BoilerClock"/>). The feature's timestamp is not used: the gateway re-sends many
+    /// features in bulk with a fresh timestamp.
     /// </summary>
     public static DateOnly DayOf(DateTimeOffset readUtc, TimeZoneInfo tz) =>
         DateOnly.FromDateTime(TimeZoneInfo.ConvertTime(readUtc, tz).DateTime);

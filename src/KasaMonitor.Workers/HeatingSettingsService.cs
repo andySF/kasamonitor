@@ -28,6 +28,8 @@ public static class HeatingSettingKeys
     public const string GasKwhPerM3 = "GasKwhPerM3";
     /// <summary>Days of HeatingReadings to keep; 0 = unlimited (default).</summary>
     public const string HeatingReadingsRetentionDays = "HeatingReadingsRetentionDays";
+    /// <summary>IANA zone of the boiler's day (its "currentDay" counters reset at midnight there), default Europe/Berlin.</summary>
+    public const string BoilerTimeZone = "BoilerTimeZone";
 }
 
 /// <summary>Values from configuration (env <c>KasaMonitor__*</c>) used when the database has no value. Tokens only come from the OAuth flow.</summary>
@@ -38,7 +40,8 @@ public sealed record HeatingSettingsDefaults(
     decimal GasPricePerKwh = 0.31m,
     string GasUnit = HeatingKinds.UnitM3,
     double GasKwhPerM3 = ViessmannApi.DefaultKwhPerM3,
-    int HeatingReadingsRetentionDays = 0);
+    int HeatingReadingsRetentionDays = 0,
+    string BoilerTimeZone = BoilerClock.DefaultTimeZoneId);
 
 /// <summary>Effective heating settings. The tokens are decrypted here and never shown or logged.</summary>
 public sealed record HeatingRuntimeSettings(
@@ -50,8 +53,12 @@ public sealed record HeatingRuntimeSettings(
     decimal GasPricePerKwh,
     EnergyUnit GasUnit,
     double GasKwhPerM3,
-    int ReadingsRetentionDays = 0)
+    int ReadingsRetentionDays = 0,
+    string BoilerTimeZoneId = BoilerClock.DefaultTimeZoneId)
 {
+    /// <summary>The zone of the boiler's day (<see cref="BoilerClock"/>); Europe/Berlin when the id is unknown.</summary>
+    public TimeZoneInfo BoilerTimeZone => BoilerClock.Resolve(BoilerTimeZoneId);
+
     public bool HasClientId => !string.IsNullOrWhiteSpace(ClientId);
     /// <summary>Connected = a refresh token (or a still valid access token) is stored.</summary>
     public bool IsConnected => Token is { } t && (!string.IsNullOrEmpty(t.RefreshToken) || t.ExpiresAtUtc > DateTimeOffset.UtcNow);
@@ -60,6 +67,7 @@ public sealed record HeatingRuntimeSettings(
 }
 
 /// <param name="ClientId">Null keeps the stored value.</param>
+/// <param name="BoilerTimeZone">IANA id of the boiler's zone; null keeps the stored value.</param>
 public sealed record HeatingSettingsUpdate(
     bool HeatingEnabled,
     string? ClientId,
@@ -67,7 +75,8 @@ public sealed record HeatingSettingsUpdate(
     decimal GasPricePerKwh,
     string GasUnit,
     double GasKwhPerM3,
-    int? ReadingsRetentionDays = null);
+    int? ReadingsRetentionDays = null,
+    string? BoilerTimeZone = null);
 
 public interface IHeatingSettingsService
 {
@@ -118,6 +127,9 @@ public sealed class HeatingSettingsService : IHeatingSettingsService
                                    && int.TryParse(rv, NumberStyles.Integer, CultureInfo.InvariantCulture, out var r) ? r : _defaults.HeatingReadingsRetentionDays,
             0, MaxReadingsRetentionDays);
 
+        var boilerZone = db.TryGetValue(HeatingSettingKeys.BoilerTimeZone, out var bz) && BoilerClock.TryResolve(bz, out _) ? bz.Trim()
+            : BoilerClock.TryResolve(_defaults.BoilerTimeZone, out _) ? _defaults.BoilerTimeZone.Trim() : BoilerClock.DefaultTimeZoneId;
+
         var access = Secret(db, HeatingSettingKeys.ViessmannAccessToken);
         var refresh = Secret(db, HeatingSettingKeys.ViessmannRefreshToken);
         var expires = db.TryGetValue(HeatingSettingKeys.ViessmannTokenExpiresUtc, out var ev)
@@ -127,7 +139,7 @@ public sealed class HeatingSettingsService : IHeatingSettingsService
             : null;
         var authError = db.TryGetValue(HeatingSettingKeys.ViessmannAuthError, out var ae) && ae.Length > 0 ? ae : null;
 
-        return new HeatingRuntimeSettings(enabled, clientId.Trim(), token, authError, interval, price, unit, factor, retention);
+        return new HeatingRuntimeSettings(enabled, clientId.Trim(), token, authError, interval, price, unit, factor, retention, boilerZone);
     }
 
     public async Task SaveAsync(HeatingSettingsUpdate u, CancellationToken ct)
@@ -136,6 +148,8 @@ public sealed class HeatingSettingsService : IHeatingSettingsService
             throw new FormatException($"Prețul gazului trebuie să fie între 0 și {MaxGasPrice} RON/kWh.");
         if (double.IsNaN(u.GasKwhPerM3) || u.GasKwhPerM3 < MinKwhPerM3 || u.GasKwhPerM3 > MaxKwhPerM3)
             throw new FormatException($"Factorul de conversie trebuie să fie între {MinKwhPerM3} și {MaxKwhPerM3} kWh/m³ (uzual 10,5–10,6).");
+        if (u.BoilerTimeZone is { } zone && !BoilerClock.TryResolve(zone, out _))
+            throw new FormatException($"Fusul orar „{zone}” nu e cunoscut; folosește un nume IANA, ex. {BoilerClock.DefaultTimeZoneId}.");
 
         using var scope = _scopeFactory.CreateScope();
         var repo = scope.ServiceProvider.GetRequiredService<ISettingsRepository>();
@@ -157,6 +171,8 @@ public sealed class HeatingSettingsService : IHeatingSettingsService
         if (u.ReadingsRetentionDays is { } days)
             await repo.SetAsync(HeatingSettingKeys.HeatingReadingsRetentionDays,
                 Math.Clamp(days, 0, MaxReadingsRetentionDays).ToString(CultureInfo.InvariantCulture), ct);
+        if (u.BoilerTimeZone is { } boilerZone)
+            await repo.SetAsync(HeatingSettingKeys.BoilerTimeZone, boilerZone.Trim(), ct);
     }
 
     public async Task SaveTokenAsync(ViessmannToken token, CancellationToken ct)

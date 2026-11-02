@@ -35,7 +35,9 @@ public class EnergyReportServiceTests
         public KasaDbContext Create() =>
             new(new DbContextOptionsBuilder<KasaDbContext>().UseSqlite(_conn).AddInterceptors(Counter).Options);
 
-        public EnergyReportService Service() => new(new TestScopeFactory(Create), Ro, () => Now);
+        /// <summary>The boiler in the Bucharest zone unless given (the boiler-zone tests pass Europe/Berlin).</summary>
+        public EnergyReportService Service(TimeZoneInfo? boiler = null, DateTimeOffset? now = null) =>
+            new(new TestScopeFactory(Create), Ro, () => now ?? Now, boilerTimeZone: () => boiler ?? Ro);
 
         public void Dispose() => _conn.Dispose();
     }
@@ -338,6 +340,29 @@ public class EnergyReportServiceTests
         r.Gas.Series[0].Values[3].Should().BeNull();
         r.Power.Series[0].Values[6].Should().BeNull(); // first electricity value has nothing to pair with
         r.Gas.OwnTotal.Should().BeApproximately(0.6, 1e-9);
+    }
+
+    [Fact]
+    public async Task Heating_FollowsTheBoilerDay_InBerlin()
+    {
+        using var db = new Db();
+        Guid dev;
+        using (var ctx = db.Create())
+        {
+            dev = AddHeating(ctx);
+            HeatDay(ctx, dev, "2026-11-01", 1.4, 1.4, 0.1, 0.0);
+            await ctx.SaveChangesAsync();
+        }
+        // 00:30 Romanian time on 2 Nov = 23:30 CET on 1 Nov: still the boiler's 1 Nov.
+        var svc = db.Service(KasaMonitor.Core.Heating.BoilerClock.DefaultTimeZone, new DateTimeOffset(2026, 11, 1, 22, 30, 0, TimeSpan.Zero));
+        svc.Today().Should().Be(new DateOnly(2026, 11, 2));
+        svc.BoilerToday().Should().Be(new DateOnly(2026, 11, 1));
+
+        var r = await svc.GetHeatingReportAsync(dev, ReportPeriod.Containing(ReportGranularity.Day, svc.BoilerToday()), CancellationToken.None);
+
+        r.Buckets[0].StartUtc.Should().Be(new DateTimeOffset(2026, 10, 31, 23, 0, 0, TimeSpan.Zero));
+        r.Buckets[0].LocalStart.Hour.Should().Be(1, "hours labelled in Romanian time");
+        r.Gas.OwnTotal.Should().BeApproximately(1.5, 1e-9);
     }
 
     [Fact]

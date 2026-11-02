@@ -347,59 +347,253 @@ public sealed class HeatingTests : IDisposable
         client.FeatureCalls.Should().Be(2);
     }
 
-    [Fact]
-    public async Task Worker_DayRollover_ByOurLocalTime_ResetAfterMidnightIsLoggedAndTodayUsesTheLastValue()
+    /// <summary>A Romanian local time (the app's zone, EET/EEST) as UTC.</summary>
+    private static DateTimeOffset Ro(int y, int mo, int d, int h, int mi)
     {
-        await ConnectAsync(expires: _now.AddDays(3));
-        var (worker, state, client, _) = CreateWorker();
-        var day1 = new DateTimeOffset(2026, 11, 1, 20, 0, 0, TimeSpan.Zero);   // 22:00 local (EET)
-        _now = day1;
-        client.FeaturesJson = () => GasJson(4.0, 0.5, day1);
-        (await worker.PollOnceAsync(CancellationToken.None)).Should().Be(HeatingPollResult.Read);
-
-        // 23:50 local: the day's last value.
-        _now = day1.AddMinutes(110);
-        client.FeaturesJson = () => GasJson(4.6, 0.7, day1.AddMinutes(110));
-        await worker.PollOnceAsync(CancellationToken.None);
-
-        // 00:02 local: the boiler still reports yesterday's total; it lands on the new day (our reading's time).
-        _now = day1.AddMinutes(122);
-        client.FeaturesJson = () => GasJson(4.8, 0.7, day1.AddMinutes(122));
-        await worker.PollOnceAsync(CancellationToken.None);
-
-        // 06:00 local: the boiler resets its counter late; the drop is logged and today counts with the last value.
-        _now = day1.AddHours(10);
-        client.FeaturesJson = () => GasJson(0.1, 0.0, day1.AddHours(10));
-        await worker.PollOnceAsync(CancellationToken.None);
-
-        var repo = Repo();
-        var id = state.Current!.Device.Id;
-        var days = await repo.ListDailyAsync(id, new DateOnly(2026, 11, 1), new DateOnly(2026, 11, 2), CancellationToken.None);
-        days.Select(d => (d.Day, d.GasHeatingMaxM3, d.GasHeatingLastM3, d.GasDhwMaxM3, d.GasDhwLastM3)).Should().Equal(
-            (new DateOnly(2026, 11, 1), (double?)4.6, (double?)4.6, (double?)0.7, (double?)0.7),
-            (new DateOnly(2026, 11, 2), (double?)4.8, (double?)0.1, (double?)0.7, (double?)0.0));
-        // Closed day 1 Nov: highest (4.6); today 2 Nov: last value (0.1).
-        state.Current.Totals!.GasHeatingM3.Should().BeApproximately(4.7, 1e-9);
-        state.Current.Totals.GasDhwM3.Should().BeApproximately(0.7, 1e-9);
+        var local = new DateTime(y, mo, d, h, mi, 0);
+        return new DateTimeOffset(local, Zone.GetUtcOffset(local));
     }
 
-    [Fact]
-    public async Task Worker_LogsAGasDecreaseInTheSameLocalDay()
+    private (HeatingPollWorker Worker, HeatingState State, FakeViessmannClient Client, ListLogger<HeatingPollWorker> Log) CreateLoggedWorker()
     {
-        await ConnectAsync(expires: _now.AddDays(1));
         var log = new ListLogger<HeatingPollWorker>();
         var client = new FakeViessmannClient { Clock = () => _now };
         var state = new HeatingState(new ApiCallBudget(() => _now), new DailyCallCounter(() => _now, Zone));
         var auth = new ViessmannAuthService(_settings, client, NullLogger<ViessmannAuthService>.Instance, () => _now, state.Calls);
-        var worker = new HeatingPollWorker(_scopes, _settings, auth, client, state, log, () => _now, Zone);
-        client.FeaturesJson = () => GasJson(2.0, 0.3, _now);
-        await worker.PollOnceAsync(CancellationToken.None);
-        _now = _now.AddMinutes(2);
-        client.FeaturesJson = () => GasJson(1.5, 0.3, _now);
-        await worker.PollOnceAsync(CancellationToken.None);
+        return (new HeatingPollWorker(_scopes, _settings, auth, client, state, log, () => _now, Zone), state, client, log);
+    }
 
-        log.Messages.Should().ContainSingle(m => m.Level == Microsoft.Extensions.Logging.LogLevel.Information && m.Text.Contains("received 1.5 m3 < stored highest 2 m3"))
-            .Which.Text.Should().Contain("heating").And.Contain("2026-11-01");
+    private async Task ReadAtAsync(HeatingPollWorker worker, FakeViessmannClient client, DateTimeOffset at, double heating, double dhw)
+    {
+        _now = at;
+        client.FeaturesJson = () => GasJson(heating, dhw, at);
+        (await worker.PollOnceAsync(CancellationToken.None)).Should().Be(HeatingPollResult.Read);
+    }
+
+    private async Task<List<(DateOnly Day, double? HMax, double? HLast, double? DMax, double? DLast)>> DaysAsync(Guid id) =>
+        (await Repo().ListDailyAsync(id, new DateOnly(2026, 1, 1), new DateOnly(2026, 12, 31), CancellationToken.None))
+        .Select(d => (d.Day, d.GasHeatingMaxM3, d.GasHeatingLastM3, d.GasDhwMaxM3, d.GasDhwLastM3)).ToList();
+
+    [Fact]
+    public async Task Worker_BoilerDay_ReadingsBefore01RomanianTimeStayOnTheBoilersPreviousDay()
+    {
+        // The measured night of 1→2 Nov 2026: the boiler (CET) resets at 01:00 Romanian time.
+        await ConnectAsync(expires: _now.AddDays(3));
+        var (worker, state, client, log) = CreateLoggedWorker();
+        (await _settings.GetAsync(CancellationToken.None)).BoilerTimeZoneId.Should().Be("Europe/Berlin");
+
+        await ReadAtAsync(worker, client, Ro(2026, 11, 1, 23, 50), 1.3, 0.1);
+        await ReadAtAsync(worker, client, Ro(2026, 11, 2, 0, 30), 1.4, 0.1);   // 23:30 CET: the boiler's 1 Nov
+        await ReadAtAsync(worker, client, Ro(2026, 11, 2, 1, 4), 0.0, 0.0);    // 00:04 CET: the boiler's new day
+        await ReadAtAsync(worker, client, Ro(2026, 11, 2, 3, 0), 0.7, 0.0);
+
+        var id = state.Current!.Device.Id;
+        (await DaysAsync(id)).Should().Equal(
+            (new DateOnly(2026, 11, 1), (double?)1.4, (double?)1.4, (double?)0.1, (double?)0.1),
+            (new DateOnly(2026, 11, 2), (double?)0.7, (double?)0.7, (double?)0.0, (double?)0.0));
+        state.Current.Totals!.GasHeatingM3.Should().BeApproximately(2.1, 1e-9);
+        state.Current.Totals.GasDhwM3.Should().BeApproximately(0.1, 1e-9);
+        state.BoilerTimeZone.Id.Should().Be("Europe/Berlin");
+        log.Messages.Should().NotContain(m => m.Level >= Microsoft.Extensions.Logging.LogLevel.Warning);
+    }
+
+    [Fact]
+    public async Task Worker_RealNight_StaleValueAfterTheBoilerMidnightStaysOnYesterday_TotalNeverJumps()
+    {
+        // 00:58 EET 1.4 → 01:01 EET still 1.4 (stale) → 01:04 EET 0 (the reset) → 01:30 EET 0.1.
+        await ConnectAsync(expires: _now.AddDays(3));
+        var (worker, state, client, log) = CreateLoggedWorker();
+        var totals = new List<double>();
+
+        await ReadAtAsync(worker, client, Ro(2026, 11, 2, 0, 58), 1.4, 0.1);   // 23:58 CET 1 Nov
+        totals.Add(state.Current!.Totals!.GasHeatingM3);
+        await ReadAtAsync(worker, client, Ro(2026, 11, 2, 1, 1), 1.4, 0.1);    // 00:01 CET: yesterday's total, stale
+        totals.Add(state.Current!.Totals!.GasHeatingM3);
+        var id = state.Current.Device.Id;
+        (await DaysAsync(id)).Should().ContainSingle("the new day gets nothing from a stale value").Which.Day.Should().Be(new DateOnly(2026, 11, 1));
+        await ReadAtAsync(worker, client, Ro(2026, 11, 2, 1, 4), 0.0, 0.0);    // 00:04 CET: the reset
+        totals.Add(state.Current!.Totals!.GasHeatingM3);
+        await ReadAtAsync(worker, client, Ro(2026, 11, 2, 1, 30), 0.1, 0.0);
+        totals.Add(state.Current!.Totals!.GasHeatingM3);
+
+        totals.Should().Equal(1.4, 1.4, 1.4, 1.5);
+        (await DaysAsync(id)).Should().Equal(
+            (new DateOnly(2026, 11, 1), (double?)1.4, (double?)1.4, (double?)0.1, (double?)0.1),
+            (new DateOnly(2026, 11, 2), (double?)0.1, (double?)0.1, (double?)0.0, (double?)0.0));
+        state.Current.Totals!.GasDhwM3.Should().BeApproximately(0.1, 1e-9);
+        log.Messages.Should().ContainSingle(m => m.Level == Microsoft.Extensions.Logging.LogLevel.Information && m.Text.Contains("is still 2026-11-01's total"));
+        log.Messages.Should().NotContain(m => m.Level >= Microsoft.Extensions.Logging.LogLevel.Warning);
+    }
+
+    [Fact]
+    public async Task Worker_StaleValueRaisesYesterday()
+    {
+        await ConnectAsync(expires: _now.AddDays(3));
+        var (worker, state, client, _) = CreateLoggedWorker();
+
+        await ReadAtAsync(worker, client, Ro(2026, 11, 2, 0, 50), 1.3, 0.1);   // 23:50 CET
+        await ReadAtAsync(worker, client, Ro(2026, 11, 2, 1, 2), 1.4, 0.1);    // 00:02 CET: the last minutes of yesterday
+        await ReadAtAsync(worker, client, Ro(2026, 11, 2, 1, 6), 0.0, 0.0);
+
+        (await DaysAsync(state.Current!.Device.Id)).Should().Equal(
+            (new DateOnly(2026, 11, 1), (double?)1.4, (double?)1.4, (double?)0.1, (double?)0.1),
+            (new DateOnly(2026, 11, 2), (double?)0.0, (double?)0.0, (double?)0.0, (double?)0.0));
+    }
+
+    [Fact]
+    public async Task Worker_FirstNightWithoutYesterday_TheResetInTheWindowCarriesTheValueBack()
+    {
+        // Nothing stored for 1 Nov: yesterday's total read at 00:01 CET lands on 2 Nov; the reset at 00:04 CET is accepted
+        // and carries it back to 1 Nov.
+        await ConnectAsync(expires: _now.AddDays(3));
+        var (worker, state, client, log) = CreateLoggedWorker();
+
+        await ReadAtAsync(worker, client, Ro(2026, 11, 2, 1, 1), 1.4, 0.1);
+        await ReadAtAsync(worker, client, Ro(2026, 11, 2, 1, 4), 0.0, 0.0);
+
+        (await DaysAsync(state.Current!.Device.Id)).Should().Equal(
+            (new DateOnly(2026, 11, 1), (double?)1.4, (double?)1.4, (double?)0.1, (double?)0.1),
+            (new DateOnly(2026, 11, 2), (double?)0.0, (double?)0.0, (double?)0.0, (double?)0.0));
+        log.Messages.Should().Contain(m => m.Level == Microsoft.Extensions.Logging.LogLevel.Information && m.Text.Contains("boiler reset accepted")
+            && m.Text.Contains("2026-11-02 00:04:00 boiler time (2026-11-02 01:04:00 local)"));
+    }
+
+    [Fact]
+    public async Task Worker_DropAt1400_LeavesTheDay_WarningOncePerDay()
+    {
+        await ConnectAsync(expires: _now.AddDays(3));
+        var (worker, state, client, log) = CreateLoggedWorker();
+
+        await ReadAtAsync(worker, client, Ro(2026, 11, 2, 13, 58), 2.0, 0.3);
+        await ReadAtAsync(worker, client, Ro(2026, 11, 2, 14, 0), 1.5, 0.3);
+        await ReadAtAsync(worker, client, Ro(2026, 11, 2, 14, 2), 1.4, 0.3);
+
+        var day = (await DaysAsync(state.Current!.Device.Id)).Single();
+        (day.HMax, day.HLast).Should().Be(((double?)2.0, (double?)2.0));
+        state.Current.Totals!.GasHeatingM3.Should().BeApproximately(2.0, 1e-9, "the total never goes down because of a drop");
+        log.Messages.Where(m => m.Level == Microsoft.Extensions.Logging.LogLevel.Warning).Should().ContainSingle()
+            .Which.Text.Should().Contain("received 1.5 m3 < stored highest 2 m3").And.Contain("heating").And.Contain("not the daily reset");
+    }
+
+    [Fact]
+    public async Task Worker_ResetUnderTwentyPercentDuringTheDay_DoesNotRewriteTheDay_TheCounterKeepsGoing()
+    {
+        await ConnectAsync(expires: _now.AddDays(3));
+        var (worker, state, client, log) = CreateLoggedWorker();
+        var totals = new List<double>();
+
+        foreach (var (h, v) in new[] { (13, 2.0), (14, 0.1), (16, 1.0), (18, 2.3) })
+        {
+            await ReadAtAsync(worker, client, Ro(2026, 11, 2, h, 0), v, 0.3);
+            totals.Add(state.Current!.Totals!.GasHeatingM3);
+        }
+
+        totals.Should().Equal(2.0, 2.0, 2.0, 2.3);
+        var day = (await DaysAsync(state.Current!.Device.Id)).Single();
+        (day.HMax, day.HLast).Should().Be(((double?)2.3, (double?)2.3));
+        log.Messages.Should().NotContain(m => m.Text.Contains("boiler reset accepted"));
+        log.Messages.Where(m => m.Level == Microsoft.Extensions.Logging.LogLevel.Warning).Should().ContainSingle().Which.Text.Should().Contain("not the daily reset");
+    }
+
+    [Fact]
+    public async Task Worker_RepairsTodaysCaseAtStartup()
+    {
+        await ConnectAsync(expires: _now.AddDays(3));
+        var repo = Repo();
+        var device = await repo.UpsertDeviceAsync(new HeatingDevice(Guid.NewGuid(), "viessmann", "1", "g", "0", "E3_Vitodens_050_0822", "Vitodens 050", true, null, null), CancellationToken.None);
+        // As left by 0.8.0 on 2 Nov: the readings 00:00–01:00 put yesterday's 1.4 into today's highest.
+        await repo.UpsertDailyAsync(new[]
+        {
+            new HeatingEnergyDay(device.Id, new DateOnly(2026, 11, 1), 1.4, 0.1, null, null, null, null, HeatingKinds.SourceSummary, 1.4, 0.1),
+            new HeatingEnergyDay(device.Id, new DateOnly(2026, 11, 2), 1.4, 0.1, null, null, null, null, HeatingKinds.SourceSummary, 0.7, 0.0),
+        }, CancellationToken.None);
+        _now = Ro(2026, 11, 2, 10, 0);
+        var (worker, state, _, log) = CreateLoggedWorker();
+
+        await worker.LoadStoredAsync(CancellationToken.None);
+
+        (await DaysAsync(device.Id)).Should().Equal(
+            (new DateOnly(2026, 11, 1), (double?)1.4, (double?)1.4, (double?)0.1, (double?)0.1),
+            (new DateOnly(2026, 11, 2), (double?)0.7, (double?)0.7, (double?)0.0, (double?)0.0));
+        log.Messages.Where(m => m.Level == Microsoft.Extensions.Logging.LogLevel.Information && m.Text.Contains("repaired 2026-11-02")).Should().HaveCount(2);
+        state.Current!.Totals!.GasHeatingM3.Should().BeApproximately(2.1, 1e-9);
+    }
+
+    private async Task<HeatingDevice> SeedLeakedDayAsync(double todayLast)
+    {
+        var repo = Repo();
+        var device = await repo.UpsertDeviceAsync(new HeatingDevice(Guid.NewGuid(), "viessmann", "1000001", "1111222233334444", "0", "E3_Vitodens_050_0822", "Vitodens 050", true, null, null), CancellationToken.None);
+        // As left by 0.8.0 on 2 Nov: the readings 00:00–01:00 Romanian time put yesterday's totals (gas, heat,
+        // electricity) into today's highest.
+        await repo.UpsertDailyAsync(new[]
+        {
+            new HeatingEnergyDay(device.Id, new DateOnly(2026, 11, 1), 1.4, 0.1, 14.0, 1.0, 0.30, null, HeatingKinds.SourceSummary, 1.4, 0.1),
+            new HeatingEnergyDay(device.Id, new DateOnly(2026, 11, 2), 1.4, 0.1, 14.0, 1.0, 0.30, null, HeatingKinds.SourceSummary, todayLast, 0.1),
+        }, CancellationToken.None);
+        return device;
+    }
+
+    [Fact]
+    public async Task Worker_RepairsTheDeploymentCaseAtStartup_GasHeatAndElectricity()
+    {
+        // The real data at the deployment: 1 Nov 1.4 / 1.4, 2 Nov 1.4 / 0.8 (last above 50 %).
+        await ConnectAsync(expires: _now.AddDays(3));
+        var device = await SeedLeakedDayAsync(todayLast: 0.8);
+        _now = Ro(2026, 11, 2, 10, 30);
+        var (worker, state, _, log) = CreateLoggedWorker();
+
+        await worker.LoadStoredAsync(CancellationToken.None);
+
+        var days = await Repo().ListDailyAsync(device.Id, new DateOnly(2026, 11, 1), new DateOnly(2026, 11, 2), CancellationToken.None);
+        days.Select(d => (d.Day, d.GasHeatingMaxM3, d.GasHeatingLastM3, d.HeatHeatingKwh, d.HeatDhwKwh, d.PowerHeatingKwh)).Should().Equal(
+            (new DateOnly(2026, 11, 1), (double?)1.4, (double?)1.4, (double?)14.0, (double?)1.0, (double?)0.30),
+            (new DateOnly(2026, 11, 2), (double?)0.8, (double?)0.8, (double?)null, (double?)null, (double?)null));
+        state.Current!.Totals!.GasHeatingM3.Should().BeApproximately(2.2, 1e-9);
+        state.Current.Totals.HeatHeatingKwh.Should().BeApproximately(14.0, 1e-9);
+        log.Messages.Count(m => m.Text.Contains("repaired 2026-11-02")).Should().Be(4, "gas heating + heat heating, heat dhw, electricity heating");
+
+        // A second start the same day changes nothing.
+        var (again, _, _, log2) = CreateLoggedWorker();
+        await again.LoadStoredAsync(CancellationToken.None);
+        log2.Messages.Should().NotContain(m => m.Text.Contains("repaired"));
+    }
+
+    [Fact]
+    public async Task Worker_Total_IsTheDatabaseSum_ADropIsLoggedAtWarningOnce()
+    {
+        // Published at 00:10 CET (before the repair is due), repaired at the poll of 00:40 CET: today's heat and
+        // electricity were yesterday's, the totals drop once and that is logged; the published value is the database's.
+        await ConnectAsync(expires: _now.AddDays(3));
+        await SeedLeakedDayAsync(todayLast: 0.6);
+        _now = Ro(2026, 11, 2, 1, 10);
+        var (worker, state, client, log) = CreateLoggedWorker();
+        await worker.LoadStoredAsync(CancellationToken.None);
+        state.Current!.Totals!.HeatHeatingKwh.Should().BeApproximately(28.0, 1e-9);
+
+        await ReadAtAsync(worker, client, Ro(2026, 11, 2, 1, 40), 0.6, 0.1);
+
+        state.Current!.Totals!.HeatHeatingKwh.Should().BeApproximately(14.0, 1e-9);
+        state.Current.Totals.GasHeatingM3.Should().BeApproximately(2.0, 1e-9);
+        log.Messages.Where(m => m.Level == Microsoft.Extensions.Logging.LogLevel.Warning && m.Text.Contains("Heating total")).Select(m => m.Text)
+            .Should().ContainSingle(t => t.Contains("heat heating kWh dropped from 28 to 14"));
+        await ReadAtAsync(worker, client, Ro(2026, 11, 2, 1, 42), 0.6, 0.1);
+        log.Messages.Count(m => m.Text.Contains("heat heating kWh dropped")).Should().Be(1, "once a day");
+    }
+
+    [Fact]
+    public async Task Settings_BoilerTimeZone_DefaultsToBerlin_UnknownRefused()
+    {
+        (await _settings.GetAsync(CancellationToken.None)).BoilerTimeZoneId.Should().Be("Europe/Berlin");
+        await _settings.SaveAsync(new HeatingSettingsUpdate(true, "c", 120, 0.31m, "m3", 10.55, BoilerTimeZone: "Europe/Bucharest"), CancellationToken.None);
+        var s = await _settings.GetAsync(CancellationToken.None);
+        s.BoilerTimeZoneId.Should().Be("Europe/Bucharest");
+        s.BoilerTimeZone.BaseUtcOffset.Should().Be(TimeSpan.FromHours(2));
+
+        var act = () => _settings.SaveAsync(new HeatingSettingsUpdate(true, "c", 120, 0.31m, "m3", 10.55, BoilerTimeZone: "Mars/Olympus"), CancellationToken.None);
+        await act.Should().ThrowAsync<FormatException>();
+        // Saving without a zone keeps the stored one.
+        await _settings.SaveAsync(new HeatingSettingsUpdate(true, "c", 120, 0.31m, "m3", 10.55), CancellationToken.None);
+        (await _settings.GetAsync(CancellationToken.None)).BoilerTimeZoneId.Should().Be("Europe/Bucharest");
     }
 
     [Fact]

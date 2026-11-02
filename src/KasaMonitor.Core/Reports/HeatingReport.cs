@@ -57,6 +57,8 @@ public sealed record HeatingReport(
 /// <param name="ApiPeriods">The boiler's period values (day, month, last month, year, last year) with the time they were read.</param>
 /// <param name="Readings">Day only: readings of the day, starting a little before its midnight.</param>
 /// <param name="FirstDay">First stored day (the history starts there).</param>
+/// <param name="Tz">The boiler's zone (<see cref="BoilerClock"/>): days, hours and the boiler's periods follow its midnight.</param>
+/// <param name="DisplayTz">Zone of the hour labels of a day report (the application's); null = <paramref name="Tz"/>.</param>
 public sealed record HeatingReportInput(
     ReportPeriod Period,
     TimeZoneInfo Tz,
@@ -65,7 +67,8 @@ public sealed record HeatingReportInput(
     IReadOnlyList<HeatingMonthSums> Months,
     IReadOnlyList<HeatingEnergyPeriod> ApiPeriods,
     IReadOnlyList<HeatingCounterReading> Readings,
-    DateOnly? FirstDay);
+    DateOnly? FirstDay,
+    TimeZoneInfo? DisplayTz = null);
 
 /// <summary>
 /// Builds the boiler reports. Days and months come from the daily history KasaMonitor builds from the boiler's
@@ -109,6 +112,9 @@ public static class HeatingReportBuilder
     public static HeatingReport Build(HeatingReportInput input)
     {
         var buckets = input.Period.Buckets(input.Tz);
+        // Hours of a boiler day labelled in local time (a CET day runs 01:00–01:00 Romanian time).
+        if (input.Period.Kind == ReportGranularity.Day && input.DisplayTz is { } display && !display.Equals(input.Tz))
+            buckets = buckets.Select(b => b with { LocalStart = TimeZoneInfo.ConvertTime(b.StartUtc, display).DateTime }).ToList();
         var days = input.Days.GroupBy(d => d.Day).ToDictionary(g => g.Key, g => g.First());
         var months = input.Months.GroupBy(m => (m.Year, m.Month)).ToDictionary(g => g.Key, g => g.First());
         var ignored = new List<CounterDecrease>();
@@ -235,27 +241,16 @@ public static class HeatingReportBuilder
         return null;
     }
 
-    /// <summary>A drop of a "today" counter is a reset only below this share of the previous value…</summary>
-    public const double ResetMaxShare = 0.2;
-
-    /// <summary>…and only when the new reading's local time is between these (around midnight; inclusive).</summary>
-    public static readonly TimeOnly ResetWindowFrom = new(23, 50), ResetWindowTo = new(0, 30);
-
-    /// <summary>True when a drop from <paramref name="previous"/> to <paramref name="value"/> at <paramref name="tsUtc"/> is the daily reset.</summary>
-    public static bool IsReset(double previous, double value, DateTimeOffset tsUtc, TimeZoneInfo tz)
-    {
-        if (!(value < ResetMaxShare * previous)) return false;
-        var local = TimeOnly.FromDateTime(TimeZoneInfo.ConvertTime(tsUtc, tz).DateTime);
-        return local >= ResetWindowFrom || local <= ResetWindowTo;
-    }
-
     /// <summary>
     /// Hourly use from a "today" counter: each reading adds its increase over the reference value to the hour it falls
-    /// in. A drop is the daily reset only when the new value is under 20 % of the reference and the reading is between
-    /// 23:50 and 00:30 local (<see cref="IsReset"/>): the new value is then the use since the reset. Any other drop is a
-    /// correction: it adds nothing, the reference keeps the last higher value, and it is reported in
-    /// <paramref name="ignored"/> (time, reference, received). An hour without a pair of readings stays null ("fără
-    /// date"); the first reading of the day pairs with the last one before midnight.
+    /// in. A drop is the boiler's daily reset by <see cref="BoilerClock.IsReset"/> (the boiler's time between 23:45 and
+    /// 00:30, or under 20 % of the reference with no reset in the 20 hours before, in <paramref name="tz"/> = the boiler's
+    /// zone): the new value is then the use since the reset. Any other drop is a correction: it adds nothing, the
+    /// reference keeps the last higher value, and it is reported in <paramref name="ignored"/> (time, reference,
+    /// received). An hour without a pair of readings stays null ("fără date"); the first reading of the day pairs with
+    /// the last one before midnight. A rise read in the first 30 minutes after the boiler's midnight, before that day's
+    /// reset was seen, is the previous day's total read late (<see cref="BoilerClock.InStaleWindow"/>): it adds nothing
+    /// (the daily row puts it on the previous day as well).
     /// </summary>
     public static IReadOnlyList<double?> HourlyIncrements(IEnumerable<(DateTimeOffset TsUtc, double? Value)> readings, IReadOnlyList<ReportBucket> buckets,
         TimeZoneInfo tz, List<(DateTimeOffset TsUtc, double Previous, double Received)>? ignored = null)
@@ -265,6 +260,7 @@ public static class HeatingReportBuilder
         var start = buckets[0].StartUtc;
         var end = buckets[^1].EndUtc;
         double? prev = null;
+        DateTimeOffset? lastReset = null;
         foreach (var (ts, value) in readings.OrderBy(r => r.TsUtc))
         {
             if (value is not { } v) continue;
@@ -274,8 +270,15 @@ public static class HeatingReportBuilder
             if (prev is { } p)
             {
                 double increment;
-                if (v >= p) increment = v - p;
-                else if (IsReset(p, v, ts, tz)) increment = v;
+                if (v >= p && BoilerClock.InStaleWindow(ts, tz) && !(lastReset >= BoilerClock.MidnightUtc(BoilerClock.DayOf(ts, tz), tz))
+                    && p >= BoilerClock.StaleMinPreviousM3)
+                    increment = 0;
+                else if (v >= p) increment = v - p;
+                else if (BoilerClock.IsReset(p, v, ts, tz, lastReset))
+                {
+                    increment = v;
+                    lastReset = ts;
+                }
                 else
                 {
                     // A correction, not a reset: nothing is added and the higher value stays the reference.

@@ -304,9 +304,10 @@ public sealed class NilmRepository : INilmRepository
             .GroupBy(e => new { Sig = e.SignatureId!.Value, Plug = e.LabelPlugId!.Value })
             .Select(g => new { g.Key.Sig, g.Key.Plug, N = g.Count(), Label = g.Max(e => e.Label) })
             .ToListAsync(ct);
+        var bySignature = byPlug.ToLookup(x => x.Sig);
         return list.Select(id =>
         {
-            var top = byPlug.Where(x => x.Sig == id).OrderByDescending(x => x.N).FirstOrDefault();
+            var top = bySignature[id].OrderByDescending(x => x.N).FirstOrDefault();
             return new SignaturePlugShare(id, totals.GetValueOrDefault(id), top?.Plug, top?.Label, top?.N ?? 0);
         }).ToList();
     }

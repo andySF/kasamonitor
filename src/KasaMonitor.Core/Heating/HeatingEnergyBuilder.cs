@@ -2,7 +2,8 @@ namespace KasaMonitor.Core.Heating;
 
 /// <summary>
 /// Turns the energy features of one snapshot into daily rows and period values. Daily history is built by
-/// KasaMonitor: each poll writes the summary's <c>currentDay</c> on the local day of the reading (the repository keeps
+/// KasaMonitor: each poll writes the summary's <c>currentDay</c> on the boiler day of the reading (<c>tz</c> of
+/// <see cref="Days"/> = the boiler's zone, <see cref="BoilerClock"/>; the repository keeps
 /// the day's highest and last value), so when the day is over its highest value stays. Boilers with a <c>day[]</c> series (day[0] = today) fill every day of
 /// the series instead. Gas is stored in m³ (a kWh answer is converted with the calorific factor).
 /// </summary>

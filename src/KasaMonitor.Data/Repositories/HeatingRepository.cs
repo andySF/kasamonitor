@@ -191,6 +191,49 @@ public sealed class HeatingRepository : IHeatingRepository
         return decreases;
     }
 
+    public async Task SetDailyGasAsync(Guid deviceId, DateOnly day, string purpose, double maxM3, double lastM3, CancellationToken ct)
+    {
+        if (purpose is not (HeatingKinds.Heating or HeatingKinds.Dhw)) throw new ArgumentOutOfRangeException(nameof(purpose), purpose, null);
+        var key = DayKey(day);
+        var row = await _db.HeatingEnergyDaily.FindAsync(new object?[] { deviceId, key }, ct);
+        if (row is null)
+        {
+            row = new HeatingEnergyDailyEntity { DeviceId = deviceId, Day = key, Source = HeatingKinds.SourceSummary };
+            _db.HeatingEnergyDaily.Add(row);
+        }
+        if (purpose == HeatingKinds.Heating)
+        {
+            row.GasHeatingMaxM3 = maxM3;
+            row.GasHeatingLastM3 = lastM3;
+        }
+        else
+        {
+            row.GasDhwMaxM3 = maxM3;
+            row.GasDhwLastM3 = lastM3;
+        }
+        row.UpdatedTs = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        await _db.SaveChangesAsync(ct);
+        _db.ChangeTracker.Clear();
+    }
+
+    public async Task SetDailyKwhAsync(Guid deviceId, DateOnly day, string kind, string purpose, double? kwh, CancellationToken ct)
+    {
+        if (kind is not (HeatingKinds.Heat or HeatingKinds.Power)) throw new ArgumentOutOfRangeException(nameof(kind), kind, null);
+        if (purpose is not (HeatingKinds.Heating or HeatingKinds.Dhw)) throw new ArgumentOutOfRangeException(nameof(purpose), purpose, null);
+        var row = await _db.HeatingEnergyDaily.FindAsync(new object?[] { deviceId, DayKey(day) }, ct);
+        if (row is null) return;
+        switch (kind, purpose)
+        {
+            case (HeatingKinds.Heat, HeatingKinds.Heating): row.HeatHeatingKwh = kwh; break;
+            case (HeatingKinds.Heat, _): row.HeatDhwKwh = kwh; break;
+            case (_, HeatingKinds.Heating): row.PowerHeatingKwh = kwh; break;
+            default: row.PowerDhwKwh = kwh; break;
+        }
+        row.UpdatedTs = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        await _db.SaveChangesAsync(ct);
+        _db.ChangeTracker.Clear();
+    }
+
     public async Task<IReadOnlyList<HeatingEnergyDay>> ListDailyAsync(Guid deviceId, DateOnly from, DateOnly to, CancellationToken ct)
     {
         string f = DayKey(from), t = DayKey(to);

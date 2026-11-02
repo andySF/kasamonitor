@@ -57,7 +57,12 @@ else
         <div class="card-header fw-semibold d-flex flex-wrap justify-content-between align-items-center gap-2">
             <span><i class="bi bi-collection me-2"></i>Consumatori detectați (@_overview.DetectedTotal)</span>
             <div class="d-flex flex-wrap align-items-center gap-2 fw-normal small">
+                <label class="form-check-label" title="Rare = sub @SignatureListing.MinEventsShown evenimente, fără nume dat și fără „posibil &lt;priză&gt;”">
+                    <input class="form-check-input me-1" type="checkbox" checked="@_showRare" @onchange="ToggleRareAsync" /> arată și semnăturile rare (@_overview.RareCount)</label>
                 <label class="form-check-label"><input class="form-check-input me-1" type="checkbox" @bind="_showHidden" /> arată și ascunsele</label>
+                <button class="btn btn-sm btn-outline-danger" @onclick="() => _confirmClean = true" disabled="@(Blocked || _overview.CleanableCount == 0)"
+                        title="Șterge semnăturile cu cel mult @SignatureListing.RareMaxEvents evenimente, văzute ultima dată acum mai mult de @SignatureListing.RareMinAge.TotalDays.ToString("0") zile (fără cele cu nume, cu „posibil &lt;priză&gt;” sau legate de o priză); evenimentele rămân, nelegate">
+                    <i class="bi bi-trash me-1"></i>Curăță semnăturile rare (@_overview.CleanableCount)</button>
                 <span class="text-secondary">Unește</span>
                 <select class="form-select form-select-sm w-auto" @bind="_mergeFrom" disabled="@Blocked">
                     <option value="0">…</option>
@@ -78,9 +83,29 @@ else
                         title="Evenimentele primei semnături trec în a doua">Unește</button>
             </div>
         </div>
+        @if (_confirmClean)
+        {
+            <div class="alert alert-warning small m-2 mb-0">
+                <i class="bi bi-exclamation-triangle-fill me-2"></i>Se vor șterge <b>@_overview.CleanableCount</b> semnături rare (cel mult @SignatureListing.RareMaxEvents evenimente,
+                ultima dată văzute acum mai mult de @SignatureListing.RareMinAge.TotalDays.ToString("0") zile). Evenimentele lor rămân, fără semnătură; regruparea de noapte le poate grupa din nou. Confirmi?
+                <div class="mt-2">
+                    <button class="btn btn-danger btn-sm me-2" @onclick="CleanRareAsync" disabled="@Blocked"><i class="bi bi-trash me-1"></i>Da, șterge</button>
+                    <button class="btn btn-outline-secondary btn-sm" @onclick="() => _confirmClean = false"><i class="bi bi-x-lg me-1"></i>Renunță</button>
+                </div>
+            </div>
+        }
         @if (!VisibleDetected.Any())
         {
-            <div class="card-body small text-secondary">Încă niciun consumator detectat: apar după primele evenimente (la ~30 s după o pornire/oprire).</div>
+            <div class="card-body small text-secondary">
+                @if (_overview.RareCount > 0 && !_showRare)
+                {
+                    <span>Doar semnături rare deocamdată (@_overview.RareCount): bifează „arată și semnăturile rare”.</span>
+                }
+                else
+                {
+                    <span>Încă niciun consumator detectat: apar după primele evenimente (la ~30 s după o pornire/oprire).</span>
+                }
+            </div>
         }
         else
         {
@@ -88,12 +113,14 @@ else
                 <table class="table table-sm align-middle mb-0 small">
                     <thead class="table-light">
                         <tr>
+                            <th class="text-end" title="|ΔP| mediu al pornirilor și opririlor">ΔP mediu</th>
+                            <th class="text-end" title="Evenimente în fereastra de @_overview.Settings.ClusterWindowDays zile">Evenim.</th>
                             <th>Nume</th><th>Categorie</th>
-                            <th class="text-end" title="|ΔP| mediu al pornirilor și opririlor">ΔP</th>
                             <th class="text-end" title="Puterea reactivă (din partea pornirii)">ΔQ</th>
                             <th class="text-end" title="Vârful din primele 2 s / ΔP (motoare 3–8, rezistențe ≈ 1)">Tranz.</th>
-                            <th class="text-end" title="Evenimente în fereastra de @_overview.Settings.ClusterWindowDays zile">Evenim.</th><th>Ultima</th>
+                            <th>Ultima</th>
                             <th class="text-end" title="Energie estimată din rulările pornire → oprire">Azi</th>
+                            <th class="text-end" title="Lista e ordonată după această coloană">7 zile</th>
                             <th class="text-end">30 zile</th>
                             <th>Sursă</th><th></th>
                         </tr>
@@ -103,6 +130,8 @@ else
                         {
                             var s = r.Signature;
                             <tr class="@(s.Hidden ? "text-body-tertiary" : "")">
+                                <td class="text-end text-nowrap fw-semibold">@s.MeanDeltaP.ToString("0") W</td>
+                                <td class="text-end fw-semibold">@s.Count</td>
                                 <td style="min-width: 12rem">
                                     <div class="input-group input-group-sm">
                                         <span class="input-group-text"><i class="bi @s.Icon"></i></span>
@@ -129,12 +158,11 @@ else
                                         }
                                     </select>
                                 </td>
-                                <td class="text-end">@s.MeanDeltaP.ToString("0") W</td>
                                 <td class="text-end">@s.MeanDeltaQ.ToString("0") VAR</td>
                                 <td class="text-end">@(s.MeanTransient > 0 ? s.MeanTransient.ToString("0.0") : "—")</td>
-                                <td class="text-end">@s.Count</td>
                                 <td class="text-nowrap">@(s.LastSeenUtc is { } ls ? UiFormat.FullLocal(ls) : "—")</td>
                                 <td class="text-end text-nowrap">@EnergyFormat.Kwh((long)Math.Round(r.TodayWh)) kWh</td>
+                                <td class="text-end text-nowrap">@EnergyFormat.Kwh((long)Math.Round(r.Last7DaysWh)) kWh</td>
                                 <td class="text-end text-nowrap">@EnergyFormat.Kwh((long)Math.Round(r.Last30DaysWh)) kWh</td>
                                 <td><span class="badge @(s.LabelSource == SignatureLabelSource.User ? "text-bg-primary" : "text-bg-light border")">@NilmSources.Name(s.LabelSource)</span></td>
                                 <td class="text-nowrap">
@@ -152,7 +180,7 @@ else
             {
                 <div class="card-footer d-flex align-items-center gap-2 small">
                     <button class="btn btn-sm btn-outline-secondary" @onclick="() => GoAsync(_page - 1, _eventsPage)" disabled="@(_page == 0)"><i class="bi bi-chevron-left"></i></button>
-                    <span>pagina @(_overview.Page + 1) din @_overview.PageCount (câte @NilmService.PageSize, după numărul de evenimente)</span>
+                    <span>pagina @(_overview.Page + 1) din @_overview.PageCount (câte @NilmService.PageSize, după energia pe 7 zile)</span>
                     <button class="btn btn-sm btn-outline-secondary" @onclick="() => GoAsync(_page + 1, _eventsPage)" disabled="@(_page >= _overview.PageCount - 1)"><i class="bi bi-chevron-right"></i></button>
                 </div>
             }
@@ -307,6 +335,8 @@ else
     private NilmOverview? _overview;
     private bool _busy;
     private bool _showHidden;
+    private bool _showRare;
+    private bool _confirmClean;
     private string? _error;
     private string? _message;
     private int _page, _eventsPage;
@@ -330,7 +360,7 @@ else
     {
         try
         {
-            _overview = await Nilm.GetOverviewAsync(_page, _eventsPage, CancellationToken.None);
+            _overview = await Nilm.GetOverviewAsync(_page, _eventsPage, CancellationToken.None, _showRare);
             _page = _overview.Page;
             _eventsPage = _overview.EventsPage;
             _error = null;
@@ -366,6 +396,20 @@ else
             _busy = false;
         }
     }
+
+    private async Task ToggleRareAsync(ChangeEventArgs e)
+    {
+        _showRare = e.Value is true;
+        _page = 0;
+        await LoadAsync();
+    }
+
+    private Task CleanRareAsync() => RunAsync(async () =>
+    {
+        _confirmClean = false;
+        var deleted = await Nilm.CleanRareSignaturesAsync(CancellationToken.None);
+        return deleted > 0 ? $"Au fost șterse {deleted} semnături rare; evenimentele lor au rămas, fără semnătură." : "Nicio semnătură rară de șters.";
+    });
 
     private Task RenameAsync(long id, string? name) => string.IsNullOrWhiteSpace(name)
         ? Task.CompletedTask

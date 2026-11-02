@@ -20,6 +20,15 @@ public class ReportFormatTests
         ReportFormat.Title(ReportPeriod.Containing(ReportGranularity.Year, new DateOnly(2026, 11, 1))).Should().Be("2026");
     }
 
+    [Theory]
+    [InlineData(2026, 11, 2)]
+    [InlineData(2026, 7, 15)]
+    public void BoilerDayNote_EndsAt01RomanianTime(int y, int m, int d)
+    {
+        ReportFormat.BoilerDayNote(KasaMonitor.Core.Heating.BoilerClock.DefaultTimeZone, Ro, new DateOnly(y, m, d))
+            .Should().Be("zi = după ceasul centralei (CET), se încheie la 01:00 ora României");
+    }
+
     [Fact]
     public void BucketLabels_MarkTheRepeatedDstHour()
     {

@@ -65,10 +65,11 @@ public sealed record HeatingReading(
 }
 
 /// <summary>
-/// Energy of one local day (table HeatingEnergyDaily), built by KasaMonitor from the boiler's "currentDay" values,
-/// attributed to the local day of KasaMonitor's own reading, or from a day[] series. Gas keeps two values per purpose:
+/// Energy of one boiler day (table HeatingEnergyDaily; the day follows the boiler's midnight, <see cref="BoilerClock"/>),
+/// built by KasaMonitor from the boiler's "currentDay" values, attributed to the boiler day of KasaMonitor's own
+/// reading, or from a day[] series. Gas keeps two values per purpose:
 /// the day's highest (<c>…MaxM3</c>, used once the day is over) and the last one seen (<c>…LastM3</c>, used for the
-/// current day; it drops when the boiler resets its counter later than midnight). Gas in m³, heat produced and
+/// current day). Gas in m³, heat produced and
 /// electricity in kWh (highest of the day).
 /// </summary>
 public sealed record HeatingEnergyDay(

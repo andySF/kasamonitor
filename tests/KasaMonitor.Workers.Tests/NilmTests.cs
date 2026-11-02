@@ -294,7 +294,9 @@ public class NilmServiceTests
             rig.Live.Publish(new LiveSample(main, T0.AddSeconds(t + 60), t < 60 ? 2300 : 4300));
         rig.Now = T0.AddSeconds(200);
         await svc.RunOnceAsync(CancellationToken.None);
-        var overview = await svc.GetOverviewAsync(0, 0, CancellationToken.None);
+        // Two events, no name, no plug: a rare signature, listed only behind the switch.
+        (await svc.GetOverviewAsync(0, 0, CancellationToken.None)).RareCount.Should().Be(1);
+        var overview = await svc.GetOverviewAsync(0, 0, CancellationToken.None, showRare: true);
         overview.Detected.Should().ContainSingle().Which.ActiveW.Should().BeApproximately(4000, 0.1);
     }
 
@@ -480,6 +482,94 @@ public class NilmServiceTests
         overview.EventsPageCount.Should().Be(2);
         overview.Events.Should().HaveCount(72 - NilmService.PageSize, "second page");
         overview.LabeledEvents.Should().Be(37, "36 from the plugs + 1 by the user");
+    }
+
+    private static ApplianceSignature Sig(string name, int count, DateTimeOffset lastSeen, SignatureLabelSource source = SignatureLabelSource.Cluster,
+        Guid? plug = null) => new(0, name, "bi-question-circle", ApplianceCategories.Other, 30, 0, 1, count, lastSeen, source, plug, false);
+
+    /// <summary>Signatures as left by a few hours of clustering: some frequent, many with one or two small events.</summary>
+    private static async Task<Dictionary<string, long>> SeedSignaturesAsync(Rig rig, Guid main, Guid fridge)
+    {
+        var ids = new Dictionary<string, long>();
+        async Task<long> Add(string key, ApplianceSignature s)
+        {
+            var stored = await rig.Repo(r => r.AddSignatureAsync(s, CancellationToken.None));
+            ids[key] = stored.Id;
+            return stored.Id;
+        }
+        var recent = T0.AddHours(-1);
+        var big = await Add("big", Sig("", 10, recent));
+        var small = await Add("small", Sig("", 3, recent));
+        await Add("oldFrequent", Sig("", 5, T0.AddDays(-10)));
+        await Add("named", Sig("Fierbător", 1, T0.AddDays(-10), SignatureLabelSource.User));
+        var possible = await Add("possible", Sig("", 2, T0.AddDays(-10)));
+        await Add("rareNew", Sig("", 1, recent));
+        var rareOld = await Add("rareOld", Sig("", 2, T0.AddDays(-10)));
+        await Add("measured", Sig("Frigider", 1, T0.AddDays(-10), SignatureLabelSource.Plug, fridge));
+
+        MeterEvent E(int minutesAgo, long sig, Guid? labelPlug = null) => new(0, main, T0.AddMinutes(-minutesAgo), 30, 0, 0, 1, 1, 300, sig,
+            labelPlug is null ? null : "Frigider", labelPlug is null ? EventLabelSource.None : EventLabelSource.AutoPlug, labelPlug);
+        await rig.Repo(r => r.AddEventsAsync(new[]
+        {
+            E(10 * 1440, rareOld), E(10 * 1440 - 30, rareOld),
+            E(10 * 1440 - 60, possible, fridge), E(10 * 1440 - 90, possible),
+        }, CancellationToken.None));
+        await rig.Repo(r => r.SaveRunsAsync(new[]
+        {
+            new ApplianceRun(0, big, T0.AddDays(-2), T0.AddDays(-2).AddHours(1), 500, 500, 1, 2),
+            new ApplianceRun(0, small, T0.AddDays(-1), T0.AddDays(-1).AddHours(1), 100, 100, 3, 4),
+            new ApplianceRun(0, ids["oldFrequent"], T0.AddDays(-10), T0.AddDays(-10).AddHours(1), 900, 900, 5, 6),
+        }, CancellationToken.None));
+        return ids;
+    }
+
+    [Fact]
+    public async Task Overview_ByDefault_ListsFrequentNamedOrPossibleSignatures_LargestSevenDayEnergyFirst()
+    {
+        using var rig = new Rig();
+        var main = await rig.AddAsync("d885ac0b743c", "Casa", PlugRole.MainMeter, PlugProtocols.ShellyRpc);
+        var fridge = await rig.AddAsync("aabbccddee01", "Frigider", PlugRole.Plug, PlugProtocols.Legacy);
+        var ids = await SeedSignaturesAsync(rig, main, fridge);
+        var svc = rig.Service();
+
+        var page = await svc.GetOverviewAsync(0, 0, CancellationToken.None);
+
+        page.Detected.Select(r => r.Signature.Id).Should().Equal(ids["big"], ids["small"], ids["oldFrequent"], ids["possible"], ids["named"]);
+        page.Detected[0].Last7DaysWh.Should().BeApproximately(500, 1e-6);
+        page.Detected[2].Last7DaysWh.Should().Be(0, "its only run is 10 days old");
+        page.Detected[2].Last30DaysWh.Should().BeApproximately(900, 1e-6);
+        page.Detected.Single(r => r.Signature.Id == ids["possible"]).PossiblePlug.Should().Be("Frigider");
+        page.DetectedTotal.Should().Be(7);
+        page.RareCount.Should().Be(2);
+        // Only the old rare one: not the new rare one, the one with the plug badge, the named one or the plug-measured one.
+        page.CleanableCount.Should().Be(1);
+        page.PlugMeasured.Should().ContainSingle().Which.Signature.Id.Should().Be(ids["measured"]);
+
+        var all = await svc.GetOverviewAsync(0, 0, CancellationToken.None, showRare: true);
+        all.Detected.Should().HaveCount(7);
+        all.ShowRare.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task CleanRare_DeletesOnlyOldRareSignatures_TheirEventsStayUnlinked()
+    {
+        using var rig = new Rig();
+        var main = await rig.AddAsync("d885ac0b743c", "Casa", PlugRole.MainMeter, PlugProtocols.ShellyRpc);
+        var fridge = await rig.AddAsync("aabbccddee01", "Frigider", PlugRole.Plug, PlugProtocols.Legacy);
+        var ids = await SeedSignaturesAsync(rig, main, fridge);
+        var svc = rig.Service();
+
+        (await svc.CleanRareSignaturesAsync(CancellationToken.None)).Should().Be(1);
+
+        var left = await rig.Repo(r => r.ListSignaturesAsync(CancellationToken.None));
+        left.Select(x => x.Id).Should().BeEquivalentTo(ids.Where(kv => kv.Key != "rareOld").Select(kv => kv.Value),
+            "the one with the „posibil Frigider” badge (2 events, 10 days old) and the named one stay");
+        var events = await rig.Repo(r => r.ListEventsAsync(T0.AddDays(-11), T0, CancellationToken.None));
+        events.Should().HaveCount(4, "the events are kept");
+        events.Where(e => e.SignatureId is null).Should().HaveCount(2, "the deleted signature's events, unlinked");
+        events.Where(e => e.SignatureId == ids["possible"]).Should().HaveCount(2);
+        (await svc.GetOverviewAsync(0, 0, CancellationToken.None)).CleanableCount.Should().Be(0);
+        (await svc.CleanRareSignaturesAsync(CancellationToken.None)).Should().Be(0);
     }
 
     [Fact]

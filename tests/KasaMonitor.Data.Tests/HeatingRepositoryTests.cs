@@ -40,6 +40,51 @@ public class HeatingRepositoryTests
     }
 
     [Fact]
+    public async Task SetDailyGas_OverwritesOnePurpose_CreatesTheRowWhenMissing()
+    {
+        using var db = new TestDbFactory();
+        var id = Guid.NewGuid();
+        var d1 = new DateOnly(2026, 11, 1);
+        var d2 = new DateOnly(2026, 11, 2);
+        await new HeatingRepository(db.CreateContext()).UpsertDailyAsync(new[]
+        {
+            new HeatingEnergyDay(id, d1, 1.4, 0.1, 12, null, null, null, "summary", 0.7, 0.1),
+        }, CancellationToken.None);
+
+        await new HeatingRepository(db.CreateContext()).SetDailyGasAsync(id, d1, "heating", 0.7, 0.7, CancellationToken.None);
+        await new HeatingRepository(db.CreateContext()).SetDailyGasAsync(id, d2, "dhw", 0.0, 0.0, CancellationToken.None);
+
+        var days = await new HeatingRepository(db.CreateContext()).ListDailyAsync(id, d1, d2, CancellationToken.None);
+        days.Select(d => (d.Day, d.GasHeatingMaxM3, d.GasHeatingLastM3, d.GasDhwMaxM3, d.GasDhwLastM3, d.HeatHeatingKwh)).Should().Equal(
+            (d1, (double?)0.7, (double?)0.7, (double?)0.1, (double?)0.1, (double?)12),
+            (d2, (double?)null, (double?)null, (double?)0.0, (double?)0.0, (double?)null));
+        var act = () => new HeatingRepository(db.CreateContext()).SetDailyGasAsync(id, d1, "power", 1, 1, CancellationToken.None);
+        await act.Should().ThrowAsync<ArgumentOutOfRangeException>();
+    }
+
+    [Fact]
+    public async Task SetDailyKwh_SetsOrClearsOneValue_MissingRowIsLeftAlone()
+    {
+        using var db = new TestDbFactory();
+        var id = Guid.NewGuid();
+        var d1 = new DateOnly(2026, 11, 1);
+        await new HeatingRepository(db.CreateContext()).UpsertDailyAsync(new[]
+        {
+            new HeatingEnergyDay(id, d1, 1.4, 0.1, 14, 1, 0.3, 0.02, "summary", 1.4, 0.1),
+        }, CancellationToken.None);
+
+        await new HeatingRepository(db.CreateContext()).SetDailyKwhAsync(id, d1, "heat", "heating", null, CancellationToken.None);
+        await new HeatingRepository(db.CreateContext()).SetDailyKwhAsync(id, d1, "power", "dhw", 0.05, CancellationToken.None);
+        await new HeatingRepository(db.CreateContext()).SetDailyKwhAsync(id, d1.AddDays(1), "heat", "dhw", 3, CancellationToken.None);
+
+        var days = await new HeatingRepository(db.CreateContext()).ListDailyAsync(id, d1, d1.AddDays(1), CancellationToken.None);
+        days.Select(d => (d.Day, d.HeatHeatingKwh, d.HeatDhwKwh, d.PowerHeatingKwh, d.PowerDhwKwh, d.GasHeatingMaxM3)).Should().Equal(
+            (d1, (double?)null, (double?)1, (double?)0.3, (double?)0.05, (double?)1.4));
+        var act = () => new HeatingRepository(db.CreateContext()).SetDailyKwhAsync(id, d1, "gas", "heating", 1, CancellationToken.None);
+        await act.Should().ThrowAsync<ArgumentOutOfRangeException>();
+    }
+
+    [Fact]
     public async Task Daily_KeepsHighestAndLast_TotalUsesLastForTodayAndHighestForClosedDays()
     {
         using var db = new TestDbFactory();

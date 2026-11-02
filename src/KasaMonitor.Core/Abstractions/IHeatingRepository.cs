@@ -32,6 +32,18 @@ public interface IHeatingRepository
     /// </summary>
     Task<IReadOnlyList<HeatingDayDecrease>> UpsertDailyAsync(IReadOnlyList<HeatingEnergyDay> days, CancellationToken ct);
 
+    /// <summary>
+    /// Overwrites the gas highest and last value of one purpose (<c>heating</c> / <c>dhw</c>) of a day, creating the row
+    /// when missing (the boiler's daily reset, the repair of a day holding the previous day's total).
+    /// </summary>
+    Task SetDailyGasAsync(Guid deviceId, DateOnly day, string purpose, double maxM3, double lastM3, CancellationToken ct);
+
+    /// <summary>
+    /// Overwrites one heat produced / boiler electricity value (<paramref name="kind"/> <c>heat</c> / <c>power</c>,
+    /// <paramref name="purpose"/> <c>heating</c> / <c>dhw</c>) of a day; null clears it. Nothing happens when the row is missing.
+    /// </summary>
+    Task SetDailyKwhAsync(Guid deviceId, DateOnly day, string kind, string purpose, double? kwh, CancellationToken ct);
+
     Task<IReadOnlyList<HeatingEnergyDay>> ListDailyAsync(Guid deviceId, DateOnly from, DateOnly to, CancellationToken ct);
 
     /// <summary>Gas: Σ highest of the days before <paramref name="today"/> + last value of today (and later); heat and electricity: Σ highest.</summary>

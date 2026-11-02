@@ -20,6 +20,7 @@
     </div>
     <div class="card-body">
         <ReportPeriodPicker Period="_period" PeriodChanged="OnPeriodChanged" Today="_today" />
+        <div class="small text-secondary mt-1">@ReportFormat.BoilerDayNote(Reports.BoilerTimeZone, Reports.TimeZone, _today)</div>
 
         @if (_error is { } err)
         {
@@ -119,6 +120,7 @@
 
     private const string SourcesNote =
         "Zile: istoricul construit de KasaMonitor din valoarea „azi” a centralei (începe la prima citire, 1 nov 2026; zilele dinainte nu există). " +
+        "Ziua e cea a centralei: Viessmann își resetează contoarele la miezul nopții ora Europei Centrale (01:00 ora României). " +
         "Ore (Zi): diferențele contorului „azi” între citirile la ~2 min. Lună: zilele salvate, cu totalul lunii din centrală ca verificare (ambele afișate când diferă > 5 %); " +
         "luna trecută: doar totalul centralei dacă lipsesc zilele. An: lunile din zile, restul anului din totalul anual al centralei. " +
         "Comparația cu perioada precedentă apare doar când ambele au date. Valorile sunt estimate de centrală, nu de un contor de gaz.";
@@ -137,7 +139,7 @@
 
     protected override async Task OnInitializedAsync()
     {
-        _today = Reports.Today();
+        _today = Reports.BoilerToday();
         _period = ReportPeriod.Containing(ReportGranularity.Month, _today);
         // Settings that cannot be read fall back to the defaults (factor 10.55, no prices) instead of a permanent spinner.
         try { _settings = await HeatingSettings.GetAsync(CancellationToken.None); }
@@ -154,7 +156,7 @@
         {
             _loadedFor = LastReadUtc;
             // A new reading changes only the period that holds today; a past period keeps its chart (no flicker).
-            if (_period.Contains(Reports.Today())) await LoadAsync();
+            if (_period.Contains(Reports.BoilerToday())) await LoadAsync();
         }
     }
 
@@ -174,7 +176,7 @@
     {
         try
         {
-            _today = Reports.Today();
+            _today = Reports.BoilerToday();
             var requested = _period;
             var report = await Reports.GetHeatingReportAsync(DeviceId, requested, CancellationToken.None);
             // A slower earlier request must not overwrite the period chosen since.

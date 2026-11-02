@@ -52,6 +52,14 @@
                 <label class="form-label" for="hRetention">Păstrează citirile centralei (zile, 0 = nelimitat)</label>
                 <input class="form-control" id="hRetention" @bind="_retentionDays" type="number" min="0" max="@HeatingSettingsService.MaxReadingsRetentionDays" />
             </div>
+            <div class="mb-2">
+                <label class="form-label" for="boilerTz">Fusul orar al centralei</label>
+                <input class="form-control" id="boilerTz" @bind="_boilerTz" autocomplete="off" spellcheck="false" placeholder="@BoilerClock.DefaultTimeZoneId" />
+                <div class="form-text">
+                    Ziua de consum a centralei se încheie la miezul nopții în acest fus; Viessmann folosește ora Europei Centrale
+                    (<code>@BoilerClock.DefaultTimeZoneId</code>: 00:00 CET = 01:00 ora României). Nume IANA.
+                </div>
+            </div>
             <div class="row g-2 mb-1">
                 <div class="col-sm-4">
                     <label class="form-label" for="gasPrice">Preț gaz (RON / kWh)</label>
@@ -92,6 +100,7 @@
     private double _factor;
     private string _unit = "m3";
     private int _retentionDays;
+    private string _boilerTz = BoilerClock.DefaultTimeZoneId;
     private bool _saved;
     private string? _error;
 
@@ -107,6 +116,7 @@
         _factor = _s.GasKwhPerM3;
         _unit = _s.GasUnitText;
         _retentionDays = _s.ReadingsRetentionDays;
+        _boilerTz = _s.BoilerTimeZoneId;
     }
 
     private async Task SaveAsync()
@@ -114,7 +124,8 @@
         _error = null;
         try
         {
-            await HeatingSettings.SaveAsync(new HeatingSettingsUpdate(_enabled, _clientId, _interval, _price, _unit, _factor, _retentionDays), CancellationToken.None);
+            await HeatingSettings.SaveAsync(new HeatingSettingsUpdate(_enabled, _clientId, _interval, _price, _unit, _factor, _retentionDays,
+                string.IsNullOrWhiteSpace(_boilerTz) ? BoilerClock.DefaultTimeZoneId : _boilerTz), CancellationToken.None);
             HeatingWorker.Wake();
             await LoadAsync();
             _saved = true;

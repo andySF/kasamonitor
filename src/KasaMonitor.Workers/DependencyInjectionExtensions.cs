@@ -24,9 +24,11 @@ public static class DependencyInjectionExtensions
         services.AddSingleton<ReadingsRetentionService>(sp => new ReadingsRetentionService(
             sp.GetRequiredService<IServiceScopeFactory>(),
             sp.GetRequiredService<Microsoft.Extensions.Logging.ILogger<ReadingsRetentionService>>()));
-        // Period reports of /history ("Casă") and /centrala ("Rapoarte"); the process time zone (TZ in the container).
+        // Period reports of /history ("Casă") and /centrala ("Rapoarte"); the process time zone (TZ in the container),
+        // the boiler reports in the boiler's zone (setting BoilerTimeZone, kept in HeatingState by the heating worker).
         services.AddSingleton(sp => new EnergyReportService(sp.GetRequiredService<IServiceScopeFactory>(),
-            log: sp.GetService<Microsoft.Extensions.Logging.ILogger<EnergyReportService>>()));
+            log: sp.GetService<Microsoft.Extensions.Logging.ILogger<EnergyReportService>>(),
+            boilerTimeZone: () => sp.GetService<HeatingState>()?.BoilerTimeZone ?? KasaMonitor.Core.Heating.BoilerClock.DefaultTimeZone));
         // "Restul casei" now: last whole minute, live stream or 10 s polls; computed once per minute for every page.
         services.AddSingleton(sp => new HouseRestService(sp.GetRequiredService<IServiceScopeFactory>(),
             sp.GetRequiredService<ILiveStreamBroadcaster>(), sp.GetRequiredService<IPlugStateBroadcaster>()));

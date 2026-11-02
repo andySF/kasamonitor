@@ -27,6 +27,9 @@ public enum HeatingPollResult
 /// publishes the snapshot for the UI and /metrics. After a failed call the next one waits 1×, 2×, 4× … the interval
 /// (at most 30 minutes, never less than the interval) until the first success; an HTTP 429 pauses until the reset
 /// time. An API 401 triggers one token refresh and one retry. Read-only: no command is ever sent to the boiler.
+/// Gas, electricity and heat are attributed to the boiler's day (setting <c>BoilerTimeZone</c>, <see cref="BoilerClock"/>);
+/// a lower gas value is the daily reset only by <see cref="BoilerClock.Classify"/>, and a day still holding the previous
+/// day's total is repaired at startup and once a day (<see cref="BoilerClock.RepairCurrentDay"/>).
 /// </summary>
 public sealed class HeatingPollWorker : BackgroundService
 {
@@ -46,6 +49,12 @@ public sealed class HeatingPollWorker : BackgroundService
     private readonly Func<TimeSpan, CancellationToken, Task> _wait;
     private bool _loaded;
     private DateTimeOffset _lastRetention = DateTimeOffset.MinValue;
+    // Daily gas guard (BoilerClock): the decreases already logged (once per
+    // purpose and boiler day), the last boiler day the repair ran on and the total drops already logged.
+    private readonly HashSet<(string Purpose, DateOnly Day)> _loggedDecreases = new();
+    private DateOnly? _lastRepairDay;
+    private readonly HashSet<(string Field, DateOnly Day)> _loggedTotalDrops = new();
+    private readonly HashSet<DateOnly> _loggedStale = new();
 
     /// <param name="wait">Test hook replacing the wait between cycles (default: the delay, cut short by <see cref="Wake"/>).</param>
     public HeatingPollWorker(IServiceScopeFactory scopeFactory, IHeatingSettingsService settings, ViessmannAuthService auth,
@@ -84,6 +93,7 @@ public sealed class HeatingPollWorker : BackgroundService
             {
                 var s = await _settings.GetAsync(ct);
                 _state.PollIntervalSeconds = s.PollIntervalSeconds;
+                _state.BoilerTimeZone = s.BoilerTimeZone;
                 await LoadStoredAsync(ct);
                 var result = await PollOnceAsync(ct);
                 failures = result switch { HeatingPollResult.CallFailed => failures + 1, HeatingPollResult.Read => 0, _ => failures };
@@ -144,13 +154,16 @@ public sealed class HeatingPollWorker : BackgroundService
             _loaded = true;
             return;
         }
+        var boilerTz = (await _settings.GetAsync(ct)).BoilerTimeZone;
+        _state.BoilerTimeZone = boilerTz;
+        await RepairOnceADayAsync(repo, device.Id, _clock(), boilerTz, ct);
         HeatingSnapshot? snapshot = null;
         if (await repo.GetRawAsync(device.Id, ct) is { } raw)
         {
             try { snapshot = HeatingFeatureParser.Parse(raw.Json, raw.TsUtc); }
             catch (JsonException) { }
         }
-        _state.Publish(new HeatingLive(device, snapshot, await repo.GetTotalsAsync(device.Id, HeatingEnergy.DayOf(_clock(), _tz), ct),
+        _state.Publish(new HeatingLive(device, snapshot, await repo.GetTotalsAsync(device.Id, BoilerClock.DayOf(_clock(), boilerTz), ct),
             device.LastSeenUtc, device.LastError, LastPollOk: false, await repo.ListPeriodsAsync(device.Id, ct)));
         // Only now: a failure above is retried at the next cycle.
         _loaded = true;
@@ -163,6 +176,8 @@ public sealed class HeatingPollWorker : BackgroundService
         if (!s.HeatingEnabled) { _state.SetStatus("Centrala e dezactivată în Setări."); return HeatingPollResult.NotCalled; }
         if (!s.HasClientId) { _state.SetStatus("Lipsește Client ID-ul Viessmann (Setări → Centrală)."); return HeatingPollResult.NotCalled; }
         if (s.Token is null) { _state.SetStatus(s.AuthError ?? "Contul ViCare nu e conectat."); return HeatingPollResult.NotCalled; }
+        var boilerTz = s.BoilerTimeZone;
+        _state.BoilerTimeZone = boilerTz;
 
         HeatingDevice? device = _state.Current?.Device;
         try
@@ -192,16 +207,15 @@ public sealed class HeatingPollWorker : BackgroundService
                 var repo = scope.ServiceProvider.GetRequiredService<IHeatingRepository>();
                 await repo.SaveRawAsync(device.Id, now, json, ct);
                 await repo.SaveReadingAsync(HeatingReading.From(device.Id, snapshot, s.GasKwhPerM3, s.GasUnit), ct);
-                var decreases = await repo.UpsertDailyAsync(HeatingEnergyBuilder.Days(device.Id, snapshot, _tz, s.GasKwhPerM3, s.GasUnit), ct);
-                foreach (var d in decreases)
-                    _log.LogInformation(
-                        "Heating gas {Purpose} for {Day}: received {Received} m3 < stored highest {Max} m3 (last {Last} m3) at {Local} local; boiler counter reset or correction (feature timestamp {FeatureTs})",
-                        d.Purpose, d.Day.ToString("yyyy-MM-dd"), d.ReceivedM3, d.StoredMaxM3, d.StoredLastM3,
-                        TimeZoneInfo.ConvertTime(now, _tz).ToString("yyyy-MM-dd HH:mm:ss"),
-                        d.Purpose == HeatingKinds.Heating ? snapshot.GasHeating?.FeatureTs : snapshot.GasDhw?.FeatureTs);
+                await WriteDaysAsync(repo, device.Id, snapshot, HeatingEnergyBuilder.Days(device.Id, snapshot, boilerTz, s.GasKwhPerM3, s.GasUnit),
+                    now, boilerTz, ct);
+                await RepairOnceADayAsync(repo, device.Id, now, boilerTz, ct);
                 await repo.UpsertPeriodsAsync(periods, ct);
                 await repo.UpdateDeviceStatusAsync(device.Id, now, null, ct);
-                totals = await repo.GetTotalsAsync(device.Id, HeatingEnergy.DayOf(now, _tz), ct);
+                var boilerToday = BoilerClock.DayOf(now, boilerTz);
+                var published = _state.Current is { } cur && cur.Device.Id == device.Id ? cur.Totals : null;
+                totals = await repo.GetTotalsAsync(device.Id, boilerToday, ct);
+                WarnIfLower(published, totals, boilerToday);
                 if (s.ReadingsRetentionDays > 0 && now - _lastRetention > TimeSpan.FromHours(24))
                 {
                     _lastRetention = now;
@@ -240,6 +254,171 @@ public sealed class HeatingPollWorker : BackgroundService
             return HeatingPollResult.CallFailed;
         }
     }
+
+    /// <summary>
+    /// Writes the daily rows of one reading. The "currentDay" values of the reading's boiler day that are still the
+    /// previous day's total (<see cref="BoilerClock.IsStale"/>, first 30 minutes after the boiler's midnight) go to the
+    /// previous day instead (they may raise it) and the new day gets nothing from them. The remaining gas values go
+    /// through <see cref="BoilerClock.Classify"/>: a reset overwrites the target day with the new value (and, just after
+    /// midnight, carries the stored highest to the previous day); any other drop leaves the day as it is (highest and
+    /// last, so the total never goes down) and is logged at Warning once per purpose and boiler day.
+    /// </summary>
+    private async Task WriteDaysAsync(IHeatingRepository repo, Guid deviceId, HeatingSnapshot snapshot, IReadOnlyList<HeatingEnergyDay> days,
+        DateTimeOffset now, TimeZoneInfo boilerTz, CancellationToken ct)
+    {
+        var readDay = BoilerClock.DayOf(now, boilerTz);
+        var prevDay = readDay.AddDays(-1);
+        var rows = new List<HeatingEnergyDay>(days.Count);
+        foreach (var d in days)
+        {
+            var row = d;
+            if (d.Day == readDay && d.Source == HeatingKinds.SourceSummary)
+            {
+                var stored = await repo.ListDailyAsync(deviceId, prevDay, readDay, ct);
+                var today = stored.FirstOrDefault(x => x.Day == readDay);
+                var previous = stored.FirstOrDefault(x => x.Day == prevDay);
+
+                // Yesterday's total still read after the boiler's midnight: it belongs to yesterday.
+                if (previous is not null)
+                {
+                    var stale = new List<string>();
+                    bool Stale(double? value, double? prevMax, double? prevLast, double minPrevious = BoilerClock.StaleMinPreviousM3) =>
+                        value is { } v && BoilerClock.IsStale(v, prevMax, prevLast, now, boilerTz, minPrevious);
+                    foreach (var (purpose, value, prevMax, prevLast) in new[]
+                             {
+                                 (HeatingKinds.Heating, d.GasHeatingMaxM3, previous.GasHeatingMaxM3, previous.GasHeatingLastM3),
+                                 (HeatingKinds.Dhw, d.GasDhwMaxM3, previous.GasDhwMaxM3, previous.GasDhwLastM3),
+                             })
+                    {
+                        if (!Stale(value, prevMax, prevLast)) continue;
+                        var v = value!.Value;
+                        await repo.SetDailyGasAsync(deviceId, prevDay, purpose, Math.Max(prevMax ?? v, v), Math.Max(prevLast ?? prevMax ?? v, v), ct);
+                        row = purpose == HeatingKinds.Heating ? row with { GasHeatingMaxM3 = null, GasHeatingLastM3 = null } : row with { GasDhwMaxM3 = null, GasDhwLastM3 = null };
+                        stale.Add($"gas {purpose} {v}");
+                    }
+                    // Heat and electricity keep the day's highest: a stale value would stay on the new day for good.
+                    var toPrevious = new HeatingEnergyDay(deviceId, prevDay, null, null,
+                        Stale(d.HeatHeatingKwh, previous.HeatHeatingKwh, null, BoilerClock.StaleMinPreviousHeatKwh) ? d.HeatHeatingKwh : null,
+                        Stale(d.HeatDhwKwh, previous.HeatDhwKwh, null, BoilerClock.StaleMinPreviousHeatKwh) ? d.HeatDhwKwh : null,
+                        Stale(d.PowerHeatingKwh, previous.PowerHeatingKwh, null, BoilerClock.StaleMinPreviousPowerKwh) ? d.PowerHeatingKwh : null,
+                        Stale(d.PowerDhwKwh, previous.PowerDhwKwh, null, BoilerClock.StaleMinPreviousPowerKwh) ? d.PowerDhwKwh : null,
+                        previous.Source);
+                    if (toPrevious.HeatHeatingKwh is not null || toPrevious.HeatDhwKwh is not null || toPrevious.PowerHeatingKwh is not null || toPrevious.PowerDhwKwh is not null)
+                    {
+                        rows.Add(toPrevious);
+                        row = row with
+                        {
+                            HeatHeatingKwh = toPrevious.HeatHeatingKwh is null ? row.HeatHeatingKwh : null,
+                            HeatDhwKwh = toPrevious.HeatDhwKwh is null ? row.HeatDhwKwh : null,
+                            PowerHeatingKwh = toPrevious.PowerHeatingKwh is null ? row.PowerHeatingKwh : null,
+                            PowerDhwKwh = toPrevious.PowerDhwKwh is null ? row.PowerDhwKwh : null,
+                        };
+                        stale.Add("heat/electricity");
+                    }
+                    if (stale.Count > 0 && _loggedStale.Add(readDay))
+                        _log.LogInformation(
+                            "Heating: {Values} read at {Boiler} boiler time ({Local} local) is still {Previous}'s total: kept on {KeptOn}, {Day} starts with the first lower value (logged once a day)",
+                            string.Join(", ", stale), Local(now, boilerTz), Local(now, _tz), prevDay.ToString("yyyy-MM-dd"), prevDay.ToString("yyyy-MM-dd"),
+                            readDay.ToString("yyyy-MM-dd"));
+                }
+
+                foreach (var purpose in new[] { HeatingKinds.Heating, HeatingKinds.Dhw })
+                {
+                    var heating = purpose == HeatingKinds.Heating;
+                    if ((heating ? row.GasHeatingMaxM3 : row.GasDhwMaxM3) is not { } received) continue;
+                    var storedMax = heating ? today?.GasHeatingMaxM3 : today?.GasDhwMaxM3;
+                    var storedLast = heating ? today?.GasHeatingLastM3 : today?.GasDhwLastM3;
+                    var decision = BoilerClock.Classify(received, storedMax, readDay, now, boilerTz);
+                    var featureTs = heating ? snapshot.GasHeating?.FeatureTs : snapshot.GasDhw?.FeatureTs;
+                    if (decision.Action == GasDayAction.IgnoredDecrease)
+                    {
+                        // The day keeps its value (highest and last): the total never goes down because of a drop.
+                        row = heating ? row with { GasHeatingMaxM3 = null, GasHeatingLastM3 = null } : row with { GasDhwMaxM3 = null, GasDhwLastM3 = null };
+                        if (_loggedDecreases.Add((purpose, readDay)))
+                            _log.LogWarning(
+                                "Heating gas {Purpose} for {Day}: received {Received} m3 < stored highest {Max} m3 (last {Last} m3) at {Boiler} boiler time ({Local} local); not the daily reset (only 23:45-00:30 boiler time): the day is kept until the boiler's value passes it, logged once a day (feature timestamp {FeatureTs})",
+                                purpose, readDay.ToString("yyyy-MM-dd"), received, storedMax, storedLast, Local(now, boilerTz), Local(now, _tz), featureTs);
+                    }
+                    else if (decision.Action == GasDayAction.Reset)
+                    {
+                        row = heating ? row with { GasHeatingMaxM3 = null, GasHeatingLastM3 = null } : row with { GasDhwMaxM3 = null, GasDhwLastM3 = null };
+                        await repo.SetDailyGasAsync(deviceId, decision.TargetDay, purpose, received, received, ct);
+                        var carried = "";
+                        if (decision.CarryToPreviousDay && storedMax is { } leaked)
+                        {
+                            var (prevMax, prevLast) = BoilerClock.CarryToPrevious(heating ? previous?.GasHeatingMaxM3 : previous?.GasDhwMaxM3,
+                                heating ? previous?.GasHeatingLastM3 : previous?.GasDhwLastM3, leaked);
+                            await repo.SetDailyGasAsync(deviceId, readDay.AddDays(-1), purpose, prevMax, prevLast, ct);
+                            carried = $"; {readDay.AddDays(-1):yyyy-MM-dd} = {prevMax} m3";
+                        }
+                        _log.LogInformation(
+                            "Heating gas {Purpose}: boiler reset accepted at {Boiler} boiler time ({Local} local): {Day} = {Received} m3 (stored highest {Max} m3){Carried} (feature timestamp {FeatureTs})",
+                            purpose, Local(now, boilerTz), Local(now, _tz), decision.TargetDay.ToString("yyyy-MM-dd"), received, storedMax, carried, featureTs);
+                    }
+                }
+            }
+            // A row whose every value went to the previous day (stale) or to a reset target is not written.
+            if (row.GasHeatingMaxM3 is not null || row.GasDhwMaxM3 is not null || row.HeatHeatingKwh is not null || row.HeatDhwKwh is not null
+                || row.PowerHeatingKwh is not null || row.PowerDhwKwh is not null)
+                rows.Add(row);
+        }
+        await repo.UpsertDailyAsync(rows, ct);
+    }
+
+    /// <summary>The repair of the current boiler day (<see cref="BoilerClock.RepairCurrentDay"/>), once per boiler day, 30 minutes after its midnight.</summary>
+    private async Task RepairOnceADayAsync(IHeatingRepository repo, Guid deviceId, DateTimeOffset now, TimeZoneInfo boilerTz, CancellationToken ct)
+    {
+        var today = BoilerClock.DayOf(now, boilerTz);
+        if (_lastRepairDay == today || now - BoilerClock.MidnightUtc(today, boilerTz) <= BoilerClock.RepairAfterMidnight) return;
+        var rows = await repo.ListDailyAsync(deviceId, today.AddDays(-1), today, ct);
+        var fixes = BoilerClock.RepairCurrentDay(rows.FirstOrDefault(r => r.Day == today.AddDays(-1)), rows.FirstOrDefault(r => r.Day == today), now, boilerTz);
+        foreach (var f in fixes)
+        {
+            await repo.SetDailyGasAsync(deviceId, f.Day.AddDays(-1), f.Purpose, f.NewPreviousMaxM3, f.NewPreviousLastM3, ct);
+            await repo.SetDailyGasAsync(deviceId, f.Day, f.Purpose, f.CurrentLastM3, f.CurrentLastM3, ct);
+            _log.LogInformation(
+                "Heating gas {Purpose}: repaired {Day} (highest {Max} m3 > last {Last} m3 held the previous day's total): {Previous} = highest {PrevMax} m3 / last {PrevLast} m3 (was {OldPrevMax} / {OldPrevLast}), the day keeps {Kept} m3",
+                f.Purpose, f.Day.ToString("yyyy-MM-dd"), f.CurrentMaxM3, f.CurrentLastM3, f.Day.AddDays(-1).ToString("yyyy-MM-dd"),
+                f.NewPreviousMaxM3, f.NewPreviousLastM3, f.PreviousMaxM3, f.PreviousLastM3, f.CurrentLastM3);
+        }
+        // The same day also holds yesterday's heat produced and electricity (kept as the day's highest).
+        if (fixes.Count > 0 && rows.FirstOrDefault(r => r.Day == today) is { } current)
+        {
+            foreach (var k in BoilerClock.RepairCurrentDayKwh(rows.FirstOrDefault(r => r.Day == today.AddDays(-1)), current))
+            {
+                await repo.SetDailyKwhAsync(deviceId, k.Day.AddDays(-1), k.Kind, k.Purpose, k.NewPreviousKwh, ct);
+                await repo.SetDailyKwhAsync(deviceId, k.Day, k.Kind, k.Purpose, null, ct);
+                _log.LogInformation(
+                    "Heating {Kind} {Purpose}: repaired {Day} ({Current} kWh = the previous day's {PreviousValue} kWh): {Previous} = {NewPrevious} kWh, the day is filled again by the next reading",
+                    k.Kind, k.Purpose, k.Day.ToString("yyyy-MM-dd"), k.CurrentKwh, k.PreviousKwh, k.Day.AddDays(-1).ToString("yyyy-MM-dd"), k.NewPreviousKwh);
+            }
+        }
+        _lastRepairDay = today;
+    }
+
+    /// <summary>
+    /// The totals are always the ones computed from the database (Σ highest of the closed boiler days + last value of
+    /// today); a field lower than the previous one (a correction, a repair) is logged at Warning once per field and
+    /// boiler day. The <c>_total</c> counters themselves never go down (<c>IncTo</c>).
+    /// </summary>
+    private void WarnIfLower(HeatingEnergyTotals? previous, HeatingEnergyTotals current, DateOnly boilerDay)
+    {
+        if (previous is null) return;
+        void Check(string field, double old, double now)
+        {
+            if (now < old - 1e-9 && _loggedTotalDrops.Add((field, boilerDay)))
+                _log.LogWarning("Heating total {Field} dropped from {Previous} to {Current} on {Day} (stored days changed); the /metrics counter waits until the sum passes {Previous} again (logged once a day)",
+                    field, old, now, boilerDay.ToString("yyyy-MM-dd"), old);
+        }
+        Check("gas heating m3", previous.GasHeatingM3, current.GasHeatingM3);
+        Check("gas dhw m3", previous.GasDhwM3, current.GasDhwM3);
+        Check("heat heating kWh", previous.HeatHeatingKwh, current.HeatHeatingKwh);
+        Check("heat dhw kWh", previous.HeatDhwKwh, current.HeatDhwKwh);
+        Check("power heating kWh", previous.PowerHeatingKwh, current.PowerHeatingKwh);
+        Check("power dhw kWh", previous.PowerDhwKwh, current.PowerDhwKwh);
+    }
+
+    private static string Local(DateTimeOffset utc, TimeZoneInfo tz) => TimeZoneInfo.ConvertTime(utc, tz).ToString("yyyy-MM-dd HH:mm:ss");
 
     /// <summary>The boiler of the account (one call); <c>Called</c> = false when the budget did not allow the call.</summary>
     private async Task<(HeatingDevice? Device, bool Called)> DiscoverAsync(CancellationToken ct)

@@ -336,7 +336,7 @@ public class HeatingReportBuilderTests
         var readings = new[]
         {
             new HeatingCounterReading(midnight.AddMinutes(-2), 3.0, 0.4, 0.50, 30),   // 23:58 the day before
-            new HeatingCounterReading(midnight.AddMinutes(2), 3.1, 0.4, 0.52, 31),    // 00:02: not reset yet, +0.1
+            new HeatingCounterReading(midnight.AddMinutes(2), 3.1, 0.4, 0.52, 31),    // 00:02: not reset yet: yesterday's total, +0
             new HeatingCounterReading(midnight.AddMinutes(10), 0.1, 0.0, 0.01, 1),    // 00:10: reset → +0.1
             new HeatingCounterReading(midnight.AddHours(7).AddMinutes(1), 0.3, 0.2, 0.05, 3), // 07:01: +0.2 / +0.2
             new HeatingCounterReading(midnight.AddHours(7).AddMinutes(3), null, null, null, null), // no counters (older version)
@@ -349,15 +349,15 @@ public class HeatingReportBuilderTests
         r.Buckets.Should().HaveCount(24);
         var heating = r.Gas.Series.Single(s => s.Key == "heating").Values;
         var dhw = r.Gas.Series.Single(s => s.Key == "dhw").Values;
-        heating[0].Should().BeApproximately(0.2, 1e-9);
+        heating[0].Should().BeApproximately(0.1, 1e-9, "only the use after the reset; the stale 3.1 at 00:02 adds nothing");
         dhw[0].Should().BeApproximately(0.0, 1e-9);
         heating[7].Should().BeApproximately(0.4, 1e-9);
         dhw[7].Should().BeApproximately(0.2, 1e-9);
         heating[3].Should().BeNull();
         r.Power.Series.Should().ContainSingle().Which.Key.Should().Be("total");
-        r.Power.Series[0].Values[0].Should().BeApproximately(0.02 + 0.01, 1e-9);
+        r.Power.Series[0].Values[0].Should().BeApproximately(0.01, 1e-9);
         // No stored day for 02.11 → Σ of the hours; the day before is stored → compared.
-        r.Gas.OwnTotal.Should().BeApproximately(0.8, 1e-9);
+        r.Gas.OwnTotal.Should().BeApproximately(0.7, 1e-9);
         r.Gas.PreviousTotal.Should().BeApproximately(3.4, 1e-9);
     }
 
@@ -368,10 +368,13 @@ public class HeatingReportBuilderTests
         var midnight = new DateTimeOffset(2026, 11, 1, 22, 0, 0, TimeSpan.Zero);
         var readings = new[]
         {
+            new HeatingCounterReading(midnight.AddMinutes(-2), 2.5, 0.5, null, null),               // 23:58 the day before
+            new HeatingCounterReading(midnight.AddMinutes(5), 0.1, 0.5, null, null),                // 00:05: the daily reset
+            new HeatingCounterReading(midnight.AddHours(13).AddMinutes(58), 3.2, 0.5, null, null),  // 13:58
             new HeatingCounterReading(midnight.AddHours(14), 3.2, 0.5, null, null),                 // 14:00
             new HeatingCounterReading(midnight.AddHours(14).AddMinutes(2), 3.1, 0.5, null, null),   // correction: ignored
             new HeatingCounterReading(midnight.AddHours(14).AddMinutes(4), 3.3, 0.5, null, null),   // +0.1 over 3.2
-            new HeatingCounterReading(midnight.AddHours(15), 0.1, 0.5, null, null),                 // < 20 % but 15:00: not a reset
+            new HeatingCounterReading(midnight.AddHours(15), 0.1, 0.5, null, null),                 // < 20 % at 15:00, but a reset 15 h before: not a reset
             new HeatingCounterReading(midnight.AddHours(15).AddMinutes(2), 3.4, 0.5, null, null),   // +0.1 over 3.3
         };
 
@@ -386,17 +389,66 @@ public class HeatingReportBuilderTests
         r.IgnoredDecreases[1].Previous.Should().Be(3.3);
     }
 
-    [Theory]
-    [InlineData(23, 50, 0.1, true)]
-    [InlineData(0, 30, 0.1, true)]
-    [InlineData(0, 31, 0.1, false)]   // outside the window
-    [InlineData(23, 49, 0.1, false)]
-    [InlineData(0, 5, 0.7, false)]    // 0.7 ≥ 20 % of 3.0: a correction
-    public void IsReset_OnlyUnder20PercentAroundMidnight(int hour, int minute, double value, bool reset)
+    [Fact]
+    public void Day_UnderTwentyPercentWithoutAResetIn20Hours_IsTheReset()
     {
-        var local = new DateTime(2026, 11, 2, hour, minute, 0);
-        var utc = new DateTimeOffset(local, Ro.GetUtcOffset(local));
-        HeatingReportBuilder.IsReset(3.0, value, utc, Ro).Should().Be(reset);
+        var day = ReportPeriod.Containing(ReportGranularity.Day, new DateOnly(2026, 11, 2));
+        var midnight = new DateTimeOffset(2026, 11, 1, 22, 0, 0, TimeSpan.Zero);
+        var readings = new[]
+        {
+            new HeatingCounterReading(midnight.AddHours(14), 3.2, null, null, null),
+            new HeatingCounterReading(midnight.AddHours(14).AddMinutes(2), 0.1, null, null, null),  // a late reset: counts 0.1
+            new HeatingCounterReading(midnight.AddHours(14).AddMinutes(4), 0.3, null, null, null),
+            new HeatingCounterReading(midnight.AddHours(15), 0.05, null, null, null),               // a second one within 20 h: ignored
+        };
+
+        var r = HeatingReportBuilder.Build(Input(day, readings: readings));
+
+        r.Gas.Series.Single(s => s.Key == "heating").Values[14].Should().BeApproximately(0.3, 1e-9);
+        r.IgnoredDecreases.Should().ContainSingle().Which.Received.Should().Be(0.05);
+    }
+
+    [Fact]
+    public void Day_InTheBoilerZone_RunsFrom01To01RomanianTime_TheResetAt0104Counts()
+    {
+        // The boiler's day 2 Nov = 00:00–24:00 CET = 01:00 (2 Nov) – 01:00 (3 Nov) Romanian time.
+        var cet = KasaMonitor.Core.Heating.BoilerClock.DefaultTimeZone;
+        var day = ReportPeriod.Containing(ReportGranularity.Day, new DateOnly(2026, 11, 2));
+        var boilerMidnight = new DateTimeOffset(2026, 11, 1, 23, 0, 0, TimeSpan.Zero);
+        var readings = new[]
+        {
+            new HeatingCounterReading(boilerMidnight.AddMinutes(-30), 1.3, 0.1, null, null),  // 00:30 RO: still 1 Nov for the boiler
+            new HeatingCounterReading(boilerMidnight.AddMinutes(1), 1.4, 0.1, null, null),    // 01:01 RO: not reset yet, yesterday's total (+0)
+            new HeatingCounterReading(boilerMidnight.AddMinutes(4), 0.0, 0.0, null, null),    // 01:04 RO = 00:04 CET: the reset
+            new HeatingCounterReading(boilerMidnight.AddHours(2), 0.7, 0.0, null, null),      // 03:00 RO: +0.7
+        };
+        var input = new HeatingReportInput(day, cet, new DateOnly(2026, 11, 2), Array.Empty<HeatingEnergyDay>(), Array.Empty<HeatingMonthSums>(),
+            Array.Empty<HeatingEnergyPeriod>(), readings, new DateOnly(2026, 11, 1), DisplayTz: Ro);
+
+        var r = HeatingReportBuilder.Build(input);
+
+        r.Buckets.Should().HaveCount(24);
+        r.Buckets[0].StartUtc.Should().Be(boilerMidnight);
+        r.Buckets[0].LocalStart.Hour.Should().Be(1, "labelled in Romanian time");
+        r.Buckets[^1].LocalStart.Hour.Should().Be(0);
+        var heating = r.Gas.Series.Single(s => s.Key == "heating").Values;
+        heating[0].Should().BeApproximately(0.0, 1e-9, "the stale 1.4 belongs to 1 Nov, like in the daily rows");
+        heating[2].Should().BeApproximately(0.7, 1e-9);
+        r.IgnoredDecreases.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void Day_InJuly_TheBoilerDayStillEndsAt01RomanianTime()
+    {
+        var cet = KasaMonitor.Core.Heating.BoilerClock.DefaultTimeZone;
+        var day = ReportPeriod.Containing(ReportGranularity.Day, new DateOnly(2026, 7, 15));
+        var input = new HeatingReportInput(day, cet, new DateOnly(2026, 7, 15), Array.Empty<HeatingEnergyDay>(), Array.Empty<HeatingMonthSums>(),
+            Array.Empty<HeatingEnergyPeriod>(), Array.Empty<HeatingCounterReading>(), null, DisplayTz: Ro);
+
+        var r = HeatingReportBuilder.Build(input);
+
+        r.Buckets[0].StartUtc.Should().Be(new DateTimeOffset(2026, 7, 14, 22, 0, 0, TimeSpan.Zero));  // 00:00 CEST = 01:00 EEST
+        r.Buckets[0].LocalStart.Hour.Should().Be(1);
     }
 
     [Fact]

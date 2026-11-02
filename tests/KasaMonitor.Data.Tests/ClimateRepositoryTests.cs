@@ -1,5 +1,6 @@
 using FluentAssertions;
 using KasaMonitor.Core.Climate;
+using KasaMonitor.Core.History;
 using KasaMonitor.Data.Repositories;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
@@ -22,11 +23,48 @@ public class ClimateRepositoryTests
         ctx.GetService<Microsoft.EntityFrameworkCore.Migrations.IMigrator>().Migrate("20261102121526_AddMieleCycleSource");
         var before = ctx.Database.SqlQueryRaw<string>("SELECT name AS Value FROM sqlite_master WHERE type='table' ORDER BY name").ToList();
 
-        ctx.Database.Migrate();
+        ctx.GetService<Microsoft.EntityFrameworkCore.Migrations.IMigrator>().Migrate("20261102130647_AddClimate");
 
         var after = ctx.Database.SqlQueryRaw<string>("SELECT name AS Value FROM sqlite_master WHERE type='table' ORDER BY name").ToList();
         after.Except(before).Should().BeEquivalentTo("ClimateSensors", "ClimateReadings");
         before.Except(after).Should().BeEmpty();
+    }
+
+    [Fact]
+    public void AddClimateDaily_OnTopOf091_OnlyAddsTheDailyTable()
+    {
+        using var conn = new SqliteConnection("Filename=:memory:");
+        conn.Open();
+        using var ctx = new KasaDbContext(new DbContextOptionsBuilder<KasaDbContext>().UseSqlite(conn).Options);
+        ctx.GetService<Microsoft.EntityFrameworkCore.Migrations.IMigrator>().Migrate("20261102150000_AddPlugAppliance");
+        var before = ctx.Database.SqlQueryRaw<string>("SELECT name AS Value FROM sqlite_master WHERE type='table' ORDER BY name").ToList();
+
+        ctx.Database.Migrate();
+
+        var after = ctx.Database.SqlQueryRaw<string>("SELECT name AS Value FROM sqlite_master WHERE type='table' ORDER BY name").ToList();
+        after.Except(before).Should().BeEquivalentTo("ClimateDaily");
+        before.Except(after).Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Daily_UpsertListLast_AndTheFirstReadingPerSensor()
+    {
+        using var db = new TestDbFactory();
+        var repo = new ClimateRepository(db.CreateContext());
+        var s = await repo.GetOrAddSensorAsync(ClimateSources.Govee, "AA:BB:CC:DD:EE:FF:00:31", "Baie", "Baie", false, Ct);
+        await repo.AddReadingAsync(new ClimateReading(s.Id, T0, 21, 50, null), Ct);
+        await repo.AddReadingAsync(new ClimateReading(s.Id, T0.AddDays(-3), 20, 50, null), Ct);
+        var d1 = new DateOnly(2026, 11, 1);
+        var stats = new ClimateStats(19, 20.5, 22, 40, 45, 50, 30);
+        await repo.UpsertDailyAsync(new[] { new ClimateDayStats(s.Id, d1, stats), new ClimateDayStats(s.Id, d1.AddDays(1), ClimateStats.Empty) }, Ct);
+        await repo.UpsertDailyAsync(new[] { new ClimateDayStats(s.Id, d1, stats with { AvgC = 20.7 }) }, Ct);   // an update, not a second row
+
+        var days = await repo.ListDailyAsync(new[] { s.Id }, d1, d1.AddDays(5), Ct);
+        days.Should().HaveCount(2);
+        days[0].Stats.Should().Be(stats with { AvgC = 20.7 });
+        days[1].Stats.Should().Be(ClimateStats.Empty);
+        (await repo.LastDailyDaysAsync(Ct))[s.Id].Should().Be(d1.AddDays(1));
+        (await repo.FirstReadingsAsync(Ct))[s.Id].Should().Be(T0.AddDays(-3));
     }
 
     [Fact]

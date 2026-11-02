@@ -2,6 +2,7 @@ using FluentAssertions;
 using KasaMonitor.Core.Heating;
 using KasaMonitor.Core.Home;
 using KasaMonitor.Core.Models;
+using KasaMonitor.Core.Nilm;
 using KasaMonitor.Core.Reports;
 using KasaMonitor.Data;
 using KasaMonitor.Data.Entities;
@@ -77,14 +78,19 @@ public class HomeServiceTests : IDisposable
         await ctx.SaveChangesAsync();
     }
 
-    private HomeService Service(Func<DateTimeOffset, DateTimeOffset, CancellationToken, Task<IReadOnlyList<ApplianceEnergyRow>>>? detected = null,
-        TimeZoneInfo? boiler = null, HeatingState? heating = null)
+    private static readonly ApplianceSignature BoilerSig = new(7, "Boiler", "bi-droplet", "boiler", 2000, 0, 1, 10, null, SignatureLabelSource.User, null, false);
+
+    /// <summary>The detected „Boiler”: 300 Wh today, spread over 10 hours (never more than the rest of an hour).</summary>
+    private static (IReadOnlyDictionary<long, ApplianceSignature>, IReadOnlyList<ApplianceRun>, DateTimeOffset) BoilerRuns() =>
+        (new Dictionary<long, ApplianceSignature> { [7] = BoilerSig },
+            new[] { new ApplianceRun(1, 7, TodayStart.AddHours(1), TodayStart.AddHours(11), 30, 300, 1, 2) }, Now);
+
+    private HomeService Service(DetectedRunsProvider? detected = null, TimeZoneInfo? boiler = null, HeatingState? heating = null)
     {
         var scopes = new TestScopeFactory(Create);
         var reports = new EnergyReportService(scopes, Ro, () => _now, boilerTimeZone: () => boiler ?? Ro);
         return new HomeService(scopes, reports, TestSettings.Create(scopes), heating: heating, clock: () => _now,
-            detectedEnergy: detected ?? ((_, _, _) => Task.FromResult<IReadOnlyList<ApplianceEnergyRow>>(
-                new[] { new ApplianceEnergyRow(7, "Boiler", "boiler", "bi-droplet", 300) })));
+            detectedRuns: detected ?? ((_, _, _) => Task.FromResult(BoilerRuns())));
     }
 
     [Fact]
@@ -122,6 +128,30 @@ public class HomeServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task Flows_TodayGiveTheSameDetectedAndUndetectedAsTheHistorysConsumers()
+    {
+        // One scaling rule, bar by bar (review R8): the home page and /history „Consumatori” agree for „Azi”.
+        await SeedAsync();
+        var scopes = new TestScopeFactory(Create);
+        var reports = new EnergyReportService(scopes, Ro, () => _now);
+        var today = ReportPeriod.Containing(ReportGranularity.Day, new DateOnly(2026, 11, 2));
+        // 2 kWh in one hour: more than the rest of that hour (0,09 kWh) — it must be scaled the same way on both pages.
+        DetectedRunsProvider runs = (_, _, _) => Task.FromResult<(IReadOnlyDictionary<long, ApplianceSignature>, IReadOnlyList<ApplianceRun>, DateTimeOffset)>(
+            (new Dictionary<long, ApplianceSignature> { [7] = BoilerSig },
+                new[] { new ApplianceRun(1, 7, TodayStart.AddHours(9), TodayStart.AddHours(10), 2000, 2000, 1, 2) }, Now));
+
+        var home = await Service(detected: runs).GetAsync(today, CancellationToken.None);
+        var history = await new HistoryService(scopes, reports, new RawClimateDailyStats(scopes), detectedRuns: runs, clock: () => _now)
+            .GetDetectedAsync(today, CancellationToken.None);
+
+        var boiler = home.Flows!.Rows.Single(r => r.Name == "Boiler").Kwh;
+        boiler.Should().BeApproximately(0.09, 1e-9, "scaled to the rest of its hour");
+        history.Breakdown.KwhOf(KasaMonitor.Core.History.ConsumerKind.IdentifiedDetected).Should().BeApproximately(boiler, 1e-9);
+        history.Breakdown.KwhOf(KasaMonitor.Core.History.ConsumerKind.Undetected).Should().BeApproximately(home.Flows.UndetectedKwh, 1e-9);
+        home.Flows.DetectedScaled.Should().BeTrue();
+    }
+
+    [Fact]
     public async Task Flows_ASingleAppliancePlug_StandsForItsAppliance_TheReportKeepsTheAlias()
     {
         await SeedAsync();
@@ -156,7 +186,8 @@ public class HomeServiceTests : IDisposable
     {
         await SeedAsync();
         var calls = 0;
-        var gate = new TaskCompletionSource<IReadOnlyList<ApplianceEnergyRow>>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var gate = new TaskCompletionSource<(IReadOnlyDictionary<long, ApplianceSignature>, IReadOnlyList<ApplianceRun>, DateTimeOffset)>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
         var home = Service(detected: (_, _, _) => { Interlocked.Increment(ref calls); return gate.Task; });
         var period = ReportPeriod.Containing(ReportGranularity.Day, new DateOnly(2026, 11, 2));
 
@@ -164,7 +195,7 @@ public class HomeServiceTests : IDisposable
         var second = home.GetAsync(period, CancellationToken.None);
         first.IsCompleted.Should().BeFalse("the computation runs on the thread pool, the caller is not blocked");
         await Task.Delay(200);
-        gate.SetResult(Array.Empty<ApplianceEnergyRow>());
+        gate.SetResult((new Dictionary<long, ApplianceSignature>(), Array.Empty<ApplianceRun>(), Now));
         (await first).Should().BeSameAs(await second);
         calls.Should().Be(1, "one computation for both callers");
     }

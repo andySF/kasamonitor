@@ -47,6 +47,22 @@
                 @if (_saved) { <span class="text-success small"><i class="bi bi-check-circle me-1"></i>Salvat.</span> }
                 @if (_error is not null) { <span class="text-danger small">@_error</span> }
             </div>
+            <hr />
+            <div class="row g-2 align-items-end">
+                <div class="col-sm-6">
+                    <label class="form-label" for="cHdd">Baza gradelor-zile de încălzire (°C)</label>
+                    <input class="form-control" id="cHdd" @bind="_hddBase" inputmode="decimal" autocomplete="off" />
+                </div>
+                <div class="col-sm-6">
+                    <button class="btn btn-outline-primary btn-sm" @onclick="SaveHddAsync"><i class="bi bi-save me-1"></i>Salvează baza</button>
+                    @if (_hddSaved) { <span class="text-success small ms-1"><i class="bi bi-check-circle me-1"></i>Salvat.</span> }
+                </div>
+            </div>
+            <div class="form-text">
+                Pentru <a href="/history#clima">Istoric → Climă</a>: grade-zile = bază − temperatura medie de afară, în zilele cu media ≤ bază − 3 °C
+                (metoda Eurostat: bază 18 °C, prag 15 °C; implicit). SR 4839 folosește altă metodă (bază 20 °C, prag 12 °C). Între @ClimateSettingsService.MinDegreeDaysBaseC.ToString("0", CultureInfo.InvariantCulture) și @ClimateSettingsService.MaxDegreeDaysBaseC.ToString("0", CultureInfo.InvariantCulture) °C.
+            </div>
+            @if (_hddError is not null) { <div class="text-danger small">@_hddError</div> }
         }
     </div>
 </div>
@@ -57,6 +73,9 @@
     private string _lon = "";
     private bool _saved;
     private string? _error;
+    private string _hddBase = "";
+    private bool _hddSaved;
+    private string? _hddError;
 
     protected override async Task OnInitializedAsync() => await LoadAsync();
 
@@ -65,6 +84,27 @@
         _s = await ClimateSettings.GetAsync(CancellationToken.None);
         _lat = _s.Latitude?.ToString("0.#####", CultureInfo.InvariantCulture) ?? "";
         _lon = _s.Longitude?.ToString("0.#####", CultureInfo.InvariantCulture) ?? "";
+        _hddBase = _s.HeatingDegreeDaysBaseC.ToString("0.#", CultureInfo.InvariantCulture);
+    }
+
+    private async Task SaveHddAsync()
+    {
+        _hddError = null;
+        try
+        {
+            if (ClimateSettingsService.ParseCoordinate(_hddBase) is not { } b)
+                throw new ArgumentException("Baza trebuie să fie un număr (ex. 18).");
+            await ClimateSettings.SaveHeatingDegreeDaysBaseAsync(b, CancellationToken.None);
+            await LoadAsync();
+            _hddSaved = true;
+            StateHasChanged();
+            await Task.Delay(2000);
+            _hddSaved = false;
+        }
+        catch (ArgumentException ex)
+        {
+            _hddError = ex.Message;
+        }
     }
 
     private async Task SaveAsync()

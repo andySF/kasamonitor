@@ -1,0 +1,42 @@
+@using KasaMonitor.Core.History
+
+@* A /history table (the same rows as its CSV): sticky header, scroll after ~14 rows, the first cell links to the drill-down
+   period when it has one; an empty cell shows „—”. *@
+@if (Table.Rows.Count == 0)
+{
+    <div class="empty">@Empty</div>
+}
+else
+{
+    <div class="hist-table-wrap">
+        <table class="cmp hist-table">
+            <thead><tr>@foreach (var h in Table.Headers) { <th>@h</th> }</tr></thead>
+            <tbody>
+                @for (var r = 0; r < Table.Rows.Count; r++)
+                {
+                    var row = Table.Rows[r];
+                    var link = Table.Links is not null && r < Table.Links.Count ? Table.Links[r] : null;
+                    <tr>
+                        @for (var c = 0; c < row.Count; c++)
+                        {
+                            var text = row[c].Length == 0 ? "—" : row[c];
+                            if (c == 0 && link is not null)
+                            {
+                                <td><a href="@link" title="Deschide perioada">@text</a></td>
+                            }
+                            else
+                            {
+                                <td>@text</td>
+                            }
+                        }
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </div>
+}
+
+@code {
+    [Parameter, EditorRequired] public HistoryTable Table { get; set; } = HistoryTable.Empty;
+    [Parameter] public string Empty { get; set; } = "Fără date în perioada aleasă.";
+}

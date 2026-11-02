@@ -1,0 +1,21 @@
+@* The Δ line of a /history tile (the home page's rule and words): „date parțiale”, the Δ, or „fără date pentru …”. *@
+@if (Partial)
+{
+    <div class="delta flat" title="Fluxul live al contorului acoperă sub 90 % din una dintre ferestre: comparația ar înșela.">date parțiale, fără comparație</div>
+}
+else if (Delta is { } d)
+{
+    <div class="delta @d.Css" title="@Title">@d.Text @Versus</div>
+}
+else
+{
+    <div class="delta flat">fără date pentru @PreviousName</div>
+}
+
+@code {
+    [Parameter] public (string Text, string Css)? Delta { get; set; }
+    [Parameter] public bool Partial { get; set; }
+    [Parameter] public string Versus { get; set; } = "";
+    [Parameter] public string PreviousName { get; set; } = "";
+    [Parameter] public string? Title { get; set; }
+}

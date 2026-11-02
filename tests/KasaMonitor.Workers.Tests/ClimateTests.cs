@@ -282,11 +282,17 @@ public sealed class ClimateTests : IDisposable
     }
 
     [Fact]
-    public async Task Retention_DeletesReadingsOlderThanAYear()
+    public async Task Retention_Unlimited_ReadingsOlderThanAYearStayAfterTheWorkerRuns()
     {
+        // 0.9.2: the raw climate readings are kept without limit (the history of /history), the worker deletes nothing.
         await _recorder.RecordAsync(Sample(T0.AddDays(-400), 20), Ct);
         await _recorder.RecordAsync(Sample(T0, 21), Ct);
-        (await Worker().RetentionAsync(T0, Ct)).Should().Be(1);
+        var id = _state.Sensors.Single().Sensor.Id;
+        var worker = Worker();
+        await worker.RunDueAsync(Ct);
+        _now = T0.AddDays(2);
+        await worker.RunDueAsync(Ct);
+        (await ReadingsAsync(id)).Should().HaveCount(2);
     }
 
     [Fact]

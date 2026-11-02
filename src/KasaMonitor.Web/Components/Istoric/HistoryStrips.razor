@@ -1,0 +1,64 @@
+@using KasaMonitor.Core.History
+@using KasaMonitor.Web.Ui
+
+@* Spread of the Miele cycles per program: two strips per program (duration in minutes, energy in kWh), one dot per cycle,
+   the mean as a tick. *@
+@if (Rows.Count == 0)
+{
+    <div class="empty">Niciun ciclu încheiat.</div>
+}
+else
+{
+    var maxMin = HomeSvg.NiceMax(Math.Max(1, Rows.SelectMany(r => r.Minutes).DefaultIfEmpty(0).Max()));
+    var maxKwh = HomeSvg.NiceMax(Math.Max(0.1, Rows.SelectMany(r => r.Kwh).DefaultIfEmpty(0).Max()));
+    var height = Top + Rows.Count * RowH + 18;
+    var stripW = (W - NameW - Gap) / 2;
+    var x1 = NameW;
+    var x2 = NameW + stripW + Gap;
+    <svg class="chart" viewBox="0 0 @HomeSvg.N(W) @HomeSvg.N(height)" role="img" aria-label="Durata și energia ciclurilor pe program">
+        @for (var i = 0; i < Rows.Count; i++)
+        {
+            var r = Rows[i];
+            var y = Top + i * RowH + RowH / 2;
+            <g>
+                <title>@($"{r.Appliance} · {r.Program}: {r.Cycles} cicluri, durata medie {HeatingFormat.Number(r.MeanMinutes, 0)} min, energia medie {HomeFormat.KwhU(r.MeanKwh)}")</title>
+                <text class="dev-name" x="0" y="@HomeSvg.N(y + 4)">@HomeFormat.Trim(r.Program, 20)</text>
+                <line class="gridline" x1="@HomeSvg.N(x1)" x2="@HomeSvg.N(x1 + stripW)" y1="@HomeSvg.N(y)" y2="@HomeSvg.N(y)" />
+                <line class="gridline" x1="@HomeSvg.N(x2)" x2="@HomeSvg.N(x2 + stripW)" y1="@HomeSvg.N(y)" y2="@HomeSvg.N(y)" />
+                @foreach (var m in r.Minutes)
+                {
+                    <circle class="k-plug hist-dotm" cx="@HomeSvg.N(x1 + stripW * m / maxMin)" cy="@HomeSvg.N(y)" r="4" />
+                }
+                @foreach (var k in r.Kwh)
+                {
+                    <circle class="k-nilm hist-dotm" cx="@HomeSvg.N(x2 + stripW * k / maxKwh)" cy="@HomeSvg.N(y)" r="4" />
+                }
+                @if (r.MeanMinutes is { } mm)
+                {
+                    <line class="hist-mean" x1="@HomeSvg.N(x1 + stripW * mm / maxMin)" x2="@HomeSvg.N(x1 + stripW * mm / maxMin)" y1="@HomeSvg.N(y - 8)" y2="@HomeSvg.N(y + 8)" />
+                }
+                @if (r.MeanKwh is { } mk)
+                {
+                    <line class="hist-mean" x1="@HomeSvg.N(x2 + stripW * mk / maxKwh)" x2="@HomeSvg.N(x2 + stripW * mk / maxKwh)" y1="@HomeSvg.N(y - 8)" y2="@HomeSvg.N(y + 8)" />
+                }
+            </g>
+        }
+        <g>
+            <text class="tick num" x="@HomeSvg.N(x1)" y="@HomeSvg.N(height - 4)">0</text>
+            <text class="tick num" x="@HomeSvg.N(x1 + stripW)" y="@HomeSvg.N(height - 4)" text-anchor="end">@HeatingFormat.Number(maxMin, 0) min</text>
+            <text class="tick num" x="@HomeSvg.N(x2)" y="@HomeSvg.N(height - 4)">0</text>
+            <text class="tick num" x="@HomeSvg.N(x2 + stripW)" y="@HomeSvg.N(height - 4)" text-anchor="end">@HeatingFormat.Number(maxKwh, 1) kWh</text>
+        </g>
+    </svg>
+    <div class="legend"><span><i class="sw k-plug"></i>durata unui ciclu</span><span><i class="sw k-nilm"></i>energia unui ciclu</span><span><i class="sw line"></i>media</span></div>
+}
+
+@code {
+    private const double W = 520;
+    private const double RowH = 24;
+    private const double Top = 2;
+    private const double NameW = 140;
+    private const double Gap = 16;
+
+    [Parameter, EditorRequired] public IReadOnlyList<MieleProgramRow> Rows { get; set; } = Array.Empty<MieleProgramRow>();
+}

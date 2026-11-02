@@ -1,0 +1,114 @@
+@using KasaMonitor.Core.Costing
+@using KasaMonitor.Core.Heating
+@using KasaMonitor.Core.Reports
+@using KasaMonitor.Workers
+@using KasaMonitor.Web.Ui
+
+@* /history „Gaz și centrală”: gas for heating vs hot water per bar (boiler days, as on /centrala since 0.8.1), its cost,
+   the apparent efficiency, burner hours and starts per bar, the mean gas per hour of the day and the burner timeline per
+   day (periods of up to 31 days), the table and its CSV. *@
+<section class="hcard hist-sec" id="gaz" aria-labelledby="h-gaz">
+    <div class="card-h">
+        <h2 id="h-gaz"><i class="sw bar k-gas"></i> Gaz și centrală <a class="card-link" href="/centrala" title="Centrală" aria-label="Centrală">→</a></h2>
+        <div class="hist-tools"><CsvLink Href="@CsvHref" /></div>
+    </div>
+    @if (!Loaded)
+    {
+        <div class="empty">Se încarcă…</div>
+    }
+    else if (Data is not { } g)
+    {
+        <div class="empty">Fără centrală conectată: nu există istoric de gaz.</div>
+    }
+    else
+    {
+        var r = g.Report;
+        var kind = r.Period.Kind;
+        var heating = HistoryTables.Series(r.Gas, HeatingReportBuilder.SeriesHeating);
+        var dhw = HistoryTables.Series(r.Gas, HeatingReportBuilder.SeriesDhw);
+        var heatTotal = g.HeatingM3;
+        var dhwTotal = g.DhwM3;
+        var total = r.Gas.Total;
+        var previous = r.Gas.InProgress ? r.Gas.PreviousSameFraction : r.Gas.PreviousTotal;
+        var eff = HeatingEnergy.Efficiency(r.Heat.Total, total is { } t ? GasCost.Kwh(t, Prices.GasKwhPerM3) : null);
+        var names = PeriodNames.For(kind);
+        var labels = r.Buckets.Select(b => ReportFormat.BucketLabel(b, kind)).ToList();
+        var titles = r.Buckets.Select(b => ReportFormat.BucketRow(b, kind)).ToList();
+        var links = r.Buckets.Select(b => HistoryTables.DrillLink(b, kind, Compare, null)).ToList();
+        <div class="foot-note" style="margin-top:-4px">@ReportFormat.BoilerDayNote(BoilerTz, LocalTz, g.Period.Start) · @g.DeviceName@(FirstDayNote(r))</div>
+        <div class="hist-grid">
+            <div>
+                <div class="tiles hist-tiles">
+                    <div class="tile">
+                        <div class="lbl"><i class="sw bar k-gas"></i>Gaz</div>
+                        <div class="val num">@HomeFormat.M3(total) <small>m³</small></div>
+                        <div class="meta">@(total is { } tt ? $"≈ {HomeFormat.Kwh(GasCost.Kwh(tt, Prices.GasKwhPerM3))} kWh · {HomeFormat.Lei(Prices.Gas(tt))}" : "fără date")</div>
+                        @if (Compare && total is not null)
+                        {
+                            <HistoryDelta Delta="@(HomeFormat.Delta(total, previous, v => HomeFormat.M3(v), "m³"))" PreviousName="@names.Previous"
+                                          Versus="@(r.Gas.InProgress ? "față de aceeași parte din " + names.Previous : names.Versus)"
+                                          Title="@($"{names.Previous}: până în același punct {HomeFormat.M3U(r.Gas.PreviousSameFraction)} · întreagă {HomeFormat.M3U(r.Gas.PreviousTotal)}")" />
+                        }
+                    </div>
+                    <div class="tile">
+                        <div class="lbl"><i class="sw bar k-heat"></i>Încălzire · <i class="sw bar k-dhw"></i>apă caldă</div>
+                        <div class="val num">@HomeFormat.M3(heatTotal) <small>· @HomeFormat.M3(dhwTotal) m³</small></div>
+                        <div class="meta" title="Randament aparent = căldura produsă / (gaz × @HeatingFormat.Number(Prices.GasKwhPerM3, 2) kWh/m³), estimat de centrală">randament aparent: @(eff is { } e ? HeatingFormat.Number(e * 100, 0) + " %" : "—")</div>
+                    </div>
+                    <div class="tile">
+                        <div class="lbl">Arzător</div>
+                        <div class="val num">@(g.BurnerHours is { } bh ? HeatingFormat.Number(bh, 1) : "—") <small>ore</small></div>
+                        <div class="meta">@(g.BurnerStarts is { } bs ? $"{bs} porniri" : "fără contoare de ardere")@(g.BurnerHours is > 0 && g.BurnerStarts is > 0 ? $" · {HeatingFormat.Number(g.BurnerHours!.Value * 60 / g.BurnerStarts!.Value, 0)} min/pornire" : "")</div>
+                    </div>
+                </div>
+                <HistoryBars Labels="labels" Titles="titles" Links="links" Unit="m³" Format="@(v => HomeFormat.M3(v))"
+                             Series="@(new[] { new HistoryBars.BarSeries("Încălzire", "k-heat", heating), new HistoryBars.BarSeries("Apă caldă", "k-dhw", dhw) })"
+                             AriaLabel="Gaz pe bare" Extra="@(i => "Ardere: " + BurnerText(g, i))" />
+                <div class="legend"><span><i class="sw bar k-heat"></i>încălzire</span><span><i class="sw bar k-dhw"></i>apă caldă</span><span class="muted">m³ @ReportFormat.BucketsName(kind)</span></div>
+            </div>
+            <div>
+                <h3 class="mini-h">Ore de ardere @ReportFormat.BucketsName(kind)</h3>
+                <HistoryBars Labels="labels" Titles="titles" Links="links" H="150" Unit="h" Format="@(v => HeatingFormat.Number(v, 2))"
+                             Series="@(new[] { new HistoryBars.BarSeries("Ore de ardere", "k-gas", g.Burner.Select(b => b.Hours).ToList()) })"
+                             AriaLabel="Ore de ardere" Extra="@(i => g.Burner[i].Starts is { } s ? $"Porniri: {s}" : null)" />
+                @if (g.HourProfileM3 is { } profile)
+                {
+                    <h3 class="mini-h" style="margin-top:8px">Gaz mediu pe ora din zi (m³)</h3>
+                    <HistoryBars Labels="@(Enumerable.Range(0, 24).Select(h => h.ToString("00")).ToList())" H="140" Unit="m³" Format="@(v => HomeFormat.M3(v))"
+                                 Series="@(new[] { new HistoryBars.BarSeries("Medie", "k-gas", profile) })" AriaLabel="Gaz mediu pe ora din zi" />
+                }
+                else if (kind != ReportGranularity.Day)
+                {
+                    <div class="foot-note">Profilul orar și cronologia arzătorului: pe perioade de cel mult @HistoryService.MaxRawDays de zile (citiri brute ale centralei).</div>
+                }
+            </div>
+        </div>
+        @if (g.Timeline is { Count: > 0 } bands)
+        {
+            <h3 class="mini-h" style="margin-top:10px">Cronologia arzătorului pe zile <span class="muted">(ora locală; încălzire / apă caldă / necunoscut)</span></h3>
+            <HistoryTimeline Bands="bands" Tz="LocalTz" />
+        }
+        <HistoryTableView Table="HistoryTables.Gas(g, Prices, Now, Compare)" />
+    }
+</section>
+
+@code {
+    [Parameter] public HistoryGas? Data { get; set; }
+    [Parameter] public bool Loaded { get; set; }
+    [Parameter, EditorRequired] public EnergyPrices Prices { get; set; } = null!;
+    [Parameter] public bool Compare { get; set; }
+    [Parameter] public DateTimeOffset Now { get; set; }
+    [Parameter, EditorRequired] public TimeZoneInfo BoilerTz { get; set; } = TimeZoneInfo.Utc;
+    [Parameter, EditorRequired] public TimeZoneInfo LocalTz { get; set; } = TimeZoneInfo.Utc;
+    [Parameter, EditorRequired] public string CsvHref { get; set; } = "";
+
+    private static string BurnerText(HistoryGas g, int i) =>
+        g.Burner[i].Hours is { } h ? $"{HeatingFormat.Number(h, 2)} h" + (g.Burner[i].Starts is { } s ? $", {s} porniri" : "") : "fără date";
+
+    private static string FirstDayNote(HeatingReport r) => r.FirstDay switch
+    {
+        null => " · încă nu există zile salvate",
+        { } f when r.Period.Start < f => $" · date din {ReportFormat.Date(f)}",
+        _ => "",
+    };
+}

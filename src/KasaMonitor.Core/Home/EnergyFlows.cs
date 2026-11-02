@@ -35,6 +35,18 @@ public sealed record EnergyFlows(double MeterKwh, IReadOnlyList<FlowItem> Rows, 
     public double FlowsKwh => Flows.Sum(f => f.Kwh);
 }
 
+/// <summary>
+/// The detected appliances scaled bar by bar (<see cref="EnergyFlowRule.ScalePerBucket"/>): per signature its energy per bar
+/// (kWh; null where the meter has no data), „Nedetectat” per bar, and whether anything had to be scaled down.
+/// <see cref="EstimatedKwh"/>: the detected appliances' energy before scaling.
+/// </summary>
+public sealed record BucketScaling(IReadOnlyDictionary<long, IReadOnlyList<double?>> Detected, IReadOnlyList<double?> Undetected, bool Scaled,
+    double EstimatedKwh)
+{
+    public double DetectedKwh(long id) => Detected.TryGetValue(id, out var v) ? v.Sum(x => x ?? 0) : 0;
+    public double UndetectedKwh => Undetected.Sum(x => x ?? 0);
+}
+
 public static class EnergyFlowRule
 {
     public const int TopPlugs = 5;
@@ -45,6 +57,64 @@ public static class EnergyFlowRule
     /// <summary>A detected appliance below this (after scaling) is noise: its energy goes to „Nedetectat” instead of a row.</summary>
     public const double MinDetectedKwh = 0.01;
 
+    /// <summary>
+    /// The single rule for the detected appliances (0.9.2: the home page and /history use it alike): bar by bar, the
+    /// detected appliances (estimates) are scaled down together when they exceed the meter minus the plugs of that bar;
+    /// „Nedetectat” = what is left of the bar (≥ 0). A signature under <see cref="MinDetectedKwh"/> over the period (before or
+    /// after scaling) is noise: its energy stays in „Nedetectat”. Per bar: plugs + detected + nedetectat = max(meter, plugs).
+    /// </summary>
+    /// <param name="meter">The main meter per bar (kWh; null = no data, the bar is left out).</param>
+    /// <param name="plugs">Σ of the counted plugs per bar (kWh).</param>
+    /// <param name="detected">Each detected signature's estimated energy per bar (kWh).</param>
+    public static BucketScaling ScalePerBucket(IReadOnlyList<double?> meter, IReadOnlyList<double?> plugs, IReadOnlyDictionary<long, IReadOnlyList<double>> detected)
+    {
+        var n = meter.Count;
+        static double At(IReadOnlyList<double> v, int i) => i < v.Count ? Math.Max(0, v[i]) : 0;
+        var estimated = detected.Sum(kv => Enumerable.Range(0, n).Where(i => meter[i] is not null).Sum(i => At(kv.Value, i)));
+        var kept = detected.Where(kv => Enumerable.Range(0, n).Where(i => meter[i] is not null).Sum(i => At(kv.Value, i)) >= MinDetectedKwh)
+            .ToDictionary(kv => kv.Key, kv => kv.Value);
+        var scaled = kept.ToDictionary(kv => kv.Key, _ => new double?[n]);
+        var undetected = new double?[n];
+        var any = false;
+        for (var i = 0; i < n; i++)
+        {
+            if (meter[i] is not { } m) continue;
+            var available = Math.Max(0, m - (i < plugs.Count ? plugs[i] ?? 0 : 0));
+            var d = kept.Sum(kv => At(kv.Value, i));
+            var k = d > available + 1e-12 ? available / d : 1;
+            if (k < 1) any = true;
+            foreach (var kv in kept) scaled[kv.Key][i] = At(kv.Value, i) * k;
+            undetected[i] = Math.Max(0, available - d * k);
+        }
+        // Scaled down to almost nothing: noise as well, back into „Nedetectat”.
+        foreach (var id in scaled.Where(kv => kv.Value.Sum(v => v ?? 0) < MinDetectedKwh).Select(kv => kv.Key).ToList())
+        {
+            for (var i = 0; i < n; i++)
+                if (scaled[id][i] is { } v) undetected[i] = (undetected[i] ?? 0) + v;
+            scaled.Remove(id);
+        }
+        return new BucketScaling(scaled.ToDictionary(kv => kv.Key, kv => (IReadOnlyList<double?>)kv.Value), undetected, any, estimated);
+    }
+
+    /// <summary>
+    /// The flows of a period with the detected appliances already scaled bar by bar (<see cref="ScalePerBucket"/>):
+    /// <paramref name="detected"/> holds their scaled totals, „Nedetectat” is <see cref="BucketScaling.UndetectedKwh"/>.
+    /// </summary>
+    public static EnergyFlows Build(double meterKwh, IEnumerable<FlowItem> plugs, IEnumerable<FlowItem> detected, BucketScaling scaling,
+        int topPlugs = TopPlugs, int topDetected = TopDetected)
+    {
+        var meter = Math.Max(0, meterKwh);
+        var plugList = plugs.Select(p => p with { Kwh = Math.Max(0, p.Kwh), Kind = FlowKind.Plug })
+            .OrderByDescending(p => p.Kwh).ThenBy(p => p.Name, StringComparer.CurrentCultureIgnoreCase).ToList();
+        var det = detected.Select(d => d with { Kind = FlowKind.Detected }).Where(d => d.Kwh >= MinDetectedKwh)
+            .OrderByDescending(d => d.Kwh).ThenBy(d => d.Name, StringComparer.CurrentCultureIgnoreCase).ToList();
+        return Assemble(meter, plugList, det, scaling.UndetectedKwh, scaling.Scaled, scaling.EstimatedKwh, topPlugs, topDetected);
+    }
+
+    /// <summary>
+    /// The flows of a period from its totals only (no bars): the detected appliances scaled down together when they exceed
+    /// the meter minus the plugs. Kept for callers without bars; the home page and /history scale bar by bar.
+    /// </summary>
     public static EnergyFlows Build(double meterKwh, IEnumerable<FlowItem> plugs, IEnumerable<FlowItem> detected,
         int topPlugs = TopPlugs, int topDetected = TopDetected)
     {
@@ -70,6 +140,14 @@ public static class EnergyFlowRule
         det = det.Where(d => d.Kwh >= MinDetectedKwh).ToList();
         detKwh = det.Sum(d => d.Kwh);
         var undetected = Math.Max(0, available - detKwh);
+        return Assemble(meter, plugList, det, undetected, scaled, estimated, topPlugs, topDetected);
+    }
+
+    private static EnergyFlows Assemble(double meter, List<FlowItem> plugList, List<FlowItem> det, double undetected, bool scaled, double estimated,
+        int topPlugs, int topDetected)
+    {
+        var plugsKwh = plugList.Sum(p => p.Kwh);
+        var detKwh = det.Sum(d => d.Kwh);
         var undetectedItem = new FlowItem(UndetectedKey, "Nedetectat", FlowKind.Undetected, undetected, "contor − prize − detectați", "/consumatori");
 
         var rows = plugList.Concat(det).OrderByDescending(r => r.Kwh).ThenBy(r => r.Name, StringComparer.CurrentCultureIgnoreCase)

@@ -20,6 +20,18 @@ public interface IHeatingRepository
     /// <summary>Only the "today" counters of the readings in the range (hours of a day report), oldest first.</summary>
     Task<IReadOnlyList<HeatingCounterReading>> ListCounterReadingsAsync(Guid deviceId, DateTimeOffset fromUtc, DateTimeOffset toUtc, CancellationToken ct);
 
+    /// <summary>
+    /// The burner counters (hours, starts) per UTC hour of the readings in [from, to], lowest and highest of each hour, in one
+    /// grouped query (the burner hours and starts of /history).
+    /// </summary>
+    Task<IReadOnlyList<KasaMonitor.Core.History.BurnerCounterHour>> ListBurnerCounterHoursAsync(Guid deviceId, DateTimeOffset fromUtc, DateTimeOffset toUtc, CancellationToken ct);
+    /// <summary>
+    /// The readings in [from, to] where something changes for the events of /history, selected in SQL with window functions
+    /// (only those rows leave the database): the first, one more than <paramref name="gap"/> after the reading before, one
+    /// whose active error (trimmed, empty = none) differs from the reading before; oldest first.
+    /// </summary>
+    Task<IReadOnlyList<KasaMonitor.Core.History.HeatingReadingChange>> ListReadingChangesAsync(Guid deviceId, DateTimeOffset fromUtc, DateTimeOffset toUtc,
+        TimeSpan gap, CancellationToken ct);
     /// <summary>Σ of the stored days per month of the years, in one grouped query (gas as in <see cref="HeatingEnergyDay.GasHeatingFor"/>).</summary>
     Task<IReadOnlyList<HeatingMonthSums>> SumDailyByMonthAsync(Guid deviceId, int yearFrom, int yearTo, DateOnly today, CancellationToken ct);
 

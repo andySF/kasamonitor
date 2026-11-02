@@ -919,6 +919,24 @@ public class NilmServiceTests
     }
 
     [Fact]
+    public async Task RegroupNow_KeepsEventsAndRunsOlderThanAYear_RetentionIsUnlimited()
+    {
+        // 0.9.2: MeterEvents and ApplianceRuns are never deleted (the detected appliances' history on /history).
+        using var rig = new Rig();
+        var main = await rig.AddAsync("aabbccddee00", "Casa", PlugRole.MainMeter, PlugProtocols.ShellyRpc);
+        var hol = await rig.AddAsync("aabbccddee03", "Hol mic", PlugRole.Plug, PlugProtocols.Legacy);
+        var (x, _) = await SeedSamePlugAsync(rig, main, hol);
+        await AddEventsAsync(rig, main, null, (400 * 24 * 60, 500, 0, 1, 0, null));
+        await rig.Repo(r => r.SaveRunsAsync(new[] { new ApplianceRun(0, x.Id, T0.AddDays(-400), T0.AddDays(-400).AddHours(1), 900, 900, 1, 2) },
+            CancellationToken.None));
+
+        await rig.Service().RegroupNowAsync(CancellationToken.None);
+
+        (await rig.Repo(r => r.CountEventsAsync(T0.AddDays(-401), T0.AddDays(-399), CancellationToken.None))).Should().Be(1);
+        (await rig.Repo(r => r.ListRunsAsync(T0.AddDays(-401), T0.AddDays(-399), CancellationToken.None))).Should().ContainSingle();
+    }
+
+    [Fact]
     public async Task Startup_ReclustersWhenTheLastJobIsOlderThan24h_NotWhenItIsRecent()
     {
         foreach (var (hoursAgo, merged) in new[] { (25, true), (1, false) })

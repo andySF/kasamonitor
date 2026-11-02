@@ -201,7 +201,7 @@ else
                             </td>
                             <td class="text-end text-nowrap">
                                 <button class="btn btn-outline-secondary btn-sm" @onclick="() => ToggleDetails(p.Id)" title="Detalii: roluri, releu"><i class="bi @(_detailsId == p.Id ? "bi-chevron-up" : "bi-info-circle")"></i></button>
-                                <a class="btn btn-outline-secondary btn-sm" href="/history?plugId=@p.Id" title="Istoric"><i class="bi bi-bar-chart"></i></a>
+                                <a class="btn btn-outline-secondary btn-sm" href="/history?plug=@p.Id#curent" title="Istoric"><i class="bi bi-bar-chart"></i></a>
                                 @if (p.IsArchived)
                                 {
                                     <button class="btn btn-outline-success btn-sm" @onclick="() => ToggleArchive(p)" title="Readu: priza e interogată din nou și reapare în /metrics"><i class="bi bi-arrow-counterclockwise"></i></button>

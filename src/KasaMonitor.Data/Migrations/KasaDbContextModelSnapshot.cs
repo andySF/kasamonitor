@@ -108,6 +108,40 @@ namespace KasaMonitor.Data.Migrations
                     b.ToTable("ApplianceSignatures", (string)null);
                 });
 
+            modelBuilder.Entity("KasaMonitor.Data.Entities.ClimateDailyEntity", b =>
+                {
+                    b.Property<Guid>("SensorId")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("Day")
+                        .HasColumnType("TEXT");
+
+                    b.Property<double?>("AvgC")
+                        .HasColumnType("REAL");
+
+                    b.Property<double?>("AvgHumidity")
+                        .HasColumnType("REAL");
+
+                    b.Property<int>("Count")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<double?>("MaxC")
+                        .HasColumnType("REAL");
+
+                    b.Property<double?>("MaxHumidity")
+                        .HasColumnType("REAL");
+
+                    b.Property<double?>("MinC")
+                        .HasColumnType("REAL");
+
+                    b.Property<double?>("MinHumidity")
+                        .HasColumnType("REAL");
+
+                    b.HasKey("SensorId", "Day");
+
+                    b.ToTable("ClimateDaily", (string)null);
+                });
+
             modelBuilder.Entity("KasaMonitor.Data.Entities.ClimateReadingEntity", b =>
                 {
                     b.Property<Guid>("SensorId")

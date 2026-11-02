@@ -11,6 +11,7 @@
     <div class="card-header d-flex flex-wrap align-items-center gap-2">
         <span class="fw-semibold"><i class="bi bi-bar-chart me-2"></i>Rapoarte</span>
         <span class="text-secondary" style="cursor: help" title="@SourcesNote">ⓘ</span>
+        <a class="small ms-2" href="@PeriodQuery.History(_period, anchor: "gaz")" title="Aceeași perioadă în Istoric: tabel, CSV, ore de ardere, cronologie pe zile; perioade lungi și intervale libere">Istoric →</a>
         <ul class="nav nav-pills nav-sm ms-auto">
             @foreach (var (kind, name) in Tabs)
             {
@@ -56,11 +57,11 @@
                     </div>
                 }
                 <div title="@($"Perioada precedentă: {ReportFormat.Title(r.Period.Previous())}")">
-                    <div class="small text-secondary">@ReportFormat.VersusPrevious(r.Period.Kind)@(r.Period.Contains(_today) ? " (perioadă în curs)" : "")</div>
+                    <div class="small text-secondary">@(k.InProgress ? "față de aceeași parte din " + PeriodNames.For(r.Period.Kind).Previous : ReportFormat.VersusPrevious(r.Period.Kind))</div>
                     @if (ReportFormat.Delta(k.DeltaPct) is { } d)
                     {
                         <div class="fs-5 fw-semibold @ReportFormat.DeltaClass(k.DeltaPct)">@d</div>
-                        <div class="small text-secondary">înainte: @ReportFormat.Value(k.PreviousTotal, k.Unit)</div>
+                        <div class="small text-secondary">@(k.InProgress ? $"până în același punct: {ReportFormat.Value(k.PreviousSameFraction, k.Unit)} · întreagă: {ReportFormat.Value(k.PreviousTotal, k.Unit)}" : $"înainte: {ReportFormat.Value(k.PreviousTotal, k.Unit)}")</div>
                     }
                     else
                     {

@@ -14,18 +14,22 @@ public static class ClimateSettingKeys
     public const string ClimateLongitude = "ClimateLongitude";
     /// <summary>Govee device ids ticked „acasă” in /settings, comma-separated; only these are read and stored.</summary>
     public const string GoveeHomeDevices = "GoveeHomeDevices";
+    /// <summary>Base temperature (°C, invariant decimal) of the heating degree days on /history; empty = the default (18, Eurostat).</summary>
+    public const string HeatingDegreeDaysBaseC = "HeatingDegreeDaysBaseC";
 }
 
 /// <summary>
 /// Values from configuration: initial latitude/longitude (the database wins once saved) and where the Govee API key
 /// comes from: <c>KasaMonitor__GoveeApiKey</c> (env) or the file <c>KasaMonitor__GoveeApiKeyFile</c> /
-/// <c>GOVEE_API_KEY_FILE</c> (default <c>/run/secrets/govee-api.key</c>), read once at startup.
+/// <c>GOVEE_API_KEY_FILE</c> (default <c>/run/secrets/govee-api.key</c>), read once at startup. <see cref="HeatingDegreeDaysBaseC"/>:
+/// the initial base of the heating degree days (<c>KasaMonitor__HeatingDegreeDaysBaseC</c>, default 18 °C; the database wins once saved).
 /// </summary>
 public sealed record ClimateSettingsDefaults(
     double? Latitude = null,
     double? Longitude = null,
     string GoveeApiKeyFile = GoveeApi.DefaultKeyFile,
-    string? GoveeApiKey = null);
+    string? GoveeApiKey = null,
+    double HeatingDegreeDaysBaseC = KasaMonitor.Core.History.DegreeDayRule.EurostatBaseC);
 
 /// <summary>
 /// The Govee API key, loaded once at startup. Only the climate worker reads <see cref="Value"/>; it is never stored in
@@ -70,14 +74,15 @@ public sealed class GoveeApiKey
     }
 }
 
-/// <summary>Effective climate settings.</summary>
+/// <summary>Effective climate settings. <see cref="HeatingDegreeDaysBaseC"/>: base of the heating degree days (/history).</summary>
 public sealed record ClimateRuntimeSettings(
     double? Latitude,
     double? Longitude,
     IReadOnlySet<string> GoveeHomeDevices,
     bool HasGoveeKey,
     string? GoveeKeySource,
-    string? GoveeKeyProblem)
+    string? GoveeKeyProblem,
+    double HeatingDegreeDaysBaseC = KasaMonitor.Core.History.DegreeDayRule.EurostatBaseC)
 {
     /// <summary>Latitude and longitude set: Open-Meteo is read.</summary>
     public bool HasLocation => Latitude is not null && Longitude is not null;
@@ -92,10 +97,18 @@ public interface IClimateSettingsService
     Task SaveLocationAsync(double? latitude, double? longitude, CancellationToken ct);
     /// <summary>Ticks / unticks a Govee device as „acasă”.</summary>
     Task SetGoveeHomeAsync(string deviceId, bool home, CancellationToken ct);
+    /// <summary>
+    /// Saves the base of the heating degree days (°C, <see cref="ClimateSettingsService.MinDegreeDaysBaseC"/>–<see cref="ClimateSettingsService.MaxDegreeDaysBaseC"/>;
+    /// outside it throws <see cref="ArgumentException"/>).
+    /// </summary>
+    Task SaveHeatingDegreeDaysBaseAsync(double baseC, CancellationToken ct);
 }
 
 public sealed class ClimateSettingsService : IClimateSettingsService
 {
+    public const double MinDegreeDaysBaseC = 10;
+    public const double MaxDegreeDaysBaseC = 25;
+
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly ClimateSettingsDefaults _defaults;
     private readonly GoveeApiKey _key;
@@ -118,7 +131,18 @@ public sealed class ClimateSettingsService : IClimateSettingsService
         if (db.TryGetValue(ClimateSettingKeys.ClimateLatitude, out var la)) lat = ParseCoordinate(la);
         if (db.TryGetValue(ClimateSettingKeys.ClimateLongitude, out var lo)) lon = ParseCoordinate(lo);
         var home = db.TryGetValue(ClimateSettingKeys.GoveeHomeDevices, out var h) ? ParseList(h) : new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        return new ClimateRuntimeSettings(lat, lon, home, _key.IsSet, _key.Source, _key.Problem);
+        var hddBase = db.TryGetValue(ClimateSettingKeys.HeatingDegreeDaysBaseC, out var b) && ParseCoordinate(b) is { } v
+                      && v >= MinDegreeDaysBaseC && v <= MaxDegreeDaysBaseC ? v : _defaults.HeatingDegreeDaysBaseC;
+        return new ClimateRuntimeSettings(lat, lon, home, _key.IsSet, _key.Source, _key.Problem, hddBase);
+    }
+
+    public async Task SaveHeatingDegreeDaysBaseAsync(double baseC, CancellationToken ct)
+    {
+        if (double.IsNaN(baseC) || baseC < MinDegreeDaysBaseC || baseC > MaxDegreeDaysBaseC)
+            throw new ArgumentException($"Baza gradelor-zile trebuie să fie între {MinDegreeDaysBaseC:0} și {MaxDegreeDaysBaseC:0} °C.");
+        using var scope = _scopeFactory.CreateScope();
+        await scope.ServiceProvider.GetRequiredService<ISettingsRepository>()
+            .SetAsync(ClimateSettingKeys.HeatingDegreeDaysBaseC, Format(baseC), ct);
     }
 
     public async Task SaveLocationAsync(double? latitude, double? longitude, CancellationToken ct)

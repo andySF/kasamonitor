@@ -187,7 +187,11 @@ public class HouseReportBuilderTests
         r.PlugsTotalKwh.Should().BeApproximately(0.3, 1e-9);
         r.RestTotalKwh.Should().BeApproximately(1.0, 1e-9);
         r.PreviousHouseTotalKwh.Should().BeApproximately(5.0, 1e-9); // stored 5 kWh > live 0.3 kWh
-        r.DeltaPct.Should().BeApproximately(-74, 1e-9);
+        // The day is in progress (Now = 18:00Z): Δ against the previous day up to the same point (its live hours), not its
+        // whole stored 5 kWh; its only live hour (22:00) lies after that point, so there is no Δ (0.9.2, R4).
+        r.IsCurrent.Should().BeTrue();
+        r.PreviousSameFractionKwh.Should().BeNull();
+        r.DeltaPct.Should().BeNull();
     }
 
     [Fact]

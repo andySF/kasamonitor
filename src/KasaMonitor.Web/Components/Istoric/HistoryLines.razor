@@ -1,0 +1,123 @@
+@using KasaMonitor.Web.Ui
+
+@* Lines per bucket (hand-drawn SVG): one line per series (a gap where a value is missing), an optional min–max band under
+   each, the bucket labels thinned like the bars. Used by the climate section of /history. *@
+@if (Labels.Count == 0 || Series.All(s => s.Mean.All(v => v is null)))
+{
+    <div class="empty">@Empty</div>
+}
+else
+{
+    var n = Labels.Count;
+    var all = Series.SelectMany(s => s.Mean.Concat(s.Min ?? Array.Empty<double?>()).Concat(s.Max ?? Array.Empty<double?>())).Where(v => v is not null).Select(v => v!.Value).ToList();
+    var lo = Math.Floor(all.Min() - 0.5);
+    var hi = Math.Ceiling(all.Max() + 0.5);
+    if (hi - lo < 4) { lo -= 2; hi += 2; }
+    var step = HomeSvg.NiceMax((hi - lo) / 4);
+    lo = Math.Floor(lo / step) * step;
+    hi = lo + step * 4;
+    while (hi < all.Max()) hi += step;
+    var plotW = W - L - R;
+    var plotH = H - T - B;
+    var slot = plotW / n;
+    double X(int i) => L + slot * i + slot / 2;
+    double Y(double v) => T + plotH - (v - lo) / (hi - lo) * plotH;
+    var labelEvery = Math.Max(1, (int)Math.Ceiling(n / 16.0));
+    var decimals = HomeSvg.AxisDecimals(step);
+    <svg class="chart" viewBox="0 0 @HomeSvg.N(W) @HomeSvg.N(H)" role="img" aria-label="@AriaLabel">
+        @for (var v = lo; v <= hi + 1e-9; v += step)
+        {
+            <g>
+                <line class="gridline" x1="@HomeSvg.N(L)" x2="@HomeSvg.N(W - R)" y1="@HomeSvg.N(Y(v))" y2="@HomeSvg.N(Y(v))" />
+                <text class="tick num" x="@HomeSvg.N(L - 6)" y="@HomeSvg.N(Y(v) + 4)" text-anchor="end">@HeatingFormat.Number(v, decimals)</text>
+            </g>
+        }
+        @for (var i = 0; i < n; i += labelEvery)
+        {
+            <g><text class="tick num" x="@HomeSvg.N(X(i))" y="@HomeSvg.N(H - 6)" text-anchor="middle">@Labels[i]</text></g>
+        }
+        @foreach (var s in Series)
+        {
+            if (s.Min is { } mins && s.Max is { } maxs)
+            {
+                @foreach (var run in Runs(n, i => mins[i] is not null && maxs[i] is not null))
+                {
+                    var top = string.Join(" ", run.Select(i => HomeSvg.N(X(i)) + "," + HomeSvg.N(Y(maxs[i]!.Value))));
+                    var bottom = string.Join(" ", run.AsEnumerable().Reverse().Select(i => HomeSvg.N(X(i)) + "," + HomeSvg.N(Y(mins[i]!.Value))));
+                    <polygon class="hist-band @s.Css" points="@(top + " " + bottom)" pointer-events="none" />
+                }
+            }
+            @foreach (var run in Runs(n, i => s.Mean[i] is not null))
+            {
+                <polyline class="hist-line @s.Css" points="@string.Join(" ", run.Select(i => HomeSvg.N(X(i)) + "," + HomeSvg.N(Y(s.Mean[i]!.Value))))" pointer-events="none" />
+                @if (run.Count == 1)
+                {
+                    <circle class="hist-dot @s.Css" cx="@HomeSvg.N(X(run[0]))" cy="@HomeSvg.N(Y(s.Mean[run[0]]!.Value))" r="3" />
+                }
+            }
+        }
+        @for (var i = 0; i < n; i++)
+        {
+            <g class="hour">
+                <title>@Tooltip(i)</title>
+                <rect class="bar-bg" x="@HomeSvg.N(X(i) - slot / 2)" y="@HomeSvg.N(T)" width="@HomeSvg.N(slot)" height="@HomeSvg.N(plotH)" />
+            </g>
+        }
+    </svg>
+    <div class="legend">
+        @foreach (var s in Series)
+        {
+            <span><i class="sw line @s.Css"></i>@s.Name</span>
+        }
+        @if (Series.Any(s => s.Min is not null))
+        {
+            <span class="muted">banda: min–max</span>
+        }
+    </div>
+}
+
+@code {
+    /// <summary>One line: its mean per bucket and, optionally, the band of min and max.</summary>
+    public sealed record LineSeries(string Name, string Css, IReadOnlyList<double?> Mean, IReadOnlyList<double?>? Min = null, IReadOnlyList<double?>? Max = null);
+
+    private const double W = 760;
+    [Parameter] public double H { get; set; } = 230;
+    private const double L = 40;
+    private const double R = 8;
+    private const double T = 10;
+    private const double B = 22;
+
+    [Parameter, EditorRequired] public IReadOnlyList<string> Labels { get; set; } = Array.Empty<string>();
+    [Parameter] public IReadOnlyList<string>? Titles { get; set; }
+    [Parameter, EditorRequired] public IReadOnlyList<LineSeries> Series { get; set; } = Array.Empty<LineSeries>();
+    [Parameter] public string Unit { get; set; } = "°C";
+    [Parameter] public int Decimals { get; set; } = 1;
+    [Parameter] public string AriaLabel { get; set; } = "Grafic";
+    [Parameter] public string Empty { get; set; } = "Fără date.";
+
+    /// <summary>The runs of consecutive buckets that have a value (a line breaks at a gap).</summary>
+    private static List<List<int>> Runs(int n, Func<int, bool> has)
+    {
+        var runs = new List<List<int>>();
+        List<int>? cur = null;
+        for (var i = 0; i < n; i++)
+        {
+            if (!has(i)) { cur = null; continue; }
+            if (cur is null) runs.Add(cur = new List<int>());
+            cur.Add(i);
+        }
+        return runs;
+    }
+
+    private string Tooltip(int i)
+    {
+        var lines = new List<string> { Titles is not null && i < Titles.Count ? Titles[i] : Labels[i] };
+        foreach (var s in Series)
+        {
+            if (s.Mean[i] is not { } m) continue;
+            var range = s.Min?[i] is { } a && s.Max?[i] is { } b ? $" ({HeatingFormat.Number(a, Decimals)}–{HeatingFormat.Number(b, Decimals)})" : "";
+            lines.Add($"{s.Name}: {HeatingFormat.Number(m, Decimals)} {Unit}{range}");
+        }
+        return string.Join("\n", lines);
+    }
+}

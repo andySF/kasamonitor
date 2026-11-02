@@ -31,6 +31,17 @@ public interface IClimateRepository
     Task<IReadOnlyDictionary<Guid, IReadOnlyList<ClimateReading>>> ListReadingsAsync(IReadOnlyCollection<Guid> sensorIds,
         DateTimeOffset fromUtc, DateTimeOffset toUtc, CancellationToken ct);
 
+    /// <summary>Time of the oldest stored reading of every sensor that has one (one grouped query).</summary>
+    Task<IReadOnlyDictionary<Guid, DateTimeOffset>> FirstReadingsAsync(CancellationToken ct);
+    /// <summary>
+    /// Upsert of daily stats (table <c>ClimateDaily</c>, key sensor + local day); a day with <see cref="KasaMonitor.Core.Climate.ClimateStats.Count"/> 0
+    /// and no values is stored too (known to be empty).
+    /// </summary>
+    Task UpsertDailyAsync(IReadOnlyList<KasaMonitor.Core.History.ClimateDayStats> days, CancellationToken ct);
+    /// <summary>The stored days [from, to] of the sensors, empty days included.</summary>
+    Task<IReadOnlyList<KasaMonitor.Core.History.ClimateDayStats>> ListDailyAsync(IReadOnlyCollection<Guid> sensorIds, DateOnly from, DateOnly to, CancellationToken ct);
+    /// <summary>The newest stored day of every sensor that has one (one grouped query).</summary>
+    Task<IReadOnlyDictionary<Guid, DateOnly>> LastDailyDaysAsync(CancellationToken ct);
     /// <summary>Deletes the readings older than <paramref name="cutoffUtc"/>; returns the number of rows.</summary>
     Task<int> DeleteReadingsBeforeAsync(DateTimeOffset cutoffUtc, CancellationToken ct);
 }

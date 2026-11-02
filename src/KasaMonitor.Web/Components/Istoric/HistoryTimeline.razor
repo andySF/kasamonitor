@@ -1,0 +1,72 @@
+@using KasaMonitor.Core.Reports
+@using KasaMonitor.Core.Heating
+@using KasaMonitor.Workers
+@using KasaMonitor.Web.Ui
+
+@* The burner timeline of /history: one row per local day, the runs placed on a 24-hour track by their time and coloured by
+   purpose (BurnerTimeline), minutes per purpose on the right. A click on a day opens it. *@
+@{
+    var height = Top + Bands.Count * RowH + 18;
+    var trackW = W - NameW - ValW;
+}
+<svg class="chart hist-timeline" viewBox="0 0 @HomeSvg.N(W) @HomeSvg.N(height)" role="group" aria-label="Cronologia arzătorului pe zile">
+    @for (var h = 0; h <= 24; h += 3)
+    {
+        var x = NameW + trackW * h / 24.0;
+        <g>
+            <line class="gridline" x1="@HomeSvg.N(x)" x2="@HomeSvg.N(x)" y1="@HomeSvg.N(Top)" y2="@HomeSvg.N(Top + Bands.Count * RowH)" />
+            <text class="tick num" x="@HomeSvg.N(x)" y="@HomeSvg.N(height - 4)" text-anchor="middle">@h.ToString("00")</text>
+        </g>
+    }
+    @for (var i = 0; i < Bands.Count; i++)
+    {
+        var b = Bands[i];
+        var y = Top + i * RowH;
+        var span = (b.EndUtc - b.StartUtc).TotalSeconds;
+        <a href="@PeriodQuery.History(KasaMonitor.Core.Reports.ReportPeriod.Containing(KasaMonitor.Core.Reports.ReportGranularity.Day, b.Day), anchor: "gaz")" class="plain">
+            <g class="dev-row">
+                <title>@($"{ReportFormat.Date(b.Day)}: încălzire {UiFormat.DurationRo(b.HeatingMinutes * 60)}, apă caldă {UiFormat.DurationRo(b.DhwMinutes * 60)}, necunoscut {UiFormat.DurationRo(b.UnknownMinutes * 60)}; {b.Segments.Count} rulări")</title>
+                <rect class="bar-bg" x="0" y="@HomeSvg.N(y)" width="@HomeSvg.N(W)" height="@HomeSvg.N(RowH)" />
+                <text class="tick num" x="0" y="@HomeSvg.N(y + RowH - 5)">@ReportFormat.BucketLabel(new KasaMonitor.Core.Reports.ReportBucket(i, b.StartUtc, b.EndUtc, b.Day.ToDateTime(TimeOnly.MinValue), b.Day), KasaMonitor.Core.Reports.ReportGranularity.Week)</text>
+                <rect class="hist-track" x="@HomeSvg.N(NameW)" y="@HomeSvg.N(y + 3)" width="@HomeSvg.N(trackW)" height="@HomeSvg.N(RowH - 6)" />
+                @foreach (var s in b.Segments)
+                {
+                    var x0 = NameW + trackW * (s.StartUtc - b.StartUtc).TotalSeconds / span;
+                    var w = Math.Max(0.8, trackW * s.Duration.TotalSeconds / span);
+                    <rect class="@Css(s.Purpose)" x="@HomeSvg.N(x0)" y="@HomeSvg.N(y + 3)" width="@HomeSvg.N(w)" height="@HomeSvg.N(RowH - 6)">
+                        <title>@($"{TimeZoneInfo.ConvertTime(s.StartUtc, Tz):HH:mm}–{TimeZoneInfo.ConvertTime(s.EndUtc, Tz):HH:mm} · {Name(s.Purpose)} · {UiFormat.DurationRo(s.Duration.TotalSeconds)}")</title>
+                    </rect>
+                }
+                <text class="tick num" x="@HomeSvg.N(W - ValW + 6)" y="@HomeSvg.N(y + RowH - 5)">@Minutes(b.HeatingMinutes) · @Minutes(b.DhwMinutes)</text>
+            </g>
+        </a>
+    }
+</svg>
+<div class="legend"><span><i class="sw bar k-heat"></i>încălzire</span><span><i class="sw bar k-dhw"></i>apă caldă</span><span><i class="sw bar k-off"></i>necunoscut</span><span class="muted">dreapta: încălzire · apă caldă</span></div>
+
+@code {
+    private const double W = 760;
+    private const double RowH = 16;
+    private const double Top = 2;
+    private const double NameW = 56;
+    private const double ValW = 128;
+
+    [Parameter, EditorRequired] public IReadOnlyList<BurnerDayBand> Bands { get; set; } = Array.Empty<BurnerDayBand>();
+    [Parameter, EditorRequired] public TimeZoneInfo Tz { get; set; } = TimeZoneInfo.Utc;
+
+    private static string Minutes(double m) => m < 0.5 ? "—" : UiFormat.DurationRo(m * 60);
+
+    private static string Css(BurnerPurpose p) => p switch
+    {
+        BurnerPurpose.Heating => "k-heat",
+        BurnerPurpose.Dhw => "k-dhw",
+        _ => "k-off",
+    };
+
+    private static string Name(BurnerPurpose p) => p switch
+    {
+        BurnerPurpose.Heating => "încălzire",
+        BurnerPurpose.Dhw => "apă caldă",
+        _ => "necunoscut",
+    };
+}

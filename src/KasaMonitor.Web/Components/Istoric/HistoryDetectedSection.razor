@@ -1,0 +1,126 @@
+@using KasaMonitor.Core.Costing
+@using KasaMonitor.Core.History
+@using KasaMonitor.Core.Reports
+@using KasaMonitor.Workers
+@using KasaMonitor.Web.Ui
+
+@* /history „Consumatori”: where the meter's energy went by how well it is known — every identified consumer (named by
+   the user, or a plug confirmed by a signature) on its own, the other plugs, all the anonymous signatures grouped
+   („Neidentificați (n semnături)”, opens into the list), „Nedetectat” dotted; per bar and over the period, with the share
+   identified as the progress of the learning. Below: the detected appliances (energy, runs, start hours) and their table. *@
+<section class="hcard hist-sec" id="consumatori" aria-labelledby="h-consumatori">
+    <div class="card-h">
+        <h2 id="h-consumatori"><i class="sw bar k-nilm"></i> Consumatori <a class="card-link" href="/consumatori" title="Consumatori: numire, unire, evenimente" aria-label="Consumatori">→</a></h2>
+        <div class="hist-tools"><CsvLink Href="@CsvHref" /><CsvLink Href="@DetectedCsvHref" Label="CSV detectați" /></div>
+    </div>
+    @if (Data is null)
+    {
+        <div class="empty">Se încarcă…</div>
+    }
+    else
+    {
+        var b = Data.Breakdown;
+        var unidentified = b.Unidentified;
+        @if (b.Rows.Count == 0)
+        {
+            <div class="empty">Fără contor general: defalcarea consumului nu se poate calcula.</div>
+        }
+        else
+        {
+            var kind = Period.Kind;
+            var labels = Data.Buckets.Select(x => ReportFormat.BucketLabel(x, kind)).ToList();
+            var titles = Data.Buckets.Select(x => ReportFormat.BucketRow(x, kind)).ToList();
+            <div class="tiles hist-tiles hist-tiles4">
+                <div class="tile">
+                    <div class="lbl">Identificat</div>
+                    <div class="val num">@(b.IdentifiedPct is { } p ? HeatingFormat.Number(p, 0) : "—") <small>%</small></div>
+                    <div class="meta" title="Procentul e din contor (Σ pe bare); Σ prize peste contor apare separat și nu intră în el">@HomeFormat.KwhU(b.IdentifiedKwh) din @HomeFormat.KwhU(b.TotalKwh) (contor) · progresul învățării@(b.AboveMeterKwh > 1e-9 ? $" · + {HomeFormat.KwhU(b.AboveMeterKwh)} peste contor, neinclus" : "")</div>
+                </div>
+                <div class="tile">
+                    <div class="lbl"><i class="sw bar k-pale"></i>Prize, aparat neidentificat</div>
+                    <div class="val num">@HomeFormat.Kwh(b.KwhOf(ConsumerKind.OtherPlugs)) <small>kWh</small></div>
+                    <div class="meta">@Share(b, ConsumerKind.OtherPlugs)</div>
+                </div>
+                <div class="tile">
+                    <div class="lbl"><i class="sw bar k-off"></i>Neidentificați</div>
+                    <div class="val num">@HomeFormat.Kwh(b.KwhOf(ConsumerKind.Unidentified)) <small>kWh</small></div>
+                    <div class="meta">@(unidentified?.Members?.Count ?? 0) semnături · @Share(b, ConsumerKind.Unidentified)</div>
+                </div>
+                <div class="tile">
+                    <div class="lbl"><i class="sw dashed"></i>Nedetectat</div>
+                    <div class="val num">@HomeFormat.Kwh(b.KwhOf(ConsumerKind.Undetected)) <small>kWh</small></div>
+                    <div class="meta">@Share(b, ConsumerKind.Undetected)</div>
+                </div>
+            </div>
+            <div class="hist-grid">
+                <div>
+                    <HistoryBars Labels="labels" Titles="titles" Links="@(Data.Buckets.Select(x => HistoryTables.DrillLink(x, kind, Compare, null)).ToList())"
+                                 Series="@(b.Rows.Select((r, i) => new HistoryBars.BarSeries(r.Name, ConsumerBreakdownList.Css(r, i), r.Buckets)).ToList())"
+                                 AriaLabel="Consumul pe consumatori, identificați și neidentificați"
+                                 Extra="@(i => i < b.TotalBuckets.Count && b.TotalBuckets[i] is > 0 ? $"identificat: {HeatingFormat.Number(IdentifiedAt(b, i) / b.TotalBuckets[i]!.Value * 100, 0)} %" : null)" />
+                    <div class="legend">
+                        <span><i class="sw bar k-p1"></i>identificați (câte o culoare)</span><span><i class="sw bar k-pale"></i>prize, aparat neidentificat</span>
+                        <span><i class="sw bar k-off"></i>neidentificați</span><span><i class="sw dashed"></i>nedetectat</span>@if (b.AboveMeterKwh > 1e-9) { <span><i class="sw bar k-excess"></i>peste contor (clemă / date parțiale)</span> }
+                    </div>
+                </div>
+                <div>
+                    <ConsumerBreakdownList Data="b" Tariff="Prices.TariffRonPerKwh" />
+                </div>
+            </div>
+            <div class="foot-note">Identificat = consumatorii detectați pe care i-ai numit + prizele cu un singur aparat (numele aparatului) + prizele confirmate de o semnătură; procentul e din contor. Energia detectată e estimată din treptele contorului; pe fiecare bară, dacă depășește restul casei, se reduce proporțional (aceeași regulă ca în Acasă). Pe barele unde Σ prize depășește contorul, prizele sunt reduse la contor, iar diferența apare ca „peste contor”.</div>
+        }
+        @if (Data.Rows.Count > 0)
+        {
+            var top = Data.Rows.Take(MaxHeatRows).ToList();
+            var maxCell = Math.Max(1, top.SelectMany(r => r.StartsByHour).DefaultIfEmpty(0).Max());
+            <h3 class="mini-h" style="margin-top:10px">Consumatori detectați (fără priză): când pornesc (ora din zi)</h3>
+            var height = 4 + top.Count * CellH + 18;
+            var cw = (W - NameW) / 24;
+            <svg class="chart" style="max-width:900px" viewBox="0 0 @HomeSvg.N(W) @HomeSvg.N(height)" role="img" aria-label="Pornirile pe ora din zi, pe aparat">
+                @for (var i = 0; i < top.Count; i++)
+                {
+                    var r = top[i];
+                    var y = 4 + i * CellH;
+                    <g>
+                        <text class="dev-name" x="0" y="@HomeSvg.N(y + CellH - 6)">@HomeFormat.Trim(r.Name, 18)</text>
+                        @for (var h = 0; h < 24; h++)
+                        {
+                            var n = r.StartsByHour[h];
+                            <rect class="@(n == 0 ? "hist-cell0" : "k-nilm")" x="@HomeSvg.N(NameW + h * cw + 1)" y="@HomeSvg.N(y + 1)" width="@HomeSvg.N(cw - 2)" height="@HomeSvg.N(CellH - 2)"
+                                  rx="2" opacity="@HomeSvg.N(n == 0 ? 1 : 0.25 + 0.75 * n / maxCell)"><title>@($"{r.Name}, {h:00}:00–{h + 1:00}:00: {n} porniri")</title></rect>
+                        }
+                    </g>
+                }
+                @for (var h = 0; h < 24; h += 3)
+                {
+                    <g><text class="tick num" x="@HomeSvg.N(NameW + h * cw + cw / 2)" y="@HomeSvg.N(height - 4)" text-anchor="middle">@h.ToString("00")</text></g>
+                }
+            </svg>
+            <HistoryTableView Table="HistoryTables.Detected(Data, Prices)" />
+        }
+        else
+        {
+            <div class="empty">@(Data.Enabled ? "Niciun consumator detectat (fără priză) în perioada aleasă." : "Detecția consumatorilor e oprită (Setări → Consumatori).")</div>
+        }
+    }
+</section>
+
+@code {
+    private const int MaxHeatRows = 10;
+    private const double W = 760;
+    private const double NameW = 150;
+    private const double CellH = 18;
+
+    [Parameter] public HistoryDetected? Data { get; set; }
+    [Parameter] public ReportPeriod Period { get; set; }
+    [Parameter] public bool Compare { get; set; }
+    [Parameter, EditorRequired] public EnergyPrices Prices { get; set; } = null!;
+    [Parameter, EditorRequired] public string CsvHref { get; set; } = "";
+    [Parameter, EditorRequired] public string DetectedCsvHref { get; set; } = "";
+
+    private static string Share(ConsumerBreakdown b, ConsumerKind kind) =>
+        b.TotalKwh > 1e-9 ? HeatingFormat.Number(b.KwhOf(kind) / b.TotalKwh * 100, 0) + " % din total" : "—";
+
+    private static double IdentifiedAt(ConsumerBreakdown b, int i) =>
+        b.Rows.Where(r => r.Kind is ConsumerKind.IdentifiedDetected or ConsumerKind.IdentifiedPlug).Sum(r => i < r.Buckets.Count ? r.Buckets[i] ?? 0 : 0);
+}

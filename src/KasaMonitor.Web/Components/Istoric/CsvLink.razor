@@ -1,0 +1,7 @@
+@* The „CSV” button of a /history section: the section's table for the page's period (/history/export.csv). *@
+<a class="btn btn-outline-secondary btn-sm hist-csv" href="@Href" download target="_blank" rel="noopener" title="Descarcă tabelul secțiunii (CSV; separator „;”, zecimale cu virgulă)"><i class="bi bi-download me-1"></i>@Label</a>
+
+@code {
+    [Parameter, EditorRequired] public string Href { get; set; } = "";
+    [Parameter] public string Label { get; set; } = "CSV";
+}

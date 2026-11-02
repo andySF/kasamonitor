@@ -7,7 +7,7 @@ plugs and energy meters (e.g. Shelly EM Gen3, local JSON-RPC; the only write is 
 with SQLite, a web UI on port 8910 and a Prometheus `/metrics` endpoint. An optional Prometheus + Grafana stack
 with a ready-made dashboard and alert rules is included.
 
-Version: **0.9.1** (`Directory.Build.props`). Docker image: `duobit/kasamonitor`.
+Version: **0.9.2** (`Directory.Build.props`). Docker image: `duobit/kasamonitor`.
 
 ## Quick start
 
@@ -69,11 +69,11 @@ TP-Link (Tapo app) account in `/settings` and press **Scanează acum** on `/plug
   the main meter's 1-second power, grouped into signatures (one per appliance), labelled automatically from the plugs,
   by you, or by a nightly ML.NET classifier; runs, energy per day, „unidentified” energy; cards „Acum pornite” and
   „Azi” on the „Prize” page and `/contor`. See [Appliance detection (NILM)](#appliance-detection-nilm).
-- **Reports** (ViCare-style): a „Casă” section on `/history` (main meter split into measured plugs and the rest of
-  the house) and „Rapoarte” on `/centrala` (gas, boiler electricity, heat produced), per day (hours), week, month
-  (days) or year (months), with ◀ ▶ navigation, the change against the previous period and the cost. See
-  [Reports](#reports-history-casă-and-centrala-rapoarte).
-- **Version in the menu**: „v0.9.1” at the right of the navigation bar; the tooltip shows the commit and the build time.
+- **History** (`/history` „Istoric”, 0.9.2): one page and one period (day, week, month, year or a free interval, kept
+  in the address) for electricity, gas and boiler, Miele, detected consumers, climate (with heating degree days and the
+  energy signature), costs and events; Δ at the same share of the previous period, drill-down, CSV per section; and
+  „Rapoarte” on `/centrala` (gas, boiler electricity, heat produced). See [History](#history-history-istoric).
+- **Version in the menu**: „v0.9.2” at the right of the navigation bar; the tooltip shows the commit and the build time.
 - **Browser errors in the server log**: JavaScript errors and the Blazor error banner are reported to
   `POST /api/client-error` and logged at Warning (category `KasaMonitor.ClientErrors`), so `docker logs` shows them.
 - **HTTP API for the appliance detection** (`/api/nilm/*`, LAN only): list, sheet, label, merge, add to, hide, regroup,
@@ -127,6 +127,7 @@ not been saved from `/settings`.
 | Outdoor latitude / longitude | `KasaMonitor__ClimateLatitude`, `KasaMonitor__ClimateLongitude` | — (off) | location for the outdoor temperature of Open-Meteo (`/settings` → Climă); both empty = no request |
 | — (Govee API key file) | `GOVEE_API_KEY_FILE` or `KasaMonitor__GoveeApiKeyFile` | `/run/secrets/govee-api.key` | file with the Govee Developer API key, read once at startup; never stored in the database, shown or logged ([Climate](#climate)) |
 | — (Govee API key) | `KasaMonitor__GoveeApiKey` | — | alternative to the file (wins when set); prefer the file |
+| Heating degree days base (°C) | `KasaMonitor__HeatingDegreeDaysBaseC` | `18` | 10–25; /history „Climă”: degree days = base − outdoor daily mean on days with a mean ≤ base − 3 °C (Eurostat 18 / 15; SR 4839 uses another method, 20 / 12). Saved in /settings → Climă (the database wins once saved) |
 | Boiler time zone | `KasaMonitor__BoilerTimeZone` | `Europe/Berlin` | IANA zone of the boiler's day: its „today” counters reset at midnight there (Viessmann: Central European Time, 00:00 CET/CEST = 01:00 Romanian time); every daily attribution of the boiler's gas, electricity and heat uses it |
 | — | `KasaMonitor__DbPath` | `/data/kasa.db` (image) | |
 | — | `KasaMonitor__NilmApiToken` | — | optional; when set, every `/api/nilm/*` route needs the header `X-Api-Key` with this value. Set it before exposing KasaMonitor outside the LAN ([HTTP API (LAN)](#http-api-lan)); read per request |
@@ -784,7 +785,7 @@ unsupported plug („fără componentă de măsurare”).
 
 **Storage.** A reading is stored when the temperature changed by **≥ 0.1 °C** or the humidity by **≥ 1 % RH** since the
 last stored reading, and at least every **30 minutes** (heartbeat); a value read in between only updates the card and
-`/metrics`. Raw readings are kept **one year** (deleted daily). A sensor is created at its first value with the
+`/metrics`. Raw readings are kept **without limit** since 0.9.2 (the climate history of `/history`; before: one year). A sensor is created at its first value with the
 source's name; name, room and „afară” are edited on its card in `/clima` (the boiler's sensors have no room at first).
 
 **Page.** One card per sensor: name, room, temperature, humidity, battery, source and the age of the last value
@@ -902,36 +903,103 @@ boiler's daily history, never from the raw `LiveSamples`. Only „Acum în casă
 Bootstrap follows through `data-bs-theme`; its `table-light`, `text-bg-light` and `bg-light` and the ApexCharts texts,
 grid and tooltips follow the theme too.
 
-## Reports (`/history` „Casă” and `/centrala` „Rapoarte”)
+## History (`/history` „Istoric”)
 
-Both use one period selector, as in the ViCare app: **Zi** (bars per hour), **Săptămână** (Monday–Sunday, per day),
-**Lună** (per day) or **An** (per month), ◀ ▶ to move between periods (never past the current one), the period total,
-the change against the previous period (▲/▼ %, only when both periods have data; no percentage when the previous one is
-0) and the estimated cost. The periods are local calendar periods (`TZ`) for the house and **boiler days**
-(`BoilerTimeZone`, see above) for the boiler; a day has 23 or 25 hourly bars on the DST days. The queries live in `EnergyReportService` (a fixed number of grouped queries per report, never one per plug, day
-or month); the arithmetic is in `HouseReportBuilder` / `HeatingReportBuilder` (Core, unit tested).
+One long page for the past of everything KasaMonitor monitors, on the home page's look (cards, palette, light/dark).
 
-**History „Casă”** (shown when a channel has the main-meter role; otherwise a hint links to `/plugs`): stacked bars
-„Prize măsurate” (Σ of the plugs with role *plug*) and „Restul casei” (main meter − plugs, never below 0, see *Rest of
-the house* above). Sources:
-- days: the larger of `DailyEnergy` (Shelly meters: `EM1Data` from the device's memory, read every 6 h for up to 60
-  days back; Kasa/Tapo: their own day counters) and the Σ of KasaMonitor's live minute aggregates of that day (the
-  device's memory can be shorter than the stream, and its sync lags by up to 6 h). A day neither remembers shows
-  „fără date”; nothing is estimated;
-- hours („Zi”): only the live stream (`LiveMinuteAggregates`, grouped per channel and UTC hour in SQL, filtered on
-  `PlugId IN (...)` and the range, i.e. the primary key). Plugs without a live stream count as 0 in the hourly split; a
-  day without any stream shows its total with „fără defalcare pe ore”;
-- year: per month the larger of the device month total (`MonthlyEnergy`, legacy Kasa) and Σ of the stored days.
-Under the chart a table per hour/day/month: house kWh, plugs kWh, rest kWh, lei (tariff from *Settings*), the total,
-and one line per sub-meter (kWh, never added to the house). The „Toate” chart below is unchanged (plugs stacked, the
-„Casă” line apart, not added to the plug totals).
+**One period for the whole page**: **Zi** (bars per hour), **Săptămână** (Monday–Sunday, per day), **Lună** (per day),
+**An** (per month) or **Interval** (de la – până la, whole local days, per day, at most 732 days); ◀ ▶ move by one period
+(an interval by its own length), never past today. The period, the comparison switch and a plug filter live in the
+address, so every link opens exactly that view: `/history?p=luna&d=2026-11`, `?p=an&d=2026`, `?p=saptamana&d=2026-10-26`,
+`?p=zi&d=2026-11-02`, `?p=interval&de=2026-10-01&pana=2026-10-20`, plus `&cmp=0` (no comparison), `&plug=<id>` and a
+section anchor (`#curent`, `#gaz`, `#aparate`, `#consumatori`, `#clima`, `#costuri`, `#evenimente`). Without `p` the page
+opens on the current month; the old `?plugId=` still works. The home page's „→” links, the plug links of /prize,
+/plugs, the sub-meters card and the Sankey, and /centrala's „Istoric →” carry their period. Days are local days
+(`TZ`) everywhere; gas follows the **boiler's day** (`BoilerTimeZone`, as on /centrala since 0.8.1).
+
+**Comparison** (as on the home page): a period in progress is compared with the **same share** of the previous one
+(`SameFraction`: whole bars plus the elapsed part of the current one; today = yesterday up to the same time, from the
+live stream); a past period with the whole previous one. Since 0.9.2 the same rule is in `HouseReportBuilder` and
+`HeatingReportBuilder`, so /centrala „Rapoarte” shows „față de aceeași parte din …” too (before: about −90 % on the 2nd
+of a month, against the whole previous month).
+
+**Summary row** (anchors to the sections): electricity kWh / lei, gas m³ / lei, total cost, burner hours and starts,
+Miele cycles, mean temperature indoors / outdoors, each with its Δ.
+
+**Sections** — each has its chart, key figures with Δ, a table (the same rows as its **CSV**; rows stop at now) and
+drill-down (a bar or a table row of a week / month / interval opens that day, of a year that month):
+- **Curent**: the main meter split into the counted plugs (stacked, one colour per plug, the 7 largest + „Alte N prize”)
+  and „Restul casei”, the previous period pale behind; a plug filter keeps one plug next to the meter line; top
+  appliances (plugs, detected without a plug, „Nedetectat”, as on the home page; „Nedetectat” only on the days the meter
+  covers). Data: `HomeService` (shared with the home page, cached).
+- **Gaz și centrală**: heating vs hot water m³ per bar, ≈ kWh, lei, apparent efficiency (heat / gas kWh), burner hours
+  and starts per bar (the cumulative counters of `HeatingReadings`, grouped per hour in SQL), the mean gas per hour of
+  the day and the **burner timeline per day** (runs on a 24 h track coloured by purpose, `BurnerTimeline`) for periods
+  up to 31 days. /centrala „Rapoarte” stays and links here.
+- **Aparate (Miele)**: the cycles of the period (start, appliance, program, duration, Miele's energy vs the plug's, water,
+  lei — the plug's energy when it measured, else Miele's) and per program: cycles, mean duration / energy / water, totals
+  and the spread (one dot per cycle).
+- **Consumatori**: where the meter's energy went by how well it is known: every **identified** consumer on its own row
+  (a detected signature named by the user, a single-appliance plug under its appliance's name, or a plug confirmed by a
+  signature), the other plugs, all the anonymous
+  signatures grouped as „Neidentificați (n semnături)” (opens into the list, links to /consumatori) and „Nedetectat”
+  (dotted); stacked per bar; „identificat N %” = identified / **meter** (Σ of its bars), the progress of the learning. On a
+  bar where Σ plugs exceeds the meter, the plugs are reduced to the meter and the difference is shown apart as „Peste
+  contor (toleranța clemei / date parțiale)”, never in the share. The detected appliances are scaled bar by bar when they
+  exceed the meter minus the plugs — one rule (`EnergyFlowRule.ScalePerBucket`) used by the home page as well, so its
+  „Aparate” and Sankey give the same numbers. Below: energy, runs, mean duration and the
+  start hours (hour × appliance) of the detected appliances. The same summary for the last 7 and 30 days is at the top
+  of `/consumatori`.
+- **Climă**: per sensor min / mean / max temperature and humidity per bar (hours of a day from the raw readings, days
+  from `IClimateDailyStats`, months of a year from the days), outdoor dashed vs rooms; **heating degree days** per bar and
+  in total (outdoor = the sensor ticked „afară”; `HeatingDegreeDaysBaseC`, default 18 °C, Eurostat method with the
+  threshold base − 3 °C; finished days only, today's value so far is shown as „parțial” and not added) and the **energy
+  signature**: heating gas kWh/day (boiler days, whole days) against x = max(0, base − Tmean) **without** the Eurostat
+  threshold (between the threshold and the base the boiler still heats), with the least-squares line, kWh per degree
+  and R², shown from **7 days** with both values (otherwise „Insuficiente date, de la <prima zi>”).
+  A period shorter than 7 days uses the 30 days ending with it.
+- **Costuri**: electricity and gas lei per bar and in total (the total only when both parts exist), the prices used
+  („la tarifele actuale”: a price change recalculates the past) and, for the current month, the bill estimate of the
+  home page.
+- **Evenimente**: relay commands, boiler errors (`ActiveError`) and gaps of more than 15 minutes in its readings, Miele
+  appliances disconnected (status 255 or signal failure), newest first, filtered per source (at most 500 per source).
+  Application restarts are not stored (container log only); alerts stay in Grafana.
+
+**CSV**: `GET /history/export.csv?section=<s>&p=…&d=…` with `s` = `curent`, `gaz`, `aparate`, `aparate-programe`,
+`consumatori`, `consumatori-detectati`, `clima`, `clima-grade-zile`, `costuri`, `evenimente`: `;` between fields,
+decimal comma, UTF-8 with BOM (Excel / LibreOffice in Romanian), the same rows as the page's table. The time column is
+ISO (`yyyy-MM-dd HH:00`, `yyyy-MM-dd`, `yyyy-MM`), so a spreadsheet sorts it as a date; markers (rest within the margin,
+partial data, the bar in progress) are in a separate „Notă” column, so every number stays a number.
+
+**Performance**: only aggregates and bounded raw reads — never `LiveSamples`. Electricity from `HomeService`; the other
+sections through `HistoryService`, with the same cache as the home page (`PeriodCache`: one computation shared by every
+circuit and the CSV, a period in progress 10 minutes, a past one until the day changes, stale-while-revalidate). Each
+computation is logged at Debug („History {Section} of {Kind} {Start} computed in {Ms} ms”). Climate days come from the
+table **`ClimateDaily`** (per sensor and local day: min / time-weighted mean / max temperature and humidity, number of
+readings; migration `AddClimateDaily`), filled by `ClimateDailyWorker` at startup for every missing finished day (from the
+sensor's first reading, in chunks of 31 days) and again 10 minutes after each local midnight (at least hourly); every fill
+also recomputes the last 3 finished days, so readings stored late (the boiler's source catching up) reach their day; today and any day not stored yet
+are computed from the raw readings (`ClimateDailyStore` behind `IClimateDailyStats`). The degree days and the energy
+signature use these days. Measured on a PC: a year of raw readings (3 sensors, one every 10 min, 136 000 rows) took
+≈ 290 ms; from `ClimateDaily` a few milliseconds.
+
+**Retention** (0.9.2): `ClimateReadings`, `MeterEvents` and `ApplianceRuns` are kept without limit; `LiveSamples` keep
+`LiveRawRetentionDays` (default 30).
+
+### Report sources (house and boiler)
+
+The house report (`HouseReportBuilder`) per day is the larger of `DailyEnergy` (Shelly meters: `EM1Data` from the
+device's memory, read every 6 h for up to 60 days back; Kasa/Tapo: their own day counters) and the Σ of KasaMonitor's
+live minute aggregates of that day; hours („Zi”) only from the live stream (`LiveMinuteAggregates`, grouped per channel
+and UTC hour in SQL); a year per month the larger of the device month total (`MonthlyEnergy`) and Σ of the stored days.
+„Restul casei” = main meter − plugs, never below 0 (see *Rest of the house* above).
 
 **Centrală „Rapoarte”** (below the current state): tabs **Gaz** (m³, heating orange-red vs hot water blue),
 **Curent centrală** (kWh, `heating.power.consumption.summary.*`) and **Căldură produsă** (kWh). Under each: total, Δ %
 against the previous period, cost (gas: m³ × kWh/m³ × RON/kWh from the boiler settings; electricity: the plug tariff)
 and the apparent efficiency of the period (heat / (gas × kWh/m³)). The gas price is per kWh only (no per-m³ price
-setting). The Δ of the period in progress compares it with the whole previous period and is labelled „perioadă în
-curs”. Sources (also in the „ⓘ” tooltip):
+setting). The Δ of the period in progress compares it with the same share of the previous one („față de aceeași parte din …”,
+0.9.2), and the card links to `/history` for the same period („Istoric →”). Sources (also in the „ⓘ” tooltip):
 - days: `HeatingEnergyDaily`, built by KasaMonitor from the boiler's „currentDay” (it starts with the first reading;
   earlier days are empty, with the note „fără date înainte de …”);
 - hours („Zi”): the increases of the boiler's „today” counters between consecutive readings (~2 min). Since 0.8.0 every
@@ -1067,7 +1135,7 @@ meter** (`/plugs`) with the live stream on (1 s). Page `/consumatori`, menu „C
    „Prize” header; Shelly plugs have none and are not subtracted) is scaled to the same covered share of the day.
 9. **Cards** „Acum pornite” (detected appliances running now, with W) and „Azi” (top 5 + unidentified) on the
    „Prize” and `/contor`; metrics `kasa_appliance_*`, `kasa_nilm_*` (see Metrics).
-10. **Retention**: events and finished runs older than 365 days are deleted every night (signatures stay).
+10. **Retention**: none since 0.9.2 — events and runs are kept without limit (the history of `/history`; before: 365 days).
 
 **How it learns.** A signature is a **component**, not necessarily a whole appliance: a washing machine is a heater
 (≈ 2 kW), a drum motor (≈ 250–300 W pulses) and a pump; a kettle is one heater. Your labels come first: a signature
@@ -1203,9 +1271,10 @@ curl -s -X POST "$K/api/nilm/plugs/<plug id>/appliance" -H "Content-Type: applic
 | Raw live samples (on change or every 60 s) | `LiveSamples` | ≈ 146 bytes per row: quiet plug ≈ 0.2 MB/day, cycling load ≈ 4–5 MB/day, main meter ≈ 12 MB/day | after `LiveRawRetentionDays` (default 30; `0` = never), daily |
 | Live minute aggregates | `LiveMinuteAggregates` | 1,440 rows per streamed channel per day | never |
 | Relay commands | `RelayCommands` | one row per command | never |
-| Appliance events, signatures, runs | `MeterEvents`, `ApplianceSignatures`, `ApplianceRuns` | one row per event (≥ 30 W step of the house) / appliance / run | events and finished runs after 365 days (nightly); signatures never |
+| Appliance events, signatures, runs | `MeterEvents`, `ApplianceSignatures`, `ApplianceRuns` | one row per event (≥ 30 W step of the house) / appliance / run | never (since 0.9.2; before: 365 days) |
 | Miele appliances, state snapshots, cycles | `MieleDevices`, `MieleStateSnapshots`, `MieleCycles` | a snapshot on every change of the state (≈ one per minute while a program runs, as the remaining time changes) and at most every 5 minutes otherwise; one row per program cycle | never |
-| Climate sensors and readings | `ClimateSensors`, `ClimateReadings` | a reading on a change of ≥ 0.1 °C / ≥ 1 % RH and at least every 30 minutes per sensor (≈ 40 bytes; ≤ 48 rows per quiet sensor per day) | readings after 365 days (daily); sensors never |
+| Climate sensors and readings | `ClimateSensors`, `ClimateReadings` | a reading on a change of ≥ 0.1 °C / ≥ 1 % RH and at least every 30 minutes per sensor (≈ 40 bytes; ≤ 48 rows per quiet sensor per day) | never (since 0.9.2; before: 365 days) |
+| Climate per day | `ClimateDaily` | one row per sensor and day (≈ 100 bytes) | never |
 | Minute aggregates | `OneMinuteAggregates` | ≈ 120 bytes per plug-minute ≈ 65 MB per plug per year | never |
 | Daily / monthly energy | `DailyEnergy`, `MonthlyEnergy` | one row per plug per day / month | never |
 
@@ -1245,15 +1314,15 @@ dotnet test KasaMonitor.sln
 From the repository root, with Docker running and `docker login` done once:
 
 ```powershell
-.\deploy\build-and-push.ps1 -Version 0.9.1          # build :0.9.1 + :latest and push both
-.\deploy\build-and-push.ps1 -Version 0.9.1 -NoPush  # local build only
+.\deploy\build-and-push.ps1 -Version 0.9.2          # build :0.9.2 + :latest and push both
+.\deploy\build-and-push.ps1 -Version 0.9.2 -NoPush  # local build only
 ```
 
 or manually:
 
 ```bash
-docker build -t duobit/kasamonitor:0.9.1 -t duobit/kasamonitor:latest -f deploy/Dockerfile .
-docker push duobit/kasamonitor:0.9.1
+docker build -t duobit/kasamonitor:0.9.2 -t duobit/kasamonitor:latest -f deploy/Dockerfile .
+docker push duobit/kasamonitor:0.9.2
 docker push duobit/kasamonitor:latest
 ```
 

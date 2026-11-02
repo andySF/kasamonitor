@@ -12,12 +12,14 @@ public sealed record PeriodNames(string Previous, string Compare, string Versus,
     private static readonly PeriodNames WeekNames = new("săptămâna precedentă", "Compară cu săptămâna precedentă", "față de săptămâna precedentă", "pe zile", "Pe zile");
     private static readonly PeriodNames MonthNames = new("luna precedentă", "Compară cu luna precedentă", "față de luna precedentă", "pe zile", "Pe zile");
     private static readonly PeriodNames YearNames = new("anul precedent", "Compară cu anul precedent", "față de anul precedent", "pe luni", "Pe luni");
+    private static readonly PeriodNames RangeNames = new("intervalul precedent", "Compară cu intervalul precedent", "față de intervalul precedent", "pe zile", "Pe zile");
 
     public static PeriodNames For(ReportGranularity kind) => kind switch
     {
         ReportGranularity.Day => DayNames,
         ReportGranularity.Week => WeekNames,
         ReportGranularity.Month => MonthNames,
+        ReportGranularity.Range => RangeNames,
         _ => YearNames,
     };
 }

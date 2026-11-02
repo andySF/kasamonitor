@@ -1,0 +1,46 @@
+@using KasaMonitor.Core.History
+@using KasaMonitor.Workers
+@using KasaMonitor.Web.Ui
+
+@* /history „Evenimente”: relay commands, the boiler's errors and gaps in its readings, Miele appliances disconnected, newest
+   first, with a filter per source. Application restarts are not stored (only in the container log); alerts stay in Grafana. *@
+<section class="hcard hist-sec" id="evenimente" aria-labelledby="h-evenimente">
+    <div class="card-h">
+        <h2 id="h-evenimente">Evenimente</h2>
+        <div class="hist-tools">
+            @foreach (var s in Enum.GetValues<HistoryEventSource>())
+            {
+                var src = s;
+                <label class="switch hist-chip"><input type="checkbox" checked="@(!_hidden.Contains(src))" @onchange="() => Toggle(src)" /><span>@HistoryTables.SourceName(src) (@Count(src))</span></label>
+            }
+            <CsvLink Href="@CsvHref" />
+        </div>
+    </div>
+    @if (Data is null)
+    {
+        <div class="empty">Se încarcă…</div>
+    }
+    else
+    {
+        var shown = Data.Events.Where(e => !_hidden.Contains(e.Source)).ToList();
+        <HistoryTableView Table="HistoryTables.Events(shown, Tz)" Empty="Niciun eveniment în perioada aleasă." />
+        <div class="foot-note">
+            @(Data.Truncated ? $"Doar cele mai noi {HistoryService.MaxEventsPerSource} pe sursă. " : "")Pornirile aplicației nu se salvează (doar în jurnalul containerului); alertele stau în Grafana.
+        </div>
+    }
+</section>
+
+@code {
+    [Parameter] public HistoryEventList? Data { get; set; }
+    [Parameter, EditorRequired] public TimeZoneInfo Tz { get; set; } = TimeZoneInfo.Utc;
+    [Parameter, EditorRequired] public string CsvHref { get; set; } = "";
+
+    private readonly HashSet<HistoryEventSource> _hidden = new();
+
+    private int Count(HistoryEventSource s) => Data?.Events.Count(e => e.Source == s) ?? 0;
+
+    private void Toggle(HistoryEventSource s)
+    {
+        if (!_hidden.Remove(s)) _hidden.Add(s);
+    }
+}

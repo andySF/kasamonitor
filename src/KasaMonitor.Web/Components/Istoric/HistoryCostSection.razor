@@ -1,0 +1,96 @@
+@using KasaMonitor.Core.Costing
+@using KasaMonitor.Core.Home
+@using KasaMonitor.Core.Reports
+@using KasaMonitor.Workers
+@using KasaMonitor.Web.Ui
+
+@* /history „Costuri”: electricity and gas in lei per bar and over the period (at today's prices), the total only with both
+   parts (EnergyPrices.Total), the prices used and, for the current month, the bill estimate of the home page. *@
+<section class="hcard hist-sec" id="costuri" aria-labelledby="h-costuri">
+    <div class="card-h">
+        <h2 id="h-costuri">Costuri</h2>
+        <div class="hist-tools"><CsvLink Href="@CsvHref" /></div>
+    </div>
+    @if (Electricity is null)
+    {
+        <div class="empty">Se încarcă…</div>
+    }
+    else
+    {
+        var house = Electricity.House;
+        var kind = Period.Kind;
+        var buckets = house?.Buckets ?? Period.Buckets(Tz);
+        var gasBars = Gas is null ? null : HistoryTables.GasPerBucket(Gas, buckets);
+        var elLei = buckets.Select((_, i) => (double?)Prices.Electricity(house is not null && i < house.HouseKwh.Count ? house.HouseKwh[i] : null)).ToList();
+        var gasLei = buckets.Select((_, i) => (double?)Prices.Gas(gasBars is not null && i < gasBars.Count ? gasBars[i] : null)).ToList();
+        var kwh = house?.HouseTotalKwh;
+        var m3 = Gas?.Report.Gas.Total;
+        var total = Prices.Total(kwh, m3);
+        <div class="tiles hist-tiles">
+            <div class="tile">
+                <div class="lbl"><i class="sw bar k-plug"></i>Curent</div>
+                <div class="val num">@HomeFormat.Lei(Prices.Electricity(kwh))</div>
+                <div class="meta">@HomeFormat.KwhU(kwh) × @HomeFormat.PerKwh(Prices.TariffRonPerKwh)</div>
+            </div>
+            <div class="tile">
+                <div class="lbl"><i class="sw bar k-gas"></i>Gaz</div>
+                <div class="val num">@HomeFormat.Lei(Prices.Gas(m3))</div>
+                <div class="meta">@HomeFormat.M3U(m3) × @HeatingFormat.Number(Prices.GasKwhPerM3, 2) kWh/m³ × @HomeFormat.PerKwh(Prices.GasPricePerKwh, 3)</div>
+            </div>
+            <div class="tile">
+                <div class="lbl">Total</div>
+                <div class="val num">@HomeFormat.Lei(total)</div>
+                <div class="meta">@(total is null && (kwh is not null || m3 is not null) ? "lipsește o componentă: fără total" : Period.DayCount > 1 && total is { } t ? $"{HomeFormat.Lei(t / Math.Max(1, ElapsedDays()))}/zi" : "curent + gaz")</div>
+                @if (Compare)
+                {
+                    <HistoryDelta Delta="@(HomeFormat.DeltaLei(Comparison.CurrentCostRon, Comparison.PreviousCostRon))" Partial="Comparison.Partial" Versus="@Comparison.Versus" PreviousName="@Comparison.PreviousName" />
+                }
+            </div>
+        </div>
+        <div class="foot-note">La tarifele actuale din <a href="/settings">Setări</a>: o scumpire recalculează și trecutul.@(kind == ReportGranularity.Day ? " Gazul e pus pe ora locală în care a fost consumat; ora 00:00–01:00 aparține zilei precedente a centralei (CET)." : "")</div>
+        <div class="hist-grid">
+            <div>
+                <HistoryBars Labels="@(buckets.Select(b => ReportFormat.BucketLabel(b, kind)).ToList())" Titles="@(buckets.Select(b => ReportFormat.BucketRow(b, kind)).ToList())"
+                             Links="@(buckets.Select(b => HistoryTables.DrillLink(b, kind, Compare, null)).ToList())" Unit="lei" Format="@(v => HeatingFormat.Number(v, 2))"
+                             Series="@(new[] { new HistoryBars.BarSeries("Curent", "k-plug", elLei), new HistoryBars.BarSeries("Gaz", "k-gas", gasLei) })" AriaLabel="Cost pe bare" />
+                <div class="legend"><span><i class="sw bar k-plug"></i>curent</span><span><i class="sw bar k-gas"></i>gaz</span><span class="muted">lei @ReportFormat.BucketsName(kind)</span></div>
+            </div>
+            <div>
+                @if (Bill is { } bill && Period == ReportPeriod.Containing(ReportGranularity.Month, Today))
+                {
+                    <div class="estimate" title="Regula din Acasă: consumat până acum + (consumat / zile trecute) × zilele rămase">
+                        <span class="badge-est">Estimare</span>
+                        <span class="sec est-sub">factura pe @RoNames.Month(Period.Start.Month)@(bill.LowConfidence ? ", încredere scăzută" : "")</span>
+                        <div class="est-grid">
+                            <div><div class="v num">@(bill.Electricity is { } be ? "≈ " + HomeFormat.KwhU(be.Projected) : "—")</div><div class="m">curent · @(bill.ElectricityRon is { } er ? "≈ " + EnergyFormat.Lei(er) : "—")</div></div>
+                            <div><div class="v num">@(bill.Gas is { } bg ? "≈ " + HomeFormat.M3U(bg.Projected) : "—")</div><div class="m">gaz · @(bill.GasRon is { } gr ? "≈ " + EnergyFormat.Lei(gr) : "—")</div></div>
+                            <div><div class="v num">@(bill.TotalRon is { } tr ? "≈ " + EnergyFormat.Lei(tr) : "—")</div><div class="m">total estimat</div></div>
+                        </div>
+                    </div>
+                }
+                else
+                {
+                    <div class="foot-note">Estimarea facturii apare pe luna curentă (<a href="@PeriodQuery.History(ReportPeriod.Containing(ReportGranularity.Month, Today), Compare, anchor: "costuri")">deschide</a>).</div>
+                }
+            </div>
+        </div>
+        <HistoryTableView Table="HistoryTables.Costs(house, Gas, Prices, buckets, kind, Now, Compare)" />
+    }
+</section>
+
+@code {
+    [Parameter] public HomePeriod? Electricity { get; set; }
+    [Parameter] public HistoryGas? Gas { get; set; }
+    [Parameter] public BillEstimate? Bill { get; set; }
+    [Parameter, EditorRequired] public EnergyPrices Prices { get; set; } = null!;
+    [Parameter, EditorRequired] public EnergyComparison Comparison { get; set; } = null!;
+    [Parameter] public ReportPeriod Period { get; set; }
+    [Parameter] public DateOnly Today { get; set; }
+    [Parameter] public bool Compare { get; set; }
+    [Parameter] public DateTimeOffset Now { get; set; }
+    [Parameter, EditorRequired] public TimeZoneInfo Tz { get; set; } = TimeZoneInfo.Utc;
+    [Parameter, EditorRequired] public string CsvHref { get; set; } = "";
+
+    /// <summary>Days of the period up to today (the mean per day of a period in progress).</summary>
+    private int ElapsedDays() => Period.Contains(Today) ? Today.DayNumber - Period.Start.DayNumber + 1 : Period.DayCount;
+}

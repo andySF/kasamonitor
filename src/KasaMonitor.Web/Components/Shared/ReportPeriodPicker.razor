@@ -1,14 +1,29 @@
 @using KasaMonitor.Core.Reports
 @using KasaMonitor.Web.Ui
 
-@* ViCare-style period selector: Zi / Săptămână / Lună / An, ◀ ▶ between periods (never past the current one). *@
+@* ViCare-style period selector: Zi / Săptămână / Lună / An, ◀ ▶ between periods (never past the current one); with
+   AllowRange also „Interval” (de la – până la, whole local days; ◀ ▶ move it by its own length). *@
 <div class="d-flex flex-wrap align-items-center gap-2">
     <div class="btn-group btn-group-sm" role="group" aria-label="Perioadă">
         @foreach (var kind in Kinds)
         {
             <button type="button" class="btn @(Period.Kind == kind ? "btn-primary" : "btn-outline-primary")" @onclick="() => SelectKind(kind)">@(kind == ReportGranularity.Day && DayLabel is { } dl ? dl : ReportFormat.KindName(kind))</button>
         }
+        @if (AllowRange)
+        {
+            <button type="button" class="btn @(Period.Kind == ReportGranularity.Range ? "btn-primary" : "btn-outline-primary")" @onclick="() => SelectKind(ReportGranularity.Range)">@ReportFormat.KindName(ReportGranularity.Range)</button>
+        }
     </div>
+    @if (AllowRange && Period.Kind == ReportGranularity.Range)
+    {
+        <span class="d-inline-flex align-items-center gap-1">
+            <label class="visually-hidden" for="rangeFrom">De la</label>
+            <input id="rangeFrom" type="date" class="form-control form-control-sm w-auto" value="@Period.Start.ToString("yyyy-MM-dd")" max="@Today.ToString("yyyy-MM-dd")" @onchange="OnFrom" />
+            <span>–</span>
+            <label class="visually-hidden" for="rangeTo">Până la</label>
+            <input id="rangeTo" type="date" class="form-control form-control-sm w-auto" value="@Period.LastDay.ToString("yyyy-MM-dd")" max="@Today.ToString("yyyy-MM-dd")" @onchange="OnTo" />
+        </span>
+    }
     <div class="btn-group btn-group-sm" role="group" aria-label="Navigare">
         <button type="button" class="btn btn-outline-secondary" title="Perioada anterioară" aria-label="Perioada anterioară" @onclick="() => Go(Period.Previous())"><i class="bi bi-chevron-left"></i></button>
         <button type="button" class="btn btn-outline-secondary" title="Perioada următoare" aria-label="Perioada următoare" disabled="@IsCurrent" @onclick="() => Go(Period.Next())"><i class="bi bi-chevron-right"></i></button>
@@ -28,12 +43,24 @@
     [Parameter, EditorRequired] public DateOnly Today { get; set; }
     /// <summary>Text of the day button instead of „Zi” (the home page: „Azi”).</summary>
     [Parameter] public string? DayLabel { get; set; }
+    /// <summary>Offer the free interval („Interval”, de la – până la; /history).</summary>
+    [Parameter] public bool AllowRange { get; set; }
 
     /// <summary>The period holds today (or lies after it): there is nothing after it to show.</summary>
     private bool IsCurrent => Period.EndExclusive > Today;
 
-    private Task SelectKind(ReportGranularity kind) =>
-        Go(ReportPeriod.Containing(kind, Period.Contains(Today) ? Today : Period.Start));
+    private Task SelectKind(ReportGranularity kind) => kind == ReportGranularity.Range
+        // The interval starts as the period shown (a day becomes the 7 days ending with it).
+        ? Go(Period.Kind == ReportGranularity.Day ? ReportPeriod.Between(Period.Start.AddDays(-6), Period.Start) : ReportPeriod.Between(Period.Start, Min(Period.LastDay, Today)))
+        : Go(ReportPeriod.Containing(kind, Period.Contains(Today) ? Today : Period.Start));
+
+    private static DateOnly Min(DateOnly a, DateOnly b) => a < b ? a : b;
+
+    private Task OnFrom(ChangeEventArgs e) =>
+        DateOnly.TryParse(e.Value?.ToString(), System.Globalization.CultureInfo.InvariantCulture, out var d) ? Go(ReportPeriod.Between(d, Period.LastDay)) : Task.CompletedTask;
+
+    private Task OnTo(ChangeEventArgs e) =>
+        DateOnly.TryParse(e.Value?.ToString(), System.Globalization.CultureInfo.InvariantCulture, out var d) ? Go(ReportPeriod.Between(Period.Start, Min(d, Today))) : Task.CompletedTask;
 
     private Task Go(ReportPeriod p) => p.Start > Today ? Task.CompletedTask : PeriodChanged.InvokeAsync(p);
 }

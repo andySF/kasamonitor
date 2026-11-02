@@ -13,7 +13,7 @@ namespace KasaMonitor.Workers;
 /// Reads every climate source on its own schedule and hands the samples to <see cref="ClimateRecorder"/>:
 /// the boiler's readings (every minute, from the database), Govee (every 10 minutes, only the devices ticked „acasă”;
 /// the device list every 6 hours), Shelly (mDNS every 5 minutes, the devices with temperature components every
-/// minute), Open-Meteo (every 15 minutes when latitude/longitude are set) and the 1-year retention (daily).
+/// minute), Open-Meteo (every 15 minutes when latitude/longitude are set); the readings are kept without limit.
 /// A failing source sets its status text and never stops the others. Read-only towards every device and API.
 /// </summary>
 public sealed class ClimateWorker : BackgroundService
@@ -30,9 +30,7 @@ public sealed class ClimateWorker : BackgroundService
     public static readonly TimeSpan ShellyProbeTimeout = TimeSpan.FromSeconds(1);
     /// <summary>A Shelly without climate components is asked again only after an hour (an Add-on may be fitted later).</summary>
     public static readonly TimeSpan ShellyRecheckInterval = TimeSpan.FromHours(1);
-    public static readonly TimeSpan RetentionInterval = TimeSpan.FromHours(24);
-    /// <summary>Raw readings are kept one year (a few MB per sensor).</summary>
-    public static readonly TimeSpan Retention = TimeSpan.FromDays(365);
+    // No retention: the raw readings are kept without limit (0.9.2, the climate history of /history; a few MB per sensor and year).
     /// <summary>After a Govee 429 nothing is requested for an hour.</summary>
     public static readonly TimeSpan GoveeRateLimitPause = TimeSpan.FromHours(1);
 
@@ -49,7 +47,7 @@ public sealed class ClimateWorker : BackgroundService
     private readonly Func<TimeSpan, CancellationToken, Task> _wait;
     private readonly SemaphoreSlim _wake = new(0, 1);
 
-    private DateTimeOffset _viessmannDue, _goveeDue, _goveeListDue, _goveeBlockedUntil, _shellyDiscoveryDue, _shellyPollDue, _meteoDue, _retentionDue;
+    private DateTimeOffset _viessmannDue, _goveeDue, _goveeListDue, _goveeBlockedUntil, _shellyDiscoveryDue, _shellyPollDue, _meteoDue;
     private DateTimeOffset? _viessmannCursor;
     private readonly Dictionary<string, ShellyClimateDevice> _shellyDevices = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, DateTimeOffset> _shellyNonClimate = new(StringComparer.Ordinal);
@@ -129,11 +127,6 @@ public sealed class ClimateWorker : BackgroundService
             _meteoDue = now + OpenMeteoApi.PollInterval;
             await GuardAsync(ClimateSources.OpenMeteo, () => OpenMeteoAsync(now, ct), ct);
         }
-        if (now >= _retentionDue)
-        {
-            _retentionDue = now + RetentionInterval;
-            await GuardAsync("retention", () => RetentionAsync(now, ct), ct);
-        }
     }
 
     private async Task GuardAsync(string source, Func<Task> run, CancellationToken ct)
@@ -143,7 +136,7 @@ public sealed class ClimateWorker : BackgroundService
         catch (Exception ex)
         {
             _log.LogWarning("Climate {Source} failed: {Reason}", source, ex.Message);
-            if (source != "retention") _state.SetSourceStatus(source, ex.Message);
+            _state.SetSourceStatus(source, ex.Message);
         }
     }
 
@@ -314,14 +307,6 @@ public sealed class ClimateWorker : BackgroundService
         await _recorder.RecordAsync(new ClimateSample(ClimateSources.OpenMeteo, OpenMeteoApi.OutdoorExternalId, "Afară", now,
             current.TemperatureC, current.HumidityPercent, DefaultRoom: "Afară", DefaultOutdoor: true), ct);
         _state.SetSourceStatus(ClimateSources.OpenMeteo, null);
-    }
-
-    public async Task<int> RetentionAsync(DateTimeOffset now, CancellationToken ct)
-    {
-        using var scope = _scopeFactory.CreateScope();
-        var deleted = await scope.ServiceProvider.GetRequiredService<IClimateRepository>().DeleteReadingsBeforeAsync(now - Retention, ct);
-        if (deleted > 0) _log.LogInformation("Climate retention: deleted {Count} readings older than {Days} days", deleted, (int)Retention.TotalDays);
-        return deleted;
     }
 
     public override void Dispose()

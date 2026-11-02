@@ -24,3 +24,21 @@ public sealed class ClimateReadingEntity
     public double? HumidityPercent { get; set; }
     public int? BatteryPercent { get; set; }
 }
+
+/// <summary>
+/// One sensor on one local day (table <c>ClimateDaily</c>, 0.9.2): min / time-weighted mean / max temperature and humidity
+/// and the number of readings, computed from <c>ClimateReadings</c>. A day without any value has a row with
+/// <see cref="Count"/> 0 and no stats (it is known to be empty). <see cref="Day"/> = <c>yyyy-MM-dd</c>.
+/// </summary>
+public sealed class ClimateDailyEntity
+{
+    public Guid SensorId { get; set; }
+    public string Day { get; set; } = "";
+    public double? MinC { get; set; }
+    public double? AvgC { get; set; }
+    public double? MaxC { get; set; }
+    public double? MinHumidity { get; set; }
+    public double? AvgHumidity { get; set; }
+    public double? MaxHumidity { get; set; }
+    public int Count { get; set; }
+}

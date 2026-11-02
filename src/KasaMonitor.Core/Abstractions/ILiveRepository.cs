@@ -36,4 +36,6 @@ public interface ILiveRepository
 
     /// <summary>The newest relay commands, newest first (all plugs when <paramref name="plugId"/> is null).</summary>
     Task<IReadOnlyList<RelayCommand>> ListRelayCommandsAsync(Guid? plugId, int take, CancellationToken ct);
+    /// <summary>The relay commands of every plug in [from, to), newest first, at most <paramref name="take"/> (the events of /history).</summary>
+    Task<IReadOnlyList<RelayCommand>> ListRelayCommandsAsync(DateTimeOffset fromUtc, DateTimeOffset toUtc, int take, CancellationToken ct);
 }

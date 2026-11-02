@@ -189,7 +189,7 @@
                 : relayOff ? "oprit" : null;
             var kind = !s.IsOnline || relayOff || w < OffBelowW ? NowKind.Off : NowKind.Plug;
             plugs.Add(new NowPart(s.PlugId.ToString(), s.DisplayName, kind, w, note, kind == NowKind.Plug && (w >= ActiveW || running is not null),
-                "/history?plugId=" + s.PlugId));
+                "/history?plug=" + s.PlugId + "#curent"));
         }
 
         var summary = Nilm.Summary;

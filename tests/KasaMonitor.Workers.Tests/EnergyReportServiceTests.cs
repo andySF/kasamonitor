@@ -138,7 +138,11 @@ public class EnergyReportServiceTests
         r.PlugsKwh[19].Should().Be(0);
         r.HouseTotalKwh.Should().BeApproximately(0.6, 1e-9);
         r.PreviousHouseTotalKwh.Should().BeApproximately(0.007, 1e-9);
-        r.DeltaPct.Should().NotBeNull();
+        // Today is in progress: it is compared with yesterday up to the same hour (0.9.2, the home page's rule), and
+        // yesterday's only minute (23:59) lies after that point: no comparison instead of a misleading one.
+        r.IsCurrent.Should().BeTrue();
+        r.PreviousSameFractionKwh.Should().BeNull();
+        r.DeltaPct.Should().BeNull();
     }
 
     [Fact]

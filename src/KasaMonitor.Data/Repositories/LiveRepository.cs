@@ -159,4 +159,14 @@ public sealed class LiveRepository : ILiveRepository
             .Select(r => new RelayCommand(r.Id, DateTimeOffset.FromUnixTimeMilliseconds(r.Ts), r.PlugId, r.On, r.Source, r.Result))
             .ToListAsync(ct);
     }
+
+    public async Task<IReadOnlyList<RelayCommand>> ListRelayCommandsAsync(DateTimeOffset fromUtc, DateTimeOffset toUtc, int take, CancellationToken ct)
+    {
+        long from = fromUtc.ToUnixTimeMilliseconds(), to = toUtc.ToUnixTimeMilliseconds();
+        return await _db.RelayCommands.AsNoTracking()
+            .Where(r => r.Ts >= from && r.Ts < to)
+            .OrderByDescending(r => r.Ts).ThenByDescending(r => r.Id).Take(take)
+            .Select(r => new RelayCommand(r.Id, DateTimeOffset.FromUnixTimeMilliseconds(r.Ts), r.PlugId, r.On, r.Source, r.Result))
+            .ToListAsync(ct);
+    }
 }

@@ -1,5 +1,6 @@
 using KasaMonitor.Core.Abstractions;
 using KasaMonitor.Core.Climate;
+using KasaMonitor.Core.History;
 using KasaMonitor.Data.Entities;
 using Microsoft.EntityFrameworkCore;
 
@@ -119,6 +120,63 @@ public sealed class ClimateRepository : IClimateRepository
         }
         return result;
     }
+
+    public async Task<IReadOnlyDictionary<Guid, DateTimeOffset>> FirstReadingsAsync(CancellationToken ct)
+    {
+        var rows = await _db.ClimateReadings.AsNoTracking().GroupBy(r => r.SensorId).Select(g => new { g.Key, Ts = g.Min(r => r.Ts) }).ToListAsync(ct);
+        return rows.ToDictionary(r => r.Key, r => DateTimeOffset.FromUnixTimeSeconds(r.Ts));
+    }
+
+    public async Task UpsertDailyAsync(IReadOnlyList<ClimateDayStats> days, CancellationToken ct)
+    {
+        if (days.Count == 0) return;
+        var keys = days.Select(d => (d.SensorId, DayKey(d.Day))).ToHashSet();
+        var sensors = keys.Select(k => k.SensorId).Distinct().ToList();
+        var dayKeys = keys.Select(k => k.Item2).Distinct().ToList();
+        var existing = (await _db.ClimateDaily.Where(x => sensors.Contains(x.SensorId) && dayKeys.Contains(x.Day)).ToListAsync(ct))
+            .ToDictionary(x => (x.SensorId, x.Day));
+        foreach (var d in days)
+        {
+            var key = (d.SensorId, DayKey(d.Day));
+            if (!existing.TryGetValue(key, out var row))
+            {
+                row = new ClimateDailyEntity { SensorId = d.SensorId, Day = key.Item2 };
+                _db.ClimateDaily.Add(row);
+                existing[key] = row;
+            }
+            row.MinC = d.Stats.MinC;
+            row.AvgC = d.Stats.AvgC;
+            row.MaxC = d.Stats.MaxC;
+            row.MinHumidity = d.Stats.MinHumidity;
+            row.AvgHumidity = d.Stats.AvgHumidity;
+            row.MaxHumidity = d.Stats.MaxHumidity;
+            row.Count = d.Stats.Count;
+        }
+        await _db.SaveChangesAsync(ct);
+        _db.ChangeTracker.Clear();
+    }
+
+    public async Task<IReadOnlyList<ClimateDayStats>> ListDailyAsync(IReadOnlyCollection<Guid> sensorIds, DateOnly from, DateOnly to, CancellationToken ct)
+    {
+        string f = DayKey(from), t = DayKey(to);
+        var ids = sensorIds.Distinct().ToList();
+        var rows = await _db.ClimateDaily.AsNoTracking()
+            .Where(x => ids.Contains(x.SensorId) && string.Compare(x.Day, f) >= 0 && string.Compare(x.Day, t) <= 0)
+            .ToListAsync(ct);
+        return rows.Select(x => new ClimateDayStats(x.SensorId, ParseDay(x.Day),
+                new ClimateStats(x.MinC, x.AvgC, x.MaxC, x.MinHumidity, x.AvgHumidity, x.MaxHumidity, x.Count)))
+            .OrderBy(x => x.SensorId).ThenBy(x => x.Day).ToList();
+    }
+
+    public async Task<IReadOnlyDictionary<Guid, DateOnly>> LastDailyDaysAsync(CancellationToken ct)
+    {
+        var rows = await _db.ClimateDaily.AsNoTracking().GroupBy(x => x.SensorId).Select(g => new { g.Key, Day = g.Max(x => x.Day) }).ToListAsync(ct);
+        return rows.ToDictionary(r => r.Key, r => ParseDay(r.Day!));
+    }
+
+    private static string DayKey(DateOnly d) => d.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture);
+
+    private static DateOnly ParseDay(string s) => DateOnly.ParseExact(s, "yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture);
 
     public Task<int> DeleteReadingsBeforeAsync(DateTimeOffset cutoffUtc, CancellationToken ct)
     {

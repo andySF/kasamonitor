@@ -1,3 +1,4 @@
+using KasaMonitor.Core.Home;
 using KasaMonitor.Core.Metering;
 using KasaMonitor.Core.Models;
 
@@ -23,6 +24,10 @@ public sealed record SubMeterTotal(Guid PlugId, string Alias, double? Kwh);
 /// the period, over the same buckets as <see cref="PlugsTotalKwh"/> (a week, month or year counts a plug only on the
 /// buckets the main meter has data for, so plugs and meter cover the same days; the home page's "Aparate" and Sankey). <see cref="PreviousBuckets"/> /
 /// <see cref="PreviousHouseKwh"/>: the bars of the previous period (read by the same queries: no second report needed).
+/// <see cref="DeltaPct"/>: a period in progress is compared with the SAME SHARE of the previous one
+/// (<see cref="SameFraction"/>, <see cref="PreviousSameFractionKwh"/>; a day: Σ of its live hours so far against the previous
+/// day's live hours up to the same point), as on the home page; a past period with the whole previous one.
+/// <see cref="PlugBuckets"/>: each counted plug's value per bucket (same rule as <see cref="PlugsKwh"/>; null = no data).
 /// </summary>
 public sealed record HouseReport(
     ReportPeriod Period,
@@ -44,7 +49,10 @@ public sealed record HouseReport(
     bool IsCurrent = false,
     IReadOnlyList<SubMeterTotal>? PlugTotals = null,
     IReadOnlyList<ReportBucket>? PreviousBuckets = null,
-    IReadOnlyList<double?>? PreviousHouseKwh = null)
+    IReadOnlyList<double?>? PreviousHouseKwh = null,
+    double? PreviousSameFractionKwh = null,
+    double? CurrentSoFarKwh = null,
+    IReadOnlyList<PlugBucketSeries>? PlugBuckets = null)
 {
     /// <summary>Some bucket (or the total) has the plugs above the meter beyond the margin: "verifică poziția clemei".</summary>
     public bool RestClamped => RestTotalKind == RestKind.Negative || RestKinds.Any(k => k == RestKind.Negative);
@@ -58,6 +66,9 @@ public sealed record HouseReport(
     /// <summary>A day report without any hourly bar (no live stream that day) while the day itself has a total.</summary>
     public bool DayWithoutHours => Period.Kind == ReportGranularity.Day && HouseTotalKwh is not null && HouseKwh.All(v => v is null);
 }
+
+/// <summary>One counted plug's energy per bucket of a house report (kWh; null = no data in that bucket).</summary>
+public sealed record PlugBucketSeries(Guid PlugId, string Alias, IReadOnlyList<double?> Kwh);
 
 /// <summary>Everything the house report is built from (read by the service in a fixed number of queries).</summary>
 /// <param name="Daily">DailyEnergy rows of the days needed (current and previous period; for a year the days that have live data).</param>
@@ -159,10 +170,25 @@ public static class HouseReportBuilder
                 : ReportMath.SumOrNull(buckets.Select((b, i) => house[i] is null ? null : values.Bucket(p.Id, period, b)))))
             .ToList();
 
+        var plugBuckets = input.Plugs
+            .Select(p => new PlugBucketSeries(p.Id, p.Alias, buckets
+                .Select((b, i) => house[i] is null ? null : byHour ? values.Hour(p.Id, b) : values.Bucket(p.Id, period, b))
+                .ToList()))
+            .ToList();
+
         var isCurrent = input.NowUtc >= period.StartUtc(input.Tz) && input.NowUtc < period.EndUtc(input.Tz);
+        // A period in progress is compared with the same share of the previous one (the home page's rule, SameFraction);
+        // a day by its live hours on both sides (its stored total can be newer than the stream).
+        double? sameFraction = null, soFar = null;
+        if (isCurrent && SameFraction.Position(buckets, input.NowUtc) is { } pos)
+        {
+            sameFraction = SameFraction.Previous(previousHouse, pos);
+            soFar = byHour ? ReportMath.SumOrNull(house) : houseTotal;
+        }
+        var delta = isCurrent ? ReportMath.DeltaPct(soFar, sameFraction) : ReportMath.DeltaPct(houseTotal, previousTotal);
         return new HouseReport(period, buckets, input.Main.Alias, house, plugs, rest, kinds,
-            houseTotal, plugsTotal, restTotal, previousTotal, ReportMath.DeltaPct(houseTotal, previousTotal), subs, input.FirstHouseDay,
-            totalKind, partial, isCurrent, plugTotals, previousBuckets, previousHouse);
+            houseTotal, plugsTotal, restTotal, previousTotal, delta, subs, input.FirstHouseDay,
+            totalKind, partial, isCurrent, plugTotals, previousBuckets, previousHouse, sameFraction, soFar, plugBuckets);
     }
 
     private static (double? Value, RestKind Kind) Rest(double house, double plugs, double hours, bool partial)

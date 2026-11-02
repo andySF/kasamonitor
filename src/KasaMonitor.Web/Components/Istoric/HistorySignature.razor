@@ -1,0 +1,67 @@
+@using KasaMonitor.Core.History
+@using KasaMonitor.Core.Reports
+@using KasaMonitor.Web.Ui
+
+@* The energy signature of the house: one dot per day (x = heating degree days, y = heating gas kWh), the least-squares
+   line, slope (kWh per degree day), intercept and R²; from 7 days with both values, otherwise why not. *@
+@if (!HasOutdoor)
+{
+    <div class="empty">Fără senzor de temperatură exterioară (bifați „afară” la un senzor în <a href="/clima">Climă</a> sau setați coordonatele Open-Meteo).</div>
+}
+else if (Signature is not { } sig || !sig.Enough)
+{
+    <div class="empty">
+        Insuficiente date@(Signature?.FirstDay is { } f ? $", de la {ReportFormat.Date(f)}" : ""): @(Signature?.Points.Count ?? 0) zile cu temperatură exterioară și gaz de încălzire în @ReportFormat.Title(Period)
+        (sunt necesare cel puțin @EnergySignatureRule.MinDays@(Signature is { Points.Count: >= EnergySignatureRule.MinDays, Fit: null } ? ", cu grade-zile diferite" : "")).
+    </div>
+}
+else
+{
+    var fit = sig.Fit!;
+    var maxX = HomeSvg.NiceMax(Math.Max(1, sig.Points.Max(p => p.DegreeDays)));
+    var maxY = HomeSvg.NiceMax(Math.Max(1, Math.Max(sig.Points.Max(p => p.GasHeatingKwh), Math.Max(fit.At(0), fit.At(maxX)))));
+    var plotW = W - L - R;
+    var plotH = H - T - B;
+    double X(double v) => L + v / maxX * plotW;
+    double Y(double v) => T + plotH - Math.Clamp(v, 0, maxY) / maxY * plotH;
+    <svg class="chart" viewBox="0 0 @HomeSvg.N(W) @HomeSvg.N(H)" role="img" aria-label="Gaz de încălzire în funcție de grade-zile">
+        @for (var t = 0; t <= 4; t++)
+        {
+            var vy = maxY * t / 4;
+            var vx = maxX * t / 4;
+            <g>
+                <line class="@(t == 0 ? "baseline" : "gridline")" x1="@HomeSvg.N(L)" x2="@HomeSvg.N(W - R)" y1="@HomeSvg.N(Y(vy))" y2="@HomeSvg.N(Y(vy))" />
+                <text class="tick num" x="@HomeSvg.N(L - 6)" y="@HomeSvg.N(Y(vy) + 4)" text-anchor="end">@HeatingFormat.Number(vy, HomeSvg.AxisDecimals(maxY / 4))</text>
+                <text class="tick num" x="@HomeSvg.N(X(vx))" y="@HomeSvg.N(H - 18)" text-anchor="middle">@HeatingFormat.Number(vx, HomeSvg.AxisDecimals(maxX / 4))</text>
+            </g>
+        }
+        <text class="tick" x="@HomeSvg.N(L + plotW / 2)" y="@HomeSvg.N(H - 3)" text-anchor="middle">bază − T medie afară (°C, fără prag)</text>
+        <text class="tick" x="4" y="@HomeSvg.N(T + 2)" dominant-baseline="hanging">kWh/zi</text>
+        <line class="hist-fit" x1="@HomeSvg.N(X(0))" y1="@HomeSvg.N(Y(fit.At(0)))" x2="@HomeSvg.N(X(maxX))" y2="@HomeSvg.N(Y(fit.At(maxX)))" />
+        @foreach (var p in sig.Points)
+        {
+            <circle class="k-heat hist-dotm" cx="@HomeSvg.N(X(p.DegreeDays))" cy="@HomeSvg.N(Y(p.GasHeatingKwh))" r="4">
+                <title>@($"{ReportFormat.Date(p.Day)}: T medie afară {HeatingFormat.Number(p.OutdoorMeanC, 1)} °C, bază − T = {HeatingFormat.Number(p.DegreeDays, 1)} °C, gaz încălzire {HomeFormat.KwhU(p.GasHeatingKwh)}")</title>
+            </circle>
+        }
+    </svg>
+    <div class="foot-note">
+        Dreapta: gaz încălzire ≈ @HeatingFormat.Number(fit.Intercept, 1) + @HeatingFormat.Number(fit.Slope, 2) × (bază − T medie) (kWh/zi) ·
+        <b>@HeatingFormat.Number(fit.Slope, 2) kWh pe grad</b> · R² = @HeatingFormat.Number(fit.RSquared, 2) · @fit.Count zile (@ReportFormat.Title(Period)).
+        x = max(0, @HeatingFormat.Number(Signature.Rule.BaseC, 1) °C − T medie), fără pragul Eurostat (între prag și bază centrala încă încălzește).
+        Zilele încheiate, gaz după ziua centralei.
+    </div>
+}
+
+@code {
+    private const double W = 520;
+    private const double H = 230;
+    private const double L = 44;
+    private const double R = 10;
+    private const double T = 18;
+    private const double B = 34;
+
+    [Parameter] public EnergySignature? Signature { get; set; }
+    [Parameter] public ReportPeriod Period { get; set; }
+    [Parameter] public bool HasOutdoor { get; set; }
+}

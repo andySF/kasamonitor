@@ -1,4 +1,5 @@
 using KasaMonitor.Core.Heating;
+using KasaMonitor.Core.Home;
 
 namespace KasaMonitor.Core.Reports;
 
@@ -28,7 +29,9 @@ public sealed record ReportSeries(string Key, IReadOnlyList<double?> Values);
 /// <see cref="ApiTotal"/> = the boiler's own value for this calendar period (today, this/last month, this/last year);
 /// <see cref="Total"/> = the boiler's value when it has one, otherwise ours.
 /// <see cref="Remainder"/> (year only, aligned with <see cref="Series"/>): the part of the boiler's year total not
-/// covered by stored days ("restul anului").
+/// covered by stored days ("restul anului"). <see cref="DeltaPct"/>: a period in progress against the same share of the
+/// previous one (<see cref="PreviousSameFraction"/>, <see cref="SameFraction"/>, the home page's rule); a past period
+/// against the whole previous one (<see cref="PreviousTotal"/>).
 /// </summary>
 public sealed record HeatingKindReport(
     string Kind,
@@ -40,7 +43,9 @@ public sealed record HeatingKindReport(
     double? Total,
     double? PreviousTotal,
     double? DeltaPct,
-    bool ApiDiffers);
+    bool ApiDiffers,
+    double? PreviousSameFraction = null,
+    bool InProgress = false);
 
 /// <summary>The "Rapoarte" of /centrala for one period: gas, boiler electricity and heat produced.</summary>
 public sealed record HeatingReport(
@@ -59,6 +64,8 @@ public sealed record HeatingReport(
 /// <param name="FirstDay">First stored day (the history starts there).</param>
 /// <param name="Tz">The boiler's zone (<see cref="BoilerClock"/>): days, hours and the boiler's periods follow its midnight.</param>
 /// <param name="DisplayTz">Zone of the hour labels of a day report (the application's); null = <paramref name="Tz"/>.</param>
+/// <param name="NowUtc">Now: a period in progress is compared with the same share of the previous one; null = never in progress.</param>
+/// <param name="PreviousReadings">Day only: readings of the previous day (its hours up to the same point).</param>
 public sealed record HeatingReportInput(
     ReportPeriod Period,
     TimeZoneInfo Tz,
@@ -68,7 +75,9 @@ public sealed record HeatingReportInput(
     IReadOnlyList<HeatingEnergyPeriod> ApiPeriods,
     IReadOnlyList<HeatingCounterReading> Readings,
     DateOnly? FirstDay,
-    TimeZoneInfo? DisplayTz = null);
+    TimeZoneInfo? DisplayTz = null,
+    DateTimeOffset? NowUtc = null,
+    IReadOnlyList<HeatingCounterReading>? PreviousReadings = null);
 
 /// <summary>
 /// Builds the boiler reports. Days and months come from the daily history KasaMonitor builds from the boiler's
@@ -173,7 +182,37 @@ public static class HeatingReportBuilder
         var total = api ?? own;
         var previous = TotalOf(def, input, period.Previous(), days, months);
         var differs = own is { } o && api is { } a && ReportMath.DiffersBy(o, a, ApiDifferenceThreshold);
-        return new HeatingKindReport(def.Kind, def.Unit, series, remainder, own, api, total, previous, ReportMath.DeltaPct(total, previous), differs);
+        var inProgress = input.NowUtc is { } now && now >= period.StartUtc(input.Tz) && now < period.EndUtc(input.Tz);
+        double? sameFraction = null;
+        if (inProgress && SameFraction.Position(buckets, input.NowUtc!.Value) is { } pos)
+            sameFraction = SameFraction.Previous(PreviousBuckets(def, input, days, months), pos);
+        var delta = inProgress ? ReportMath.DeltaPct(total, sameFraction) : ReportMath.DeltaPct(total, previous);
+        return new HeatingKindReport(def.Kind, def.Unit, series, remainder, own, api, total, previous, delta, differs, sameFraction, inProgress);
+    }
+
+    /// <summary>
+    /// The previous period's values per bucket (both purposes): its days, its months, or (a day) its hours from
+    /// <see cref="HeatingReportInput.PreviousReadings"/>; empty when unknown.
+    /// </summary>
+    private static IReadOnlyList<double?> PreviousBuckets(KindDef def, HeatingReportInput input,
+        IReadOnlyDictionary<DateOnly, HeatingEnergyDay> days, IReadOnlyDictionary<(int, int), HeatingMonthSums> months)
+    {
+        var previous = input.Period.Previous();
+        var buckets = previous.Buckets(input.Tz);
+        switch (previous.Kind)
+        {
+            case ReportGranularity.Day:
+            {
+                if (input.PreviousReadings is not { Count: > 0 } readings) return Array.Empty<double?>();
+                var hourly = def.Hourly.Select(h => HourlyIncrements(readings.Select(r => (r.TsUtc, h.Value(r))), buckets, input.Tz)).ToList();
+                return buckets.Select((_, i) => ReportMath.SumOrNull(hourly.Select(v => v[i]))).ToList();
+            }
+            case ReportGranularity.Year:
+                return buckets.Select(b => months.TryGetValue((b.Day.Year, b.Day.Month), out var m)
+                    ? ReportMath.SumOrNull(new[] { def.MonthHeating(m), def.MonthDhw(m) }) : null).ToList();
+            default:
+                return buckets.Select(b => StoredDay(def, days, b.Day, input.Today)).ToList();
+        }
     }
 
     /// <summary>Total of a period without its bars: the boiler's value when it has one, otherwise the stored days / months.</summary>

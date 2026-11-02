@@ -1,0 +1,70 @@
+@using KasaMonitor.Core.Reports
+@using KasaMonitor.Core.Costing
+@using KasaMonitor.Core.History
+@using KasaMonitor.Workers
+@using KasaMonitor.Web.Ui
+
+@* /history „Aparate (Miele)”: the cycles of the period (start, duration, program, Miele's energy vs the plug's, water,
+   cost) and, per program, how many, the mean values and the spread of duration and energy (one dot per cycle). *@
+<section class="hcard hist-sec" id="aparate" aria-labelledby="h-aparate">
+    <div class="card-h">
+        <h2 id="h-aparate">Aparate (Miele) <a class="card-link" href="/aparate" title="Aparate: fazele și profilul fiecărui ciclu" aria-label="Aparate">→</a></h2>
+        <div class="hist-tools"><CsvLink Href="@CsvHref" Label="CSV cicluri" /><CsvLink Href="@ProgramsCsvHref" Label="CSV programe" /></div>
+    </div>
+    @if (Data is null)
+    {
+        <div class="empty">Se încarcă…</div>
+    }
+    else if (!Data.HasAppliances)
+    {
+        <div class="empty">Niciun aparat Miele conectat (vezi <a href="/aparate">Aparate</a>).</div>
+    }
+    else if (Data.Cycles.Count == 0)
+    {
+        <div class="empty">Niciun ciclu în perioada aleasă.</div>
+    }
+    else
+    {
+        var closed = Data.Cycles.Where(c => !c.Cycle.IsOpen).ToList();
+        var kwh = ReportMath.SumOrNull(closed.Select(c => c.BestKwh));
+        var water = ReportMath.SumOrNull(closed.Select(c => c.WaterL));
+        var top = Data.Programs.FirstOrDefault();
+        <div class="tiles hist-tiles">
+            <div class="tile">
+                <div class="lbl">Cicluri</div>
+                <div class="val num">@Data.Cycles.Count</div>
+                <div class="meta">@(top is null ? "" : $"cel mai folosit: {top.Program} ({top.Cycles})")</div>
+            </div>
+            <div class="tile">
+                <div class="lbl">Energie</div>
+                <div class="val num">@HomeFormat.Kwh(kwh) <small>kWh</small></div>
+                <div class="meta">@HomeFormat.Lei(Prices.Electricity(kwh)) · priza când a măsurat, altfel Miele</div>
+            </div>
+            <div class="tile">
+                <div class="lbl">Apă</div>
+                <div class="val num">@(water is { } w ? HeatingFormat.Number(w, 0) : "—") <small>L</small></div>
+                <div class="meta">raportată de Miele</div>
+            </div>
+        </div>
+        <div class="hist-grid">
+            <div>
+                <h3 class="mini-h">Pe program · durata (min) și energia (kWh) fiecărui ciclu</h3>
+                <HistoryStrips Rows="Data.Programs" />
+            </div>
+            <div>
+                <h3 class="mini-h">Pe program</h3>
+                <HistoryTableView Table="HistoryTables.MielePrograms(Data, Prices)" />
+            </div>
+        </div>
+        <h3 class="mini-h" style="margin-top:10px">Ciclurile perioadei</h3>
+        <HistoryTableView Table="HistoryTables.MieleCycles(Data, Prices, Tz)" />
+    }
+</section>
+
+@code {
+    [Parameter] public HistoryMiele? Data { get; set; }
+    [Parameter, EditorRequired] public EnergyPrices Prices { get; set; } = null!;
+    [Parameter, EditorRequired] public TimeZoneInfo Tz { get; set; } = TimeZoneInfo.Utc;
+    [Parameter, EditorRequired] public string CsvHref { get; set; } = "";
+    [Parameter, EditorRequired] public string ProgramsCsvHref { get; set; } = "";
+}

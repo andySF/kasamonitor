@@ -1,0 +1,111 @@
+/* /history „Istoric” (0.9.2): one long page on the home page's look (the root has both .home and .hist, so the cards, tiles,
+   legends, deltas and tables of home.css apply); here only what the history adds: the sticky period bar, the section
+   chips, the summary row, the two-column section grid, the scrolling tables and the chart classes. Colours = theme tokens. */
+
+.hist .hist-top { position: sticky; top: 0; z-index: 20; background: var(--page); padding: 8px 0; margin-bottom: 8px; border-bottom: 1px solid var(--grid); }
+.hist .hist-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-left: auto; }
+.hist .hist-chips a { font-size: 12.5px; padding: 3px 10px; border: 1px solid var(--border); border-radius: 999px; color: var(--ink-2); text-decoration: none; background: var(--surface); }
+.hist .hist-chips a:hover { color: var(--link); border-color: var(--link); }
+.hist .hist-sec { margin-bottom: 16px; scroll-margin-top: 110px; }
+.hist .hist-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.hist .hist-chip { font-size: 12.5px; }
+.hist .hist-csv { padding: 1px 8px; font-size: 12.5px; }
+
+/* summary row: one tile per aspect, each a link to its section */
+.hist .hist-summary { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 12px; margin-bottom: 16px; }
+.hist .hist-summary .tile { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 10px 14px; box-shadow: var(--shadow); min-width: 0; }
+.hist .hist-summary .tile:hover { border-color: var(--link); text-decoration: none; }
+.hist .hist-summary .tile .val { font-size: 24px; }
+@media (max-width: 1279px) { .hist .hist-summary { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+@media (max-width: 640px) { .hist .hist-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+
+/* a section: chart and figures on the left, the second chart on the right (PC-first), one column under 1100 px */
+.hist .hist-grid { display: grid; grid-template-columns: minmax(0, 1.45fr) minmax(0, 1fr); gap: 20px; align-items: start; margin: 8px 0; }
+@media (max-width: 1099px) { .hist .hist-grid { grid-template-columns: minmax(0, 1fr); } }
+.hist .hist-tiles { margin-bottom: 8px; }
+.hist .hist-tiles4 { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+@media (max-width: 900px) { .hist .hist-tiles4 { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.hist .mini-h .muted { font-weight: 400; }
+
+/* tables: the same rows as the CSV, sticky header, scroll after ~14 rows */
+.hist .hist-table-wrap { max-height: 420px; overflow: auto; margin-top: 8px; border-top: 1px solid var(--grid); }
+.hist table.hist-table thead th { position: sticky; top: 0; background: var(--surface); z-index: 1; white-space: nowrap; }
+.hist table.hist-table td:first-child { white-space: nowrap; }
+.hist table.hist-table td a { color: var(--link); text-decoration: none; }
+.hist table.hist-table td a:hover { text-decoration: underline; }
+
+/* charts */
+.hist svg.hist-bars, .hist svg.hist-timeline { max-width: 1100px; }
+.hist .k-rest { fill: var(--c-standby); background: var(--c-standby); }
+.hist .k-heat { fill: var(--c-gas-heat); background: var(--c-gas-heat); }
+.hist .k-dhw { fill: var(--c-gas-dhw); background: var(--c-gas-dhw); }
+.hist .k-ink { stroke: var(--ink-2); fill: var(--ink-2); }
+.hist .k-p1 { fill: var(--c-plug-1); background: var(--c-plug-1); }
+.hist .k-p2 { fill: var(--c-plug-2); background: var(--c-plug-2); }
+.hist .k-p3 { fill: var(--c-plug-3); background: var(--c-plug-3); }
+.hist .k-p4 { fill: var(--c-plug-4); background: var(--c-plug-4); }
+.hist .k-p5 { fill: var(--c-plug-5); background: var(--c-plug-5); }
+.hist .k-p6 { fill: var(--c-plug-6); background: var(--c-plug-6); }
+.hist .k-p7 { fill: var(--c-plug-7); background: var(--c-plug-7); }
+.hist .k-p8 { fill: var(--c-plug-8); background: var(--c-plug-8); }
+.hist .hist-line { fill: none; stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+.hist polyline.hist-line.k-ink { fill: none; }
+.hist .hist-dot.k-ink { stroke: none; }
+.hist .hist-band { stroke: none; opacity: .13; }
+.hist .hist-dotm { opacity: .8; stroke: var(--surface); stroke-width: 1; }
+.hist .hist-mean { stroke: var(--ink); stroke-width: 2; }
+.hist .hist-fit { stroke: var(--ink-2); stroke-width: 2; stroke-dasharray: 6 4; }
+.hist .hist-track { fill: var(--grid); opacity: .5; }
+.hist .hist-cell0 { fill: var(--grid); opacity: .45; }
+
+/* lines of the climate charts: rooms in the categorical colours, outdoor dashed ink */
+.hist .ln-out { stroke: var(--ink-2); fill: var(--ink-2); stroke-dasharray: 5 3; }
+.hist .ln-p1 { stroke: var(--c-plug-1); fill: var(--c-plug-1); }
+.hist .ln-p2 { stroke: var(--c-plug-2); fill: var(--c-plug-2); }
+.hist .ln-p3 { stroke: var(--c-plug-3); fill: var(--c-plug-3); }
+.hist .ln-p4 { stroke: var(--c-plug-4); fill: var(--c-plug-4); }
+.hist .ln-p5 { stroke: var(--c-plug-5); fill: var(--c-plug-5); }
+.hist .ln-p6 { stroke: var(--c-plug-6); fill: var(--c-plug-6); }
+.hist .ln-p7 { stroke: var(--c-plug-7); fill: var(--c-plug-7); }
+.hist .ln-p8 { stroke: var(--c-plug-8); fill: var(--c-plug-8); }
+.hist polyline.hist-line[class*="ln-"] { fill: none; }
+.hist .hist-band.ln-out { stroke-dasharray: none; }
+.hist .sw.line.ln-out { background: none; border-top: 2px dashed var(--ink-2); height: 0; }
+.hist .sw.line.ln-p1 { background: var(--c-plug-1); }
+.hist .sw.line.ln-p2 { background: var(--c-plug-2); }
+.hist .sw.line.ln-p3 { background: var(--c-plug-3); }
+.hist .sw.line.ln-p4 { background: var(--c-plug-4); }
+.hist .sw.line.ln-p5 { background: var(--c-plug-5); }
+.hist .sw.line.ln-p6 { background: var(--c-plug-6); }
+.hist .sw.line.ln-p7 { background: var(--c-plug-7); }
+.hist .sw.line.ln-p8 { background: var(--c-plug-8); }
+/* the consumers' breakdown (also on /consumatori, so not only under .hist) */
+.k-undet { fill: none; stroke: var(--c-rest); stroke-width: 1.2; stroke-dasharray: 3 2; }
+.k-excess { fill: var(--bad); opacity: .35; background: var(--bad); }
+.cons-list .bar i.k-excess, .cons-list .sw.k-excess { background: var(--bad); opacity: .45; }
+.cons-list { list-style: none; margin: 0; padding: 0; font-size: 13px; }
+.cons-list .cons-row { padding: 2px 0; border-bottom: 1px solid var(--grid); }
+.cons-list .cons-row:last-child { border-bottom: 0; }
+.cons-list .cons-line { display: grid; grid-template-columns: 12px minmax(0, 1fr) 22% auto auto 40px; gap: 8px; align-items: center; }
+.cons-list details > summary { list-style: none; cursor: pointer; }
+.cons-list details > summary::-webkit-details-marker { display: none; }
+.cons-list details > summary .nm::after { content: " ▸"; color: var(--ink-3); }
+.cons-list details[open] > summary .nm::after { content: " ▾"; }
+.cons-list .nm { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cons-list .bar { height: 8px; background: var(--grid); border-radius: 4px; overflow: hidden; }
+.cons-list .bar i { display: block; height: 100%; border-radius: 4px; }
+.cons-list .bar i.k-undet { background: repeating-linear-gradient(90deg, var(--c-rest) 0 3px, transparent 3px 5px); }
+.cons-list .bar i.k-p1 { background: var(--c-plug-1); } .cons-list .bar i.k-p2 { background: var(--c-plug-2); } .cons-list .bar i.k-p3 { background: var(--c-plug-3); }
+.cons-list .bar i.k-p4 { background: var(--c-plug-4); } .cons-list .bar i.k-p5 { background: var(--c-plug-5); } .cons-list .bar i.k-p6 { background: var(--c-plug-6); }
+.cons-list .bar i.k-p7 { background: var(--c-plug-7); } .cons-list .bar i.k-pale { background: var(--c-electric-pale); } .cons-list .bar i.k-off { background: var(--c-off); }
+.cons-list .sw { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
+.cons-list .sw.k-p1 { background: var(--c-plug-1); } .cons-list .sw.k-p2 { background: var(--c-plug-2); } .cons-list .sw.k-p3 { background: var(--c-plug-3); }
+.cons-list .sw.k-p4 { background: var(--c-plug-4); } .cons-list .sw.k-p5 { background: var(--c-plug-5); } .cons-list .sw.k-p6 { background: var(--c-plug-6); }
+.cons-list .sw.k-p7 { background: var(--c-plug-7); } .cons-list .sw.k-pale { background: var(--c-electric-pale); } .cons-list .sw.k-off { background: var(--c-off); }
+.cons-list .sw.k-undet { background: none; border: 1.5px dashed var(--c-rest); }
+.cons-list .v, .cons-list .pct { text-align: right; color: var(--ink-2); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.cons-list .cons-members { list-style: none; margin: 2px 0 4px 20px; padding: 0; font-size: 12.5px; columns: 2; column-gap: 18px; }
+.cons-list .cons-members li { display: flex; justify-content: space-between; gap: 8px; break-inside: avoid; }
+.cons-sum { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+@media (max-width: 900px) { .cons-sum { grid-template-columns: minmax(0, 1fr); } .cons-list .cons-members { columns: 1; } }
+@media (max-width: 899px) { .hist .hist-top { position: static; } .hist .hist-chips { margin-left: 0; } }

@@ -1,8 +1,10 @@
 using System.Diagnostics;
 using KasaMonitor.Core.Abstractions;
 using KasaMonitor.Core.Costing;
+using KasaMonitor.Core.History;
 using KasaMonitor.Core.Home;
 using KasaMonitor.Core.Models;
+using KasaMonitor.Core.Nilm;
 using KasaMonitor.Core.Reports;
 using KasaMonitor.Workers.Nilm;
 using Microsoft.Extensions.DependencyInjection;
@@ -53,6 +55,10 @@ public sealed record HomeMetricSnapshot(double? StandbyW, BillEstimate? Bill)
     public static readonly HomeMetricSnapshot Empty = new(null, null);
 }
 
+/// <summary>The detected appliances (not hidden, not plug-confirmed) and their runs overlapping [from, to), with the time read (<see cref="NilmService.GetDetectedRunsAsync"/>).</summary>
+public delegate Task<(IReadOnlyDictionary<long, ApplianceSignature> Detected, IReadOnlyList<ApplianceRun> Runs, DateTimeOffset NowUtc)> DetectedRunsProvider(
+    DateTimeOffset fromUtc, DateTimeOffset toUtc, CancellationToken ct);
+
 /// <summary>
 /// The data of the home page „Acasă” (/): period aggregates from the existing reports (live minute aggregates grouped by
 /// hour, daily rows, the boiler's daily history; never <c>LiveSamples</c>), the detected appliances' energy, the standby floor
@@ -66,8 +72,8 @@ public sealed record HomeMetricSnapshot(double? StandbyW, BillEstimate? Bill)
 /// </summary>
 public sealed class HomeService : BackgroundService
 {
-    public static readonly TimeSpan CurrentDayFor = TimeSpan.FromMinutes(1);
-    public static readonly TimeSpan InProgressFor = TimeSpan.FromMinutes(10);
+    public static readonly TimeSpan CurrentDayFor = PeriodCache<ReportPeriod, HomePeriod>.CurrentDayFor;
+    public static readonly TimeSpan InProgressFor = PeriodCache<ReportPeriod, HomePeriod>.InProgressFor;
     public static readonly TimeSpan StandbyEvery = TimeSpan.FromHours(1);
     public static readonly TimeSpan ProfileEvery = TimeSpan.FromHours(1);
     public static readonly TimeSpan Interval = TimeSpan.FromMinutes(1);
@@ -77,16 +83,6 @@ public sealed class HomeService : BackgroundService
     public static readonly TimeSpan NilmWarningEvery = TimeSpan.FromHours(1);
     public const int MaxCachedPeriods = 32;
 
-    /// <summary>One cached period: when its computation started, the local day it belongs to, the value, a refresh in progress.</summary>
-    private sealed class Entry
-    {
-        public required DateTimeOffset At { get; init; }
-        public required DateOnly Day { get; init; }
-        public required Task<HomePeriod> Task { get; init; }
-        /// <summary>The refresh in progress, including its swap into the cache.</summary>
-        public Task? Refresh { get; set; }
-    }
-
     /// <summary>An hourly value (standby, profile) published as one reference, so a reader never sees half of an update.</summary>
     private sealed record Cached<T>(DateTimeOffset At, DateOnly Day, T Value);
 
@@ -95,11 +91,10 @@ public sealed class HomeService : BackgroundService
     private readonly HeatingState? _heating;
     private readonly IHeatingSettingsService? _heatingSettings;
     private readonly IKasaSettingsService _kasaSettings;
-    private readonly Func<DateTimeOffset, DateTimeOffset, CancellationToken, Task<IReadOnlyList<ApplianceEnergyRow>>>? _detected;
+    private readonly DetectedRunsProvider? _detected;
     private readonly Func<DateTimeOffset> _clock;
     private readonly ILogger _log;
-    private readonly object _cacheLock = new();
-    private readonly Dictionary<ReportPeriod, Entry> _cache = new();
+    private readonly PeriodCache<ReportPeriod, HomePeriod> _cache;
     private readonly SemaphoreSlim _standbyGate = new(1, 1);
     private readonly SemaphoreSlim _profileGate = new(1, 1);
     private Cached<StandbyFloor?>? _standby;
@@ -109,16 +104,17 @@ public sealed class HomeService : BackgroundService
     public HomeService(IServiceScopeFactory scopes, EnergyReportService reports, IKasaSettingsService kasaSettings,
         HeatingState? heating = null, IHeatingSettingsService? heatingSettings = null, NilmService? nilm = null,
         ILogger<HomeService>? log = null, Func<DateTimeOffset>? clock = null,
-        Func<DateTimeOffset, DateTimeOffset, CancellationToken, Task<IReadOnlyList<ApplianceEnergyRow>>>? detectedEnergy = null)
+        DetectedRunsProvider? detectedRuns = null)
     {
         _scopes = scopes;
         _reports = reports;
         _kasaSettings = kasaSettings;
         _heating = heating;
         _heatingSettings = heatingSettings;
-        _detected = detectedEnergy ?? (nilm is null ? null : nilm.GetDetectedEnergyAsync);
+        _detected = detectedRuns ?? (nilm is null ? null : nilm.GetDetectedRunsAsync);
         _clock = clock ?? (() => DateTimeOffset.UtcNow);
         _log = log ?? (ILogger)NullLogger.Instance;
+        _cache = new PeriodCache<ReportPeriod, HomePeriod>(_clock, () => TimeZone, MaxCachedPeriods, _log, "Home page data");
     }
 
     public TimeZoneInfo TimeZone => _reports.TimeZone;
@@ -131,74 +127,17 @@ public sealed class HomeService : BackgroundService
     public HomeMetricSnapshot Metrics { get; private set; } = HomeMetricSnapshot.Empty;
 
     /// <summary>How long a computed period is kept: current day 1 min, other period in progress 10 min, past: until the day changes.</summary>
-    public TimeSpan Ttl(ReportPeriod period, DateTimeOffset nowUtc)
-    {
-        var today = LocalClock.Day(nowUtc, TimeZone);
-        if (!period.Contains(today)) return TimeSpan.MaxValue;
-        return period.Kind == ReportGranularity.Day ? CurrentDayFor : InProgressFor;
-    }
+    public TimeSpan Ttl(ReportPeriod period, DateTimeOffset nowUtc) => PeriodCache<ReportPeriod, HomePeriod>.Ttl(period, nowUtc, TimeZone);
 
     /// <summary>
     /// The data of a period: the cached value while fresh (<see cref="Ttl"/>, same local day); an expired one while a single
-    /// refresh runs in the background; otherwise one computation shared by every caller.
+    /// refresh runs in the background; otherwise one computation shared by every caller (<see cref="PeriodCache{TKey,TValue}"/>).
     /// </summary>
-    public Task<HomePeriod> GetAsync(ReportPeriod period, CancellationToken ct)
-    {
-        Task<HomePeriod> result;
-        lock (_cacheLock)
-        {
-            var now = _clock();
-            var today = LocalClock.Day(now, TimeZone);
-            if (_cache.TryGetValue(period, out var e) && e.Day == today && !e.Task.IsFaulted && !e.Task.IsCanceled)
-            {
-                if (now - e.At >= Ttl(period, now) && e.Task.IsCompletedSuccessfully && e.Refresh is null)
-                {
-                    var refresh = Start(period, now);
-                    e.Refresh = refresh.ContinueWith(t => Refreshed(period, e, t, now, today), TaskScheduler.Default);
-                }
-                result = e.Task;
-            }
-            else
-            {
-                result = Start(period, now);
-                _cache[period] = new Entry { At = now, Day = today, Task = result };
-                Evict(today);
-            }
-        }
-        return ct.CanBeCanceled ? result.WaitAsync(ct) : result;
-    }
+    public Task<HomePeriod> GetAsync(ReportPeriod period, CancellationToken ct) =>
+        _cache.GetAsync(period, period, now => ComputeTimedAsync(period, now, CancellationToken.None), ct);
 
     /// <summary>The refresh in progress of a period (completed when none): tests and diagnostics.</summary>
-    public Task RefreshingAsync(ReportPeriod period)
-    {
-        lock (_cacheLock)
-            return _cache.TryGetValue(period, out var e) && e.Refresh is { } r ? r : Task.CompletedTask;
-    }
-
-    private Task<HomePeriod> Start(ReportPeriod period, DateTimeOffset now) =>
-        Task.Run(() => ComputeTimedAsync(period, now, CancellationToken.None));
-
-    private void Refreshed(ReportPeriod period, Entry old, Task<HomePeriod> refresh, DateTimeOffset startedAt, DateOnly day)
-    {
-        lock (_cacheLock)
-        {
-            if (!_cache.TryGetValue(period, out var cur) || !ReferenceEquals(cur, old)) return;
-            if (refresh.IsCompletedSuccessfully) _cache[period] = new Entry { At = startedAt, Day = day, Task = refresh };
-            else
-            {
-                old.Refresh = null;   // the old value stays; the next call tries again
-                _log.LogWarning(refresh.Exception?.GetBaseException(), "Home page data of {Kind} {Start} could not be refreshed", period.Kind, period.Start);
-            }
-        }
-    }
-
-    /// <summary>Under the cache lock: drops the periods of another day, then the oldest beyond <see cref="MaxCachedPeriods"/>.</summary>
-    private void Evict(DateOnly today)
-    {
-        foreach (var key in _cache.Where(kv => kv.Value.Day != today).Select(kv => kv.Key).ToList()) _cache.Remove(key);
-        foreach (var key in _cache.OrderBy(kv => kv.Value.At).Take(Math.Max(0, _cache.Count - MaxCachedPeriods)).Select(kv => kv.Key).ToList())
-            _cache.Remove(key);
-    }
+    public Task RefreshingAsync(ReportPeriod period) => _cache.RefreshingAsync(period);
 
     /// <summary>The standby floor: recomputed at most once per <see cref="StandbyEvery"/>.</summary>
     public async Task<StandbyFloor?> GetStandbyAsync(CancellationToken ct)
@@ -303,12 +242,14 @@ public sealed class HomeService : BackgroundService
             var names = await DisplayNamesAsync(ct);
             var plugs = (house.PlugTotals ?? Array.Empty<SubMeterTotal>())
                 .Select(p => new FlowItem(p.PlugId.ToString(), names.GetValueOrDefault(p.PlugId, p.Alias), FlowKind.Plug, p.Kwh ?? 0, null,
-                    "/history?plugId=" + p.PlugId))
+                    PeriodQuery.History(period, plug: p.PlugId, anchor: "curent")))
                 .ToList();
-            IReadOnlyList<ApplianceEnergyRow> detected = Array.Empty<ApplianceEnergyRow>();
+            IReadOnlyDictionary<long, ApplianceSignature> signatures = new Dictionary<long, ApplianceSignature>();
+            IReadOnlyList<ApplianceRun> runs = Array.Empty<ApplianceRun>();
+            var runsNow = now;
             if (_detected is not null)
             {
-                try { detected = await _detected(period.StartUtc(tz), period.EndUtc(tz), ct); }
+                try { (signatures, runs, runsNow) = await _detected(period.StartUtc(tz), period.EndUtc(tz), ct); }
                 catch (Exception ex) when (ex is not OperationCanceledException)
                 {
                     if (now - _lastNilmWarning >= NilmWarningEvery)
@@ -318,8 +259,11 @@ public sealed class HomeService : BackgroundService
                     }
                 }
             }
+            // The detected appliances scaled bar by bar (EnergyFlowRule.ScalePerBucket), the same rule as /history „Consumatori”.
+            var scaling = EnergyFlowRule.ScalePerBucket(house.HouseKwh, house.PlugsKwh, DetectedApplianceStats.PerBucket(runs, house.Buckets, runsNow));
             flows = EnergyFlowRule.Build(meterKwh, plugs,
-                detected.Select(d => new FlowItem("sig-" + d.SignatureId, d.Name, FlowKind.Detected, d.Wh / 1000.0, "detectat, fără priză", "/consumatori")));
+                scaling.Detected.Select(kv => new FlowItem("sig-" + kv.Key, signatures.TryGetValue(kv.Key, out var sig) ? sig.Name : "#" + kv.Key,
+                    FlowKind.Detected, scaling.DetectedKwh(kv.Key), "detectat, fără priză", "/consumatori")), scaling);
         }
 
         // Gas follows the boiler's days (BoilerClock, 0.8.1): the current local day is the boiler's current day (which starts

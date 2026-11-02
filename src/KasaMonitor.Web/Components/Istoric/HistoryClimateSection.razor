@@ -1,0 +1,99 @@
+@using KasaMonitor.Core.Climate
+@using KasaMonitor.Core.Costing
+@using KasaMonitor.Core.History
+@using KasaMonitor.Core.Reports
+@using KasaMonitor.Workers
+@using KasaMonitor.Web.Ui
+
+@* /history „Climă”: min / mean / max temperature and humidity per sensor and bar, outdoor vs rooms, heating degree days
+   (Eurostat by default, base from /settings) and the energy signature: heating gas (kWh/day) ~ degree days/day with the
+   regression line and R², shown from 7 days with both values. *@
+<section class="hcard hist-sec" id="clima" aria-labelledby="h-clima">
+    <div class="card-h">
+        <h2 id="h-clima">Climă <a class="card-link" href="/clima" title="Climă: curbele de 24 h / 7 / 30 de zile" aria-label="Climă">→</a></h2>
+        <div class="hist-tools"><CsvLink Href="@CsvHref" /><CsvLink Href="@DegreeDaysCsvHref" Label="CSV grade-zile" /></div>
+    </div>
+    @if (Data is null)
+    {
+        <div class="empty">Se încarcă…</div>
+    }
+    else if (Data.Sensors.Count == 0)
+    {
+        <div class="empty">Niciun senzor de climă (vezi <a href="/clima">Climă</a>).</div>
+    }
+    else
+    {
+        var kind = Kind;
+        var labels = Data.Buckets.Select(b => ReportFormat.BucketLabel(b, kind)).ToList();
+        var titles = Data.Buckets.Select(b => ReportFormat.BucketRow(b, kind)).ToList();
+        var rooms = Data.Sensors.Where(s => !s.Sensor.IsOutdoor && s.Period.AvgC is not null).ToList();
+        var outdoor = Data.Sensors.FirstOrDefault(s => s.Sensor.IsOutdoor);
+        var indoorMean = rooms.Count == 0 ? (double?)null : rooms.Average(s => s.Period.AvgC!.Value);
+        var coldest = rooms.OrderBy(s => s.Period.AvgC).FirstOrDefault();
+        var warmest = rooms.OrderByDescending(s => s.Period.AvgC).FirstOrDefault();
+        <div class="tiles hist-tiles hist-tiles4">
+            <div class="tile">
+                <div class="lbl">Casă (media camerelor)</div>
+                <div class="val num">@HeatingFormat.Number(indoorMean, 1) <small>°C</small></div>
+                <div class="meta">@(coldest is null ? "" : $"cea mai rece: {Room(coldest)} {HeatingFormat.Number(coldest.Period.AvgC, 1)} °C")</div>
+            </div>
+            <div class="tile">
+                <div class="lbl">Afară</div>
+                <div class="val num">@HeatingFormat.Number(outdoor?.Period.AvgC, 1) <small>°C</small></div>
+                <div class="meta">@(outdoor?.Period.MinC is { } mi && outdoor.Period.MaxC is { } ma ? $"min {HeatingFormat.Number(mi, 1)} · max {HeatingFormat.Number(ma, 1)} °C" : "fără senzor bifat „afară”")</div>
+            </div>
+            <div class="tile">
+                <div class="lbl">Cea mai caldă cameră</div>
+                <div class="val num">@HeatingFormat.Number(warmest?.Period.AvgC, 1) <small>°C</small></div>
+                <div class="meta">@(warmest is null ? "" : Room(warmest))</div>
+            </div>
+            <div class="tile">
+                <div class="lbl" title="Grade-zile de încălzire = bază − T medie afară, în zilele cu media ≤ @HeatingFormat.Number(Data.Rule.ThresholdC, 1) °C (metoda Eurostat; SR 4839 folosește altă metodă); doar zilele încheiate">Grade-zile, metoda Eurostat (bază @HeatingFormat.Number(Data.Rule.BaseC, 1) °C) ⓘ</div>
+                <div class="val num">@HeatingFormat.Number(Data.DegreeDaysTotal, 1) <small>°C·zi</small></div>
+                <div class="meta">@(Data.PartialDegreeDays is { } pd ? $"azi, parțial (neinclus): {HeatingFormat.Number(pd, 1)} · " : "")<a href="/settings">baza în Setări → Climă</a></div>
+            </div>
+        </div>
+        @if (Data.FirstReadingDay is { } first && first > Period.Start)
+        {
+            <div class="foot-note">⏳ date de climă din @ReportFormat.Date(first).</div>
+        }
+        <div class="hist-grid">
+            <div>
+                <h3 class="mini-h">Temperatura @ReportFormat.BucketsName(kind) (medie, banda min–max)</h3>
+                <HistoryLines Labels="labels" Titles="titles" AriaLabel="Temperatura pe senzor" Empty="Fără temperaturi în perioada aleasă."
+                              Series="@(Data.Sensors.Select((s, i) => new HistoryLines.LineSeries(Room(s), Css(s, i), s.Buckets.Select(b => b.AvgC).ToList(), s.Buckets.Select(b => b.MinC).ToList(), s.Buckets.Select(b => b.MaxC).ToList())).ToList())" />
+                <h3 class="mini-h" style="margin-top:8px">Umiditatea relativă (medie, %)</h3>
+                <HistoryLines Labels="labels" Titles="titles" H="170" Unit="%" Decimals="0" AriaLabel="Umiditatea pe senzor" Empty="Fără umiditate în perioada aleasă."
+                              Series="@(Data.Sensors.Where(s => s.Buckets.Any(b => b.AvgHumidity is not null)).Select(s => new HistoryLines.LineSeries(Room(s), Css(s, Data.Sensors.ToList().IndexOf(s)), s.Buckets.Select(b => b.AvgHumidity).ToList())).ToList())" />
+            </div>
+            <div>
+                @if (kind != ReportGranularity.Day && Data.Outdoor is not null)
+                {
+                    <h3 class="mini-h">Grade-zile @ReportFormat.BucketsName(kind) <span class="muted">(metoda Eurostat, zile încheiate)</span></h3>
+                    <HistoryBars Labels="labels" Titles="titles" H="150" Unit="°C·zi" Format="@(v => HeatingFormat.Number(v, 1))"
+                                 Series="@(new[] { new HistoryBars.BarSeries("Grade-zile (Eurostat)", "k-heat", Data.DegreeDays) })" AriaLabel="Grade-zile"
+                                 Extra="@(i => Data.PartialDay is { } pday && Period.BucketOfDay(pday) == i ? $"azi, parțial (neinclus): {HeatingFormat.Number(Data.PartialDegreeDays, 1)} °C·zi" : null)" />
+                }
+                <h3 class="mini-h" style="margin-top:8px">Gaz încălzire ~ grade-zile (semnătura energetică)</h3>
+                <HistorySignature Signature="Data.Signature" Period="Data.SignaturePeriod" HasOutdoor="Data.Outdoor is not null" />
+            </div>
+        </div>
+        <HistoryTableView Table="HistoryTables.Climate(Data, kind, Now, Compare)" />
+    }
+</section>
+
+@code {
+    [Parameter] public HistoryClimate? Data { get; set; }
+    [Parameter] public ReportPeriod Period { get; set; }
+    [Parameter] public bool Compare { get; set; }
+    [Parameter] public DateTimeOffset Now { get; set; }
+    [Parameter, EditorRequired] public string CsvHref { get; set; } = "";
+    [Parameter, EditorRequired] public string DegreeDaysCsvHref { get; set; } = "";
+
+    private ReportGranularity Kind => Period.Kind;
+
+    private static string Room(HistoryClimateSensor s) => s.Sensor.IsOutdoor ? "Afară" : string.IsNullOrWhiteSpace(s.Sensor.Room) ? s.Sensor.Name : s.Sensor.Room;
+
+    /// <summary>Outdoor: the dashed ink line; rooms: the categorical palette in order.</summary>
+    private static string Css(HistoryClimateSensor s, int i) => s.Sensor.IsOutdoor ? "ln-out" : "ln-p" + (i % 8 + 1);
+}

@@ -53,7 +53,7 @@
                     var scale = Math.Max(total, (c.PreviousKwh ?? 0) + prevGasKwh);
                 }
                 <div class="card-h">
-                    <h2 id="h-energy">@HomeFormat.EnergyTitle(_period, isToday) <a class="card-link" href="/history" title="Istoric (rapoartele casei)" aria-label="Istoric">→</a></h2>
+                    <h2 id="h-energy">@HomeFormat.EnergyTitle(_period, isToday) <a class="card-link" href="@PeriodQuery.History(_period, _compare, anchor: "curent")" title="Istoric pe aceeași perioadă" aria-label="Istoric">→</a></h2>
                     <span class="sub">@(isToday ? $"până la {DateTime.Now:HH:mm}" : ReportFormat.Title(_period))@(_compare && c.SameTime && !c.Partial ? " · comparat cu ieri la aceeași oră" : "")</span>
                 </div>
                 <div class="tiles">
@@ -243,7 +243,7 @@
                 var pGas = md?.Gas?.PreviousTotalM3;
             }
             <div class="card-h">
-                <h2 id="h-month">@Cap(RoNames.Month(month.Start.Month)) vs @RoNames.Month(prevMonth.Start.Month) <a class="card-link" href="/history" title="Istoric" aria-label="Istoric">→</a></h2>
+                <h2 id="h-month">@Cap(RoNames.Month(month.Start.Month)) vs @RoNames.Month(prevMonth.Start.Month) <a class="card-link" href="@PeriodQuery.History(month, anchor: "costuri")" title="Istoric pe luna curentă" aria-label="Istoric">→</a></h2>
                 <span class="sub">ziua @daysSoFar din @month.DayCount</span>
             </div>
             <table class="cmp">
@@ -310,11 +310,6 @@
 
     private bool IsToday => _period.Kind == ReportGranularity.Day && _period.Start == _today;
 
-    private static readonly IReadOnlyDictionary<string, ReportGranularity> Kinds = new Dictionary<string, ReportGranularity>
-    {
-        ["zi"] = ReportGranularity.Day, ["saptamana"] = ReportGranularity.Week, ["luna"] = ReportGranularity.Month, ["an"] = ReportGranularity.Year,
-    };
-
     protected override async Task OnInitializedAsync()
     {
         _today = Home.Today();
@@ -345,21 +340,15 @@
         await LoadAsync();
     }
 
-    /// <summary>The period of the address (?p=zi|saptamana|luna|an&amp;d=yyyy-MM-dd); today when absent, invalid or in the future.</summary>
+    /// <summary>The period of the address (<see cref="PeriodQuery"/>: ?p=zi|saptamana|luna|an&amp;d=…); today when absent, invalid or in the future.</summary>
     private ReportPeriod FromQuery()
     {
-        var kind = QueryKind is { } k && Kinds.TryGetValue(k, out var g) ? g : ReportGranularity.Day;
-        var day = QueryDay is { } s && DateOnly.TryParseExact(s, "yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture,
-            System.Globalization.DateTimeStyles.None, out var parsed) && parsed <= _today ? parsed : _today;
-        return ReportPeriod.Containing(kind, day);
+        var p = PeriodQuery.Parse(QueryKind, QueryDay, null, null, _today);
+        return p.Kind == ReportGranularity.Range ? ReportPeriod.Containing(ReportGranularity.Day, _today) : p;
     }
 
-    private static string Query(ReportPeriod p, DateOnly today)
-    {
-        if (p.Kind == ReportGranularity.Day && p.Start == today) return "/";
-        var kind = Kinds.First(kv => kv.Value == p.Kind).Key;
-        return $"/?p={kind}&d={p.Start:yyyy-MM-dd}";
-    }
+    private static string Query(ReportPeriod p, DateOnly today) =>
+        p.Kind == ReportGranularity.Day && p.Start == today ? "/" : "/?" + PeriodQuery.Format(p);
 
     private async Task LoadSettingsAsync()
     {

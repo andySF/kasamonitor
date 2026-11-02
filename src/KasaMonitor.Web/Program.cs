@@ -220,7 +220,10 @@ builder.Services.AddSingleton(new ClimateSettingsDefaults(
     GoveeApiKeyFile: builder.Configuration["KasaMonitor:GoveeApiKeyFile"]
                      ?? Environment.GetEnvironmentVariable(KasaMonitor.Core.Climate.GoveeApi.KeyFileEnvironmentVariable)
                      ?? KasaMonitor.Core.Climate.GoveeApi.DefaultKeyFile,
-    GoveeApiKey: builder.Configuration["KasaMonitor:GoveeApiKey"]));
+    GoveeApiKey: builder.Configuration["KasaMonitor:GoveeApiKey"],
+    HeatingDegreeDaysBaseC: ClimateSettingsService.ParseCoordinate(builder.Configuration["KasaMonitor:HeatingDegreeDaysBaseC"]) is { } hdd
+        && hdd >= ClimateSettingsService.MinDegreeDaysBaseC && hdd <= ClimateSettingsService.MaxDegreeDaysBaseC
+        ? hdd : KasaMonitor.Core.History.DegreeDayRule.EurostatBaseC));
 builder.Services.AddSingleton<IClimateSettingsService, ClimateSettingsService>();
 builder.Services.AddSingleton<KasaMonitor.Core.Climate.IGoveeClient>(_ => new KasaMonitor.Core.Climate.GoveeClient(TimeSpan.FromSeconds(20)));
 builder.Services.AddSingleton<KasaMonitor.Core.Climate.IOpenMeteoClient>(_ => new KasaMonitor.Core.Climate.OpenMeteoClient(TimeSpan.FromSeconds(20)));
@@ -251,6 +254,24 @@ builder.Services.AddSingleton(sp => new KasaMonitor.Workers.Nilm.NilmService(
     Path.Combine(dataDir, "nilm-model.zip"),
     groundTruth: sp.GetRequiredService<MieleGroundTruth>()));
 builder.Services.AddHostedService(sp => sp.GetRequiredService<KasaMonitor.Workers.Nilm.NilmService>());
+
+// /history: the sections other than electricity (gas and boiler, Miele, detected appliances, climate, events), cached per
+// period like the home page; climate days from ClimateDaily (filled at startup and after each midnight; today and days not
+// stored yet from the raw readings).
+builder.Services.AddSingleton<KasaMonitor.Core.Abstractions.IClimateDailyStats>(sp => new ClimateDailyStore(sp.GetRequiredService<IServiceScopeFactory>()));
+builder.Services.AddSingleton(sp => new ClimateDailyWorker(sp.GetRequiredService<IServiceScopeFactory>(),
+    sp.GetRequiredService<EnergyReportService>().TimeZone, sp.GetRequiredService<ILogger<ClimateDailyWorker>>()));
+builder.Services.AddHostedService(sp => sp.GetRequiredService<ClimateDailyWorker>());
+builder.Services.AddSingleton(sp => new HistoryService(
+    sp.GetRequiredService<IServiceScopeFactory>(),
+    sp.GetRequiredService<EnergyReportService>(),
+    sp.GetRequiredService<KasaMonitor.Core.Abstractions.IClimateDailyStats>(),
+    sp.GetRequiredService<IClimateSettingsService>(),
+    sp.GetRequiredService<IHeatingSettingsService>(),
+    sp.GetRequiredService<HeatingState>(),
+    sp.GetRequiredService<KasaMonitor.Workers.Nilm.NilmService>().GetDetectedRunsAsync,
+    sp.GetRequiredService<IKasaSettingsService>(),
+    sp.GetRequiredService<ILogger<HistoryService>>()));
 
 // Home page „Acasă” (/): period aggregates cached per minute, standby floor and bill estimate (also on /metrics).
 builder.Services.AddSingleton(sp => new HomeService(
@@ -383,6 +404,22 @@ app.MapGet(KasaMonitor.Core.Miele.MieleApi.CallbackPath, async (HttpContext ctx,
     return result == MieleCallbackResult.InvalidState
         ? Results.Text("Cerere de autorizare necunoscută sau expirată (state invalid). Reia conectarea din /aparate.", "text/plain; charset=utf-8", statusCode: 400)
         : Results.Redirect("/aparate?auth=" + result.ToString().ToLowerInvariant());
+});
+
+// CSV of one /history section for the period of the address (the page's „CSV” buttons): the same data and table as the page.
+app.MapGet("/history/export.csv", async (HttpContext ctx, HomeService home, HistoryService history, IKasaSettingsService kasa,
+    IHeatingSettingsService heating) =>
+{
+    var q = ctx.Request.Query;
+    var section = q["section"].FirstOrDefault() ?? "";
+    var period = KasaMonitor.Core.Reports.PeriodQuery.Parse(q["p"].FirstOrDefault(), q["d"].FirstOrDefault(), q["de"].FirstOrDefault(),
+        q["pana"].FirstOrDefault(), history.Today(), KasaMonitor.Core.Reports.ReportGranularity.Month);
+    var plug = KasaMonitor.Core.Reports.PeriodQuery.Plug(q["plug"].FirstOrDefault());
+    var table = await KasaMonitor.Web.Ui.HistoryExport.TableAsync(section, period, KasaMonitor.Core.Reports.PeriodQuery.Compare(q["cmp"].FirstOrDefault()),
+        plug, home, history, kasa, heating, DateTimeOffset.UtcNow, ctx.RequestAborted);
+    return table is null
+        ? Results.Text("Secțiune necunoscută. Valori: " + string.Join(", ", KasaMonitor.Web.Ui.HistorySections.All), "text/plain; charset=utf-8", statusCode: 400)
+        : Results.File(KasaMonitor.Core.History.HistoryCsv.Bytes(table), "text/csv; charset=utf-8", KasaMonitor.Web.Ui.HistoryExport.FileName(section, period));
 });
 
 // Downloads for /integration (generated from the embedded deploy/ files; no secrets involved).

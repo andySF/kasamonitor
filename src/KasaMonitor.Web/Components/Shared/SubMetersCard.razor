@@ -17,7 +17,7 @@
                     var v = sample?.VoltageV ?? reading?.VoltageMv / 1000.0;
                     var a = sample?.CurrentA ?? reading?.CurrentMa / 1000.0;
                     <tr>
-                        <td><a href="/history?plugId=@sub.Id">@sub.Alias</a></td>
+                        <td><a href="/history?plug=@sub.Id#curent">@sub.Alias</a></td>
                         <td class="text-end">@(w is { } x ? x.ToString("0") + " W" : "—")</td>
                         <td class="text-end">@(v is { } y ? y.ToString("0.0") + " V" : "—")</td>
                         <td class="text-end">@(a is { } z ? z.ToString("0.00") + " A" : "—")</td>

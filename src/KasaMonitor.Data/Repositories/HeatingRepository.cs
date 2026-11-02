@@ -116,6 +116,57 @@ public sealed class HeatingRepository : IHeatingRepository
             r.GasHeatingTodayM3, r.GasDhwTodayM3, r.PowerTodayKwh, r.HeatTodayKwh)).ToList();
     }
 
+    public async Task<IReadOnlyList<KasaMonitor.Core.History.BurnerCounterHour>> ListBurnerCounterHoursAsync(Guid deviceId, DateTimeOffset fromUtc,
+        DateTimeOffset toUtc, CancellationToken ct)
+    {
+        long from = fromUtc.ToUnixTimeSeconds(), to = toUtc.ToUnixTimeSeconds();
+        var rows = await _db.HeatingReadings.AsNoTracking()
+            .Where(r => r.DeviceId == deviceId && r.Ts >= from && r.Ts <= to && (r.BurnerHours != null || r.BurnerStarts != null))
+            .GroupBy(r => r.Ts / 3600)
+            .Select(g => new
+            {
+                Hour = g.Key,
+                MinHours = g.Min(r => r.BurnerHours),
+                MaxHours = g.Max(r => r.BurnerHours),
+                MinStarts = g.Min(r => r.BurnerStarts),
+                MaxStarts = g.Max(r => r.BurnerStarts),
+            })
+            .ToListAsync(ct);
+        return rows.OrderBy(r => r.Hour)
+            .Select(r => new KasaMonitor.Core.History.BurnerCounterHour(DateTimeOffset.FromUnixTimeSeconds(r.Hour * 3600), r.MinHours, r.MaxHours, r.MinStarts, r.MaxStarts))
+            .ToList();
+    }
+
+    /// <summary>One row of <see cref="ListReadingChangesAsync"/>.</summary>
+    private sealed class ChangeRow
+    {
+        public long Ts { get; set; }
+        public string? ActiveError { get; set; }
+        public long? PrevTs { get; set; }
+        public string? PrevError { get; set; }
+    }
+
+    public async Task<IReadOnlyList<KasaMonitor.Core.History.HeatingReadingChange>> ListReadingChangesAsync(Guid deviceId, DateTimeOffset fromUtc,
+        DateTimeOffset toUtc, TimeSpan gap, CancellationToken ct)
+    {
+        long from = fromUtc.ToUnixTimeSeconds(), to = toUtc.ToUnixTimeSeconds(), gapSeconds = (long)gap.TotalSeconds;
+        // DeviceId is stored as upper-case TEXT (the SQLite GUID mapping of EF).
+        var device = deviceId.ToString().ToUpperInvariant();
+        var rows = await _db.Database.SqlQuery<ChangeRow>($"""
+            SELECT Ts, ActiveError, PrevTs, PrevError FROM (
+                SELECT Ts,
+                       NULLIF(TRIM(ActiveError), '') AS ActiveError,
+                       LAG(Ts) OVER (ORDER BY Ts) AS PrevTs,
+                       LAG(NULLIF(TRIM(ActiveError), '')) OVER (ORDER BY Ts) AS PrevError
+                FROM HeatingReadings
+                WHERE DeviceId = {device} AND Ts >= {from} AND Ts <= {to})
+            WHERE PrevTs IS NULL OR Ts - PrevTs > {gapSeconds} OR IFNULL(ActiveError, '') <> IFNULL(PrevError, '')
+            ORDER BY Ts
+            """).ToListAsync(ct);
+        return rows.Select(r => new KasaMonitor.Core.History.HeatingReadingChange(DateTimeOffset.FromUnixTimeSeconds(r.Ts), r.ActiveError,
+            r.PrevTs is { } p ? DateTimeOffset.FromUnixTimeSeconds(p) : null, r.PrevError)).ToList();
+    }
+
     public async Task<IReadOnlyList<HeatingMonthSums>> SumDailyByMonthAsync(Guid deviceId, int yearFrom, int yearTo, DateOnly today, CancellationToken ct)
     {
         string f = DayKey(new DateOnly(yearFrom, 1, 1)), t = DayKey(new DateOnly(yearTo, 12, 31)), now = DayKey(today);

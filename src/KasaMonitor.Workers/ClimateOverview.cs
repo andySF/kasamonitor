@@ -36,7 +36,8 @@ public sealed class ClimateOverview : IClimateOverview
             .ToList();
     }
 
-    private static bool IsBoilerWater(ClimateSensor s) =>
+    /// <summary>The boiler's supply / hot-water virtual sensor (a water temperature, not a room).</summary>
+    public static bool IsBoilerWater(ClimateSensor s) =>
         s.Source == ClimateSources.Viessmann
         && (s.ExternalId.EndsWith(":" + ViessmannClimate.SupplySuffix, StringComparison.Ordinal)
             || s.ExternalId.EndsWith(":" + ViessmannClimate.DhwSuffix, StringComparison.Ordinal));

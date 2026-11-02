@@ -32,6 +32,7 @@ public static class ReportFormat
         ReportGranularity.Day => "Zi",
         ReportGranularity.Week => "Săptămână",
         ReportGranularity.Month => "Lună",
+        ReportGranularity.Range => "Interval",
         _ => "An",
     };
 
@@ -42,7 +43,7 @@ public static class ReportFormat
 
     public static string ShortDate(DateOnly d) => $"{d.Day} {MonthsShort[d.Month - 1]}";
 
-    /// <summary>"duminică, 1 noiembrie 2026" · "26 oct – 1 nov 2026" · "noiembrie 2026" · "2026".</summary>
+    /// <summary>"duminică, 1 noiembrie 2026" · "26 oct – 1 nov 2026" · "noiembrie 2026" · "2026" · a range like a week.</summary>
     public static string Title(ReportPeriod p) => p.Kind switch
     {
         ReportGranularity.Day => $"{Days[(int)p.Start.DayOfWeek]}, {Date(p.Start)}",
@@ -50,18 +51,23 @@ public static class ReportFormat
             ? $"{ShortDate(p.Start)} – {ShortDate(p.LastDay)} {p.LastDay.Year}"
             : $"{ShortDate(p.Start)} {p.Start.Year} – {ShortDate(p.LastDay)} {p.LastDay.Year}",
         ReportGranularity.Month => $"{Months[p.Start.Month - 1]} {p.Start.Year}",
+        ReportGranularity.Range => p.Start == p.LastDay ? Date(p.Start)
+            : p.Start.Year == p.LastDay.Year
+                ? $"{ShortDate(p.Start)} – {ShortDate(p.LastDay)} {p.LastDay.Year}"
+                : $"{ShortDate(p.Start)} {p.Start.Year} – {ShortDate(p.LastDay)} {p.LastDay.Year}",
         _ => p.Start.Year.ToString(System.Globalization.CultureInfo.InvariantCulture),
     };
 
     /// <summary>"față de ieri" / "față de săptămâna trecută" / … (the previous period).</summary>
     public static string VersusPrevious(ReportGranularity kind) => PeriodNames.For(kind).Versus;
 
-    /// <summary>Bar label: "07:00" (the second 03:00 of the autumn DST day: "03:00*"), "lun 26", "26", "nov".</summary>
+    /// <summary>Bar label: "07:00" (the second 03:00 of the autumn DST day: "03:00*"), "lun 26", "26", "nov", "3 nov" (range).</summary>
     public static string BucketLabel(ReportBucket b, ReportGranularity kind) => kind switch
     {
         ReportGranularity.Day => b.LocalStart.ToString("HH:00", System.Globalization.CultureInfo.InvariantCulture) + (b.RepeatedHour ? "*" : ""),
         ReportGranularity.Week => $"{DaysShort[(int)b.Day.DayOfWeek]} {b.Day.Day}",
         ReportGranularity.Month => b.Day.Day.ToString(System.Globalization.CultureInfo.InvariantCulture),
+        ReportGranularity.Range => ShortDate(b.Day),
         _ => MonthsShort[b.Day.Month - 1],
     };
 

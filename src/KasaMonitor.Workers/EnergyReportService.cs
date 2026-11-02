@@ -110,12 +110,19 @@ public sealed class EnergyReportService
             months = await repo.SumDailyByMonthAsync(deviceId, previous.Start.Year, period.Start.Year, today, ct);
         else
             days = await repo.ListDailyAsync(deviceId, previous.Start, period.LastDay, ct);
+        IReadOnlyList<HeatingCounterReading>? previousReadings = null;
+        var now = _clock();
         if (period.Kind == ReportGranularity.Day)
+        {
             readings = await repo.ListCounterReadingsAsync(deviceId, period.StartUtc(boilerTz) - ReadingLookBack, period.EndUtc(boilerTz), ct);
+            // The day in progress is compared with the previous day up to the same time: its hours are needed too.
+            if (now >= period.StartUtc(boilerTz) && now < period.EndUtc(boilerTz))
+                previousReadings = await repo.ListCounterReadingsAsync(deviceId, previous.StartUtc(boilerTz) - ReadingLookBack, previous.EndUtc(boilerTz), ct);
+        }
 
         var api = await repo.ListPeriodsAsync(deviceId, ct);
         var first = await repo.FirstDailyDayAsync(deviceId, ct);
-        var report = HeatingReportBuilder.Build(new HeatingReportInput(period, boilerTz, today, days, months, api, readings, first, _tz));
+        var report = HeatingReportBuilder.Build(new HeatingReportInput(period, boilerTz, today, days, months, api, readings, first, _tz, now, previousReadings));
         LogDecreases(report.IgnoredDecreases, boilerTz);
         return report;
     }

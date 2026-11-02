@@ -1,0 +1,78 @@
+@using KasaMonitor.Core.Costing
+@using KasaMonitor.Core.History
+@using KasaMonitor.Web.Ui
+
+@* The consumers' breakdown as a list (/history „Consumatori” and the top of /consumatori): every identified consumer on
+   its own row, the other plugs and the anonymous signatures each grouped in one row that opens into its members,
+   „Nedetectat” last; kWh, lei and the share of the total. *@
+<ul class="cons-list">
+    @foreach (var (r, i) in Data.Rows.Select((r, i) => (r, i)))
+    {
+        var share = Data.TotalKwh > 1e-9 && r.Kind != ConsumerKind.AboveMeter ? r.Kwh / Data.TotalKwh * 100 : 0;
+        <li class="cons-row">
+            @if (r.Members is { Count: > 0 } members)
+            {
+                <details>
+                    <summary>@Line(r, i, share)</summary>
+                    <ul class="cons-members">
+                        @foreach (var m in members)
+                        {
+                            <li>
+                                @if (r.Kind == ConsumerKind.Unidentified)
+                                {
+                                    <a href="/consumatori">@m.Name</a>
+                                }
+                                else
+                                {
+                                    <span>@m.Name</span>
+                                }
+                                <span class="num">@HomeFormat.KwhU(m.Kwh)</span>
+                            </li>
+                        }
+                    </ul>
+                </details>
+            }
+            else
+            {
+                @Line(r, i, share)
+            }
+        </li>
+    }
+</ul>
+
+@code {
+    [Parameter, EditorRequired] public ConsumerBreakdown Data { get; set; } = ConsumerBreakdown.Empty;
+    [Parameter] public decimal Tariff { get; set; }
+
+    /// <summary>The fill class of a row in the charts and the swatches (identified: the categorical colours in order).</summary>
+    public static string Css(ConsumerRow r, int index) => r.Kind switch
+    {
+        ConsumerKind.IdentifiedDetected or ConsumerKind.IdentifiedPlug => "k-p" + (Math.Min(index, 6) + 1),
+        ConsumerKind.OtherPlugs => "k-pale",
+        ConsumerKind.Unidentified => "k-off",
+        ConsumerKind.AboveMeter => "k-excess",
+        _ => "k-undet",
+    };
+
+    private RenderFragment Line(ConsumerRow r, int i, double share) => __builder =>
+    {
+        <span class="cons-line">
+            <i class="sw bar @Css(r, i)"></i>
+            <span class="nm" title="@Kind(r.Kind)">@r.Name</span>
+            <span class="bar"><i class="@Css(r, i)" style="width:@HomeSvg.N(Math.Min(100, share))%"></i></span>
+            <span class="num v">@HomeFormat.KwhU(r.Kwh)</span>
+            <span class="num v">@EnergyFormat.Lei(ElectricityCost.Ron(r.Kwh, Tariff))</span>
+            <span class="num pct">@HeatingFormat.Number(share, 0) %</span>
+        </span>
+    };
+
+    private static string Kind(ConsumerKind k) => k switch
+    {
+        ConsumerKind.IdentifiedDetected => "identificat: detectat, numit de tine",
+        ConsumerKind.IdentifiedPlug => "identificat: priză cu un singur aparat sau confirmată de o semnătură",
+        ConsumerKind.OtherPlugs => "prize măsurate, aparatul nu e identificat",
+        ConsumerKind.Unidentified => "semnături detectate fără nume",
+        ConsumerKind.AboveMeter => "Σ prize peste contor pe unele bare (toleranța clemei sau date parțiale): nu intră în total și nici în procent",
+        _ => "restul casei, neatribuit",
+    };
+}

@@ -139,7 +139,8 @@ public sealed class NilmBusyException() : Exception("Procesare în curs (istoric
 /// <see cref="ReclusterMaxAge"/>, and on „Regrupează acum”, the newest <see cref="SignatureClusterer.MaxEvents"/> events of
 /// the last <c>ClusterWindowDays</c> are re-clustered (anchors first, then DBSCAN), signatures that are the same component
 /// are merged (<see cref="SignatureMerger"/>) and the classifier retrained, the heavy parts on a low-priority thread
-/// outside the processing lock; events and runs older than <see cref="RetentionDays"/> days are deleted.
+/// outside the processing lock. Events and runs are never deleted (0.9.2: unlimited, the history of /history; the raw live
+/// samples they come from keep their own retention).
 /// </summary>
 public sealed class NilmService : BackgroundService
 {
@@ -166,7 +167,6 @@ public sealed class NilmService : BackgroundService
 
     /// <summary>At startup the re-clustering runs right away when the last one is older than this (or never ran on stored events).</summary>
     public static readonly TimeSpan ReclusterMaxAge = TimeSpan.FromHours(24);
-    public const int RetentionDays = 365;
     public const int MaxQueuedSamples = 100_000;
     public const int PageSize = 50;
 
@@ -912,7 +912,7 @@ public sealed class NilmService : BackgroundService
         }
     }
 
-    // ------------------------------------------------------------------ nightly: re-clustering, runs, training, retention
+    // ------------------------------------------------------------------ nightly: re-clustering, runs, training
 
     /// <summary>
     /// Re-clusters the newest <see cref="SignatureClusterer.MaxEvents"/> events of the window, except those in user
@@ -1064,10 +1064,10 @@ public sealed class NilmService : BackgroundService
         var merged = merges.Count;
 
         await RebuildRunsAsync(sp, null, WindowStart(nowUtc), nowUtc, ct);
-        var deleted = await repo.DeleteOlderThanAsync(nowUtc.AddDays(-RetentionDays), ct);
+        // No retention: events and runs stay (unlimited since 0.9.2, the detected appliances' history on /history).
         var anchoredCount = anchored.Count(a => a is not null);
-        _log.LogInformation("NILM re-clustering: {Events} events ({Anchored} to labelled signatures), {Clusters} clusters, {Signatures} signatures, {Changed} events moved, {Merged} signatures merged, {Deleted} old rows deleted",
-            free.Count, anchoredCount, taken.Count, _signatures.Count, changed.Count, merged, deleted);
+        _log.LogInformation("NILM re-clustering: {Events} events ({Anchored} to labelled signatures), {Clusters} clusters, {Signatures} signatures, {Changed} events moved, {Merged} signatures merged",
+            free.Count, anchoredCount, taken.Count, _signatures.Count, changed.Count, merged);
         await RefreshSummaryAsync(nowUtc, ct);
         return new NilmRegroupResult(free.Count, anchoredCount, taken.Count, _signatures.Count, changed.Count, merged, merges);
     }
@@ -1267,22 +1267,20 @@ public sealed class NilmService : BackgroundService
     }
 
     /// <summary>
-    /// Energy of the detected appliances (not hidden, not measured by a plug: those are already in Σ plugs) over
-    /// [<paramref name="fromUtc"/>, <paramref name="toUtc"/>), from their runs (an open run up to now), largest first; read in
-    /// its own scope without the processing lock (the home page, computed once per minute and cached by the caller).
+    /// The detected appliances (not hidden, not measured by a plug: those are already in Σ plugs) and their runs overlapping
+    /// [<paramref name="fromUtc"/>, <paramref name="toUtc"/>) (up to now), with the time they were read: the home page's
+    /// energy and the „Consumatori” section of /history. Read in its own scope without the processing lock.
     /// </summary>
-    public async Task<IReadOnlyList<ApplianceEnergyRow>> GetDetectedEnergyAsync(DateTimeOffset fromUtc, DateTimeOffset toUtc, CancellationToken ct)
+    public async Task<(IReadOnlyDictionary<long, ApplianceSignature> Detected, IReadOnlyList<ApplianceRun> Runs, DateTimeOffset NowUtc)> GetDetectedRunsAsync(
+        DateTimeOffset fromUtc, DateTimeOffset toUtc, CancellationToken ct)
     {
         var now = _clock();
         using var scope = _scopes.CreateScope();
         var repo = scope.ServiceProvider.GetRequiredService<INilmRepository>();
         var detected = (await repo.ListSignaturesAsync(ct)).Where(s => !s.Hidden && !s.ConfirmedByPlug).ToDictionary(s => s.Id);
-        if (detected.Count == 0) return Array.Empty<ApplianceEnergyRow>();
+        if (detected.Count == 0) return (detected, Array.Empty<ApplianceRun>(), now);
         var runs = await repo.ListRunsAsync(fromUtc, toUtc < now ? toUtc : now, ct);
-        return runs.Where(r => detected.ContainsKey(r.SignatureId))
-            .GroupBy(r => r.SignatureId)
-            .Select(g => { var s = detected[g.Key]; return new ApplianceEnergyRow(s.Id, s.Name, s.Category, s.Icon, g.Sum(r => ApplianceEnergy.InRange(r, fromUtc, toUtc, now))); })
-            .Where(x => x.Wh > 0).OrderByDescending(x => x.Wh).ToList();
+        return (detected, runs.Where(r => detected.ContainsKey(r.SignatureId)).ToList(), now);
     }
 
     // ------------------------------------------------------------------ /consumatori

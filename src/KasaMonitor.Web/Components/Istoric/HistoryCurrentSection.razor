@@ -1,0 +1,163 @@
+@using KasaMonitor.Core.Costing
+@using KasaMonitor.Core.Home
+@using KasaMonitor.Core.Metering
+@using KasaMonitor.Core.Reports
+@using KasaMonitor.Workers
+@using KasaMonitor.Web.Ui
+
+@* /history „Curent”: the main meter split into the counted plugs (stacked, one colour per plug) and the rest of the house,
+   the previous period pale behind, top appliances (plugs + detected without a plug + „Nedetectat”, as on the home page),
+   the table and its CSV. A plug filter (plug=) keeps only that plug's bars next to the meter line. *@
+<section class="hcard hist-sec" id="curent" aria-labelledby="h-curent">
+    <div class="card-h">
+        <h2 id="h-curent"><i class="sw bar k-plug"></i> Curent <a class="card-link" href="/contor" title="Contor (flux live)" aria-label="Contor">→</a></h2>
+        <div class="hist-tools">
+            @if (House?.PlugBuckets is { Count: > 0 } plugs)
+            {
+                <select class="form-select form-select-sm w-auto" aria-label="Priză" value="@(Plug?.ToString() ?? "")" @onchange="OnPlugChange">
+                    <option value="">Toate prizele</option>
+                    @foreach (var p in plugs.OrderBy(p => p.Alias, StringComparer.CurrentCultureIgnoreCase))
+                    {
+                        <option value="@p.PlugId">@p.Alias</option>
+                    }
+                </select>
+            }
+            <CsvLink Href="@CsvHref" />
+        </div>
+    </div>
+    @if (Data is null)
+    {
+        <div class="empty">Se încarcă…</div>
+    }
+    else if (House is not { } house)
+    {
+        <div class="empty">Fără contor general: curentul casei nu se poate calcula.</div>
+    }
+    else
+    {
+        var kind = house.Period.Kind;
+        var c = Comparison;
+        var plug = Plug is { } pid ? house.PlugBuckets?.FirstOrDefault(p => p.PlugId == pid) : null;
+        var labels = house.Buckets.Select(b => ReportFormat.BucketLabel(b, kind)).ToList();
+        var titles = house.Buckets.Select(b => ReportFormat.BucketRow(b, kind)).ToList();
+        var peak = Enumerable.Range(0, house.Buckets.Count).Where(i => house.HouseKwh[i] is > 0).OrderByDescending(i => house.HouseKwh[i]).FirstOrDefault(-1);
+        var coverage = Data.MeterFrom is { } mf ? $"contor din {ReportFormat.Date(mf)}; nedetectat calculat doar pe zilele acoperite" : null;
+        <div class="hist-grid">
+            <div>
+                <div class="tiles hist-tiles">
+                    <div class="tile">
+                        <div class="lbl">Casă (contor)</div>
+                        <div class="val num">@HomeFormat.Kwh(house.HouseTotalKwh) <small>kWh</small></div>
+                        <div class="meta">@HomeFormat.Lei(Prices.Electricity(house.HouseTotalKwh)) · @HomeFormat.PerKwh(Prices.TariffRonPerKwh)</div>
+                        @if (Compare)
+                        {
+                            <HistoryDelta Delta="@(HomeFormat.Delta(c.CurrentKwh, c.PreviousKwh, v => HomeFormat.Kwh(v), "kWh"))" Partial="c.Partial" Versus="@c.Versus" PreviousName="@c.PreviousName" />
+                        }
+                    </div>
+                    <div class="tile">
+                        <div class="lbl"><i class="sw bar k-p1"></i>Prize</div>
+                        <div class="val num">@HomeFormat.Kwh(house.PlugsTotalKwh) <small>kWh</small></div>
+                        <div class="meta">@Share(house.PlugsTotalKwh, house.HouseTotalKwh) din casă</div>
+                    </div>
+                    <div class="tile">
+                        <div class="lbl"><i class="sw bar k-rest"></i>Restul casei</div>
+                        <div class="val num" title="@ReportFormat.RestKwhTitle(house.RestTotalKind)">@ReportFormat.RestKwh(house.RestTotalKwh, house.RestTotalKind) <small>kWh</small></div>
+                        <div class="meta">@(peak >= 0 ? $"vârf: {titles[peak]} · {HomeFormat.KwhU(house.HouseKwh[peak])}" : "")</div>
+                    </div>
+                </div>
+                @if (coverage is not null)
+                {
+                    <div class="foot-note">⏳ date parțiale: @coverage.</div>
+                }
+                @if (house.RestClamped)
+                {
+                    <div class="foot-note">⚠ @ReportFormat.NegativeText (unele bare).</div>
+                }
+                <HistoryBars Labels="labels" Titles="titles" Links="Links(house)" Series="Series(house, plug)" Line="MeterLine(house, plug)"
+                             Previous="PreviousBars(house)" PreviousName="@c.PreviousName"
+                             NowPosition="NowPosition(house)" AriaLabel="@("Curent " + ReportFormat.BucketsName(kind))"
+                             Extra="@(i => "Casă: " + HomeFormat.Lei(Prices.Electricity(house.HouseKwh[i])))" />
+                <div class="legend">
+                    @if (plug is null)
+                    {
+                        @foreach (var s in Series(house, null))
+                        {
+                            <span><i class="sw bar @s.Css"></i>@s.Name</span>
+                        }
+                    }
+                    else
+                    {
+                        <span><i class="sw bar k-p1"></i>@plug.Alias</span>
+                        <span><i class="sw line"></i>@house.MainAlias (contor)</span>
+                    }
+                    @if (Compare)
+                    {
+                        <span><i class="sw bar k-pale"></i>@c.PreviousName</span>
+                    }
+                </div>
+            </div>
+            <div>
+                <h3 class="mini-h">Top aparate · kWh · lei</h3>
+                @if (Data.Flows is { } flows)
+                {
+                    <DevicesChart Rows="flows.Rows" MeterKwh="flows.MeterKwh" Tariff="Prices.TariffRonPerKwh" />
+                    <div class="legend"><span><i class="sw bar k-plug"></i>priză</span><span><i class="sw bar k-nilm"></i>detectat, fără priză</span><span><i class="sw dashed"></i>nedetectat</span></div>
+                }
+                else
+                {
+                    <div class="empty">Fără energie măsurată de contor în perioada aleasă.</div>
+                }
+            </div>
+        </div>
+        <HistoryTableView Table="HistoryTables.Electricity(house, Prices, Now, Compare, Plug)" />
+    }
+</section>
+
+@code {
+    /// <summary>Plugs drawn with their own colour (largest first); the others go into „Alte prize”.</summary>
+    private const int ColouredPlugs = 7;
+
+    [Parameter] public HomePeriod? Data { get; set; }
+    [Parameter, EditorRequired] public EnergyPrices Prices { get; set; } = null!;
+    [Parameter, EditorRequired] public EnergyComparison Comparison { get; set; } = null!;
+    [Parameter] public bool Compare { get; set; }
+    [Parameter] public Guid? Plug { get; set; }
+    [Parameter] public EventCallback<Guid?> PlugChanged { get; set; }
+    [Parameter] public DateTimeOffset Now { get; set; }
+    [Parameter, EditorRequired] public string CsvHref { get; set; } = "";
+
+    private HouseReport? House => Data?.House;
+
+    private Task OnPlugChange(ChangeEventArgs e) => PlugChanged.InvokeAsync(Guid.TryParse(e.Value?.ToString(), out var id) ? id : null);
+
+    private IReadOnlyList<string?> Links(HouseReport h) => h.Buckets.Select(b => HistoryTables.DrillLink(b, h.Period.Kind, Compare, Plug)).ToList();
+
+    private IReadOnlyList<double?>? PreviousBars(HouseReport h) =>
+        Compare ? HomeSvg.AlignPrevious(h.Buckets, h.PreviousBuckets, h.PreviousHouseKwh, h.Period.Kind) : null;
+
+    private static HistoryBars.BarSeries? MeterLine(HouseReport h, PlugBucketSeries? plug) =>
+        plug is null ? null : new HistoryBars.BarSeries(h.MainAlias + " (contor)", "k-ink", h.HouseKwh);
+
+    private static string Share(double? part, double? whole) =>
+        part is { } p && whole is { } w && w > 0 ? HeatingFormat.Number(p / w * 100, 0) + " %" : "—";
+
+    /// <summary>The stacked series: every coloured plug, „Alte prize”, the rest of the house; with a plug filter only that plug.</summary>
+    private static IReadOnlyList<HistoryBars.BarSeries> Series(HouseReport h, PlugBucketSeries? only)
+    {
+        if (only is not null) return new[] { new HistoryBars.BarSeries(only.Alias, "k-p1", only.Kwh) };
+        var plugs = (h.PlugBuckets ?? Array.Empty<PlugBucketSeries>())
+            .Select(p => (Plug: p, Total: p.Kwh.Sum(v => v ?? 0)))
+            .Where(x => x.Total > 0)
+            .OrderByDescending(x => x.Total).ToList();
+        var list = plugs.Take(ColouredPlugs).Select((x, i) => new HistoryBars.BarSeries(x.Plug.Alias, "k-p" + (i + 1), x.Plug.Kwh)).ToList();
+        var others = plugs.Skip(ColouredPlugs).ToList();
+        if (others.Count > 0)
+            list.Add(new HistoryBars.BarSeries($"Alte {others.Count} prize", "k-p8",
+                h.Buckets.Select((_, i) => ReportMath.SumOrNull(others.Select(o => o.Plug.Kwh[i]))).ToList()));
+        list.Add(new HistoryBars.BarSeries("Restul casei", "k-rest", h.RestKwh));
+        return list;
+    }
+
+    private static double? NowPosition(HouseReport house) =>
+        house.IsCurrent && SameFraction.Position(house.Buckets, DateTimeOffset.UtcNow) is { } p ? p.Index + p.Fraction : null;
+}

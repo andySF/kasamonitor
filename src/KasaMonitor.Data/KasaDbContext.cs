@@ -29,6 +29,7 @@ public sealed class KasaDbContext : DbContext
     public DbSet<MieleCycleEntity> MieleCycles => Set<MieleCycleEntity>();
     public DbSet<ClimateSensorEntity> ClimateSensors => Set<ClimateSensorEntity>();
     public DbSet<ClimateReadingEntity> ClimateReadings => Set<ClimateReadingEntity>();
+    public DbSet<ClimateDailyEntity> ClimateDaily => Set<ClimateDailyEntity>();
 
     public KasaDbContext(DbContextOptions<KasaDbContext> options) : base(options) { }
 
@@ -214,8 +215,14 @@ public sealed class KasaDbContext : DbContext
         {
             e.ToTable("ClimateReadings");
             e.HasKey(x => new { x.SensorId, x.Ts });
-            // Retention deletes by time over all sensors.
             e.HasIndex(x => x.Ts);
+        });
+
+        // Daily climate stats per sensor (0.9.2, /history): filled from the readings for every finished day.
+        mb.Entity<ClimateDailyEntity>(e =>
+        {
+            e.ToTable("ClimateDaily");
+            e.HasKey(x => new { x.SensorId, x.Day });
         });
     }
 }

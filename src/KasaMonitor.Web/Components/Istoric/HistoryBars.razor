@@ -1,0 +1,158 @@
+@using KasaMonitor.Web.Ui
+
+@* /history: stacked bars per bucket (hand-drawn SVG like the home page), the previous period pale behind them, an optional
+   line, „acum”; each bar of a week / month / range / year links to its day (month): the drill-down. *@
+@if (Labels.Count == 0)
+{
+    <div class="empty">Fără date.</div>
+}
+else
+{
+    var n = Labels.Count;
+    var totals = Enumerable.Range(0, n).Select(i => Series.Sum(s => Val(s.Values, i) is { } v && v > 0 ? v : 0)).ToList();
+    var max = new[] { totals.DefaultIfEmpty(0).Max(), Previous?.Max(v => v ?? 0) ?? 0, Line?.Values.Max(v => v ?? 0) ?? 0 }.Max();
+    var yMax = HomeSvg.NiceMax(max * 1.05);
+    var tickDecimals = HomeSvg.AxisDecimals(yMax / 4);
+    var plotW = W - L - R;
+    var plotH = H - T - B;
+    var slot = plotW / n;
+    var bw = Math.Max(1, Math.Min(26, slot * 0.8));
+    var bwT = Math.Max(1, Math.Min(18, slot * (Previous is null ? 0.72 : 0.55)));
+    var baseY = T + plotH;
+    double Y(double v) => T + plotH - v / yMax * plotH;
+    var labelEvery = Math.Max(1, (int)Math.Ceiling(n / MaxLabels));
+    <svg class="chart hist-bars" viewBox="0 0 @HomeSvg.N(W) @HomeSvg.N(H)" role="group" aria-label="@AriaLabel">
+        @for (var t = 0; t <= 4; t++)
+        {
+            var v = yMax * t / 4;
+            <g>
+                <line class="@(t == 0 ? "baseline" : "gridline")" x1="@HomeSvg.N(L)" x2="@HomeSvg.N(W - R)" y1="@HomeSvg.N(Y(v))" y2="@HomeSvg.N(Y(v))" />
+                <text class="tick num" x="@HomeSvg.N(L - 6)" y="@HomeSvg.N(Y(v) + 4)" text-anchor="end">@HeatingFormat.Number(v, tickDecimals)</text>
+            </g>
+        }
+        @for (var i = 0; i < n; i++)
+        {
+            var idx = i;
+            var cx = L + slot * i + slot / 2;
+            var link = Links is not null && i < Links.Count ? Links[i] : null;
+            if (i % labelEvery == 0)
+            {
+                <g><text class="tick num" x="@HomeSvg.N(cx)" y="@HomeSvg.N(H - 6)" text-anchor="middle">@Labels[i]</text></g>
+            }
+            var content = Bar(idx, cx, slot, bw, bwT, baseY, Y);
+            if (link is not null)
+            {
+                <a href="@link" class="plain">@content</a>
+            }
+            else
+            {
+                @content
+            }
+        }
+        @if (Line is { } line)
+        {
+            var pts = string.Join(" ", Enumerable.Range(0, n).Where(i => Val(line.Values, i) is not null)
+                .Select(i => HomeSvg.N(L + slot * i + slot / 2) + "," + HomeSvg.N(Y(Val(line.Values, i)!.Value))));
+            <polyline class="hist-line @line.Css" points="@pts" pointer-events="none" />
+            @for (var i = 0; i < n; i++)
+            {
+                if (Val(line.Values, i) is { } lv)
+                {
+                    <circle class="hist-dot @line.Css" cx="@HomeSvg.N(L + slot * i + slot / 2)" cy="@HomeSvg.N(Y(lv))" r="2.5" pointer-events="none" />
+                }
+            }
+        }
+        @if (NowPosition is { } np)
+        {
+            var nx = L + slot * np;
+            <g pointer-events="none">
+                <line class="now-line" x1="@HomeSvg.N(nx)" x2="@HomeSvg.N(nx)" y1="@HomeSvg.N(T)" y2="@HomeSvg.N(baseY)" />
+                <text class="tick" x="@HomeSvg.N(nx + 4)" y="@HomeSvg.N(T + 10)">acum</text>
+            </g>
+        }
+    </svg>
+}
+
+@code {
+    /// <summary>One stacked series: its name (tooltip, legend), the CSS class of its fill and its value per bucket.</summary>
+    public sealed record BarSeries(string Name, string Css, IReadOnlyList<double?> Values);
+
+    [Parameter] public double W { get; set; } = 760;
+    [Parameter] public double H { get; set; } = 230;
+    private const double L = 44;
+    private const double R = 8;
+    private const double T = 10;
+    private const double B = 22;
+    private const double MaxLabels = 16;
+
+    [Parameter, EditorRequired] public IReadOnlyList<string> Labels { get; set; } = Array.Empty<string>();
+    /// <summary>Row title of each bucket in the tooltip (default: the label).</summary>
+    [Parameter] public IReadOnlyList<string>? Titles { get; set; }
+    [Parameter] public IReadOnlyList<string?>? Links { get; set; }
+    [Parameter, EditorRequired] public IReadOnlyList<BarSeries> Series { get; set; } = Array.Empty<BarSeries>();
+    /// <summary>The previous period's total per bucket, drawn pale behind (null = no comparison).</summary>
+    [Parameter] public IReadOnlyList<double?>? Previous { get; set; }
+    [Parameter] public string PreviousName { get; set; } = "perioada precedentă";
+    [Parameter] public BarSeries? Line { get; set; }
+    [Parameter] public Func<double, string> Format { get; set; } = v => HomeFormat.Kwh(v);
+    [Parameter] public string Unit { get; set; } = "kWh";
+    [Parameter] public double? NowPosition { get; set; }
+    [Parameter] public string AriaLabel { get; set; } = "Grafic pe perioadă";
+    /// <summary>Extra tooltip lines per bucket (e.g. the cost).</summary>
+    [Parameter] public Func<int, string?>? Extra { get; set; }
+
+    private static double? Val(IReadOnlyList<double?> values, int i) => i < values.Count ? values[i] : null;
+
+    private RenderFragment Bar(int i, double cx, double slot, double bw, double bwT, double baseY, Func<double, double> y) => __builder =>
+    {
+        var prev = Previous is null ? null : Val(Previous, i);
+        <g class="hour">
+            <title>@Tooltip(i, prev)</title>
+            <rect class="bar-bg" x="@HomeSvg.N(cx - slot / 2)" y="@HomeSvg.N(T)" width="@HomeSvg.N(slot)" height="@HomeSvg.N(baseY - T)" />
+            @if (prev is { } pv && pv > 0)
+            {
+                <path class="k-pale" d="@HomeSvg.TopRoundedBar(cx - bw / 2, y(pv), bw, baseY, 3)" />
+            }
+            @{
+                var top = 0.0;
+                var last = -1;
+                for (var s = 0; s < Series.Count; s++) if (Val(Series[s].Values, i) is > 0) last = s;
+            }
+            @for (var s = 0; s < Series.Count; s++)
+            {
+                if (Val(Series[s].Values, i) is not { } v || v <= 0) continue;
+                var y0 = y(top);
+                var y1 = y(top + v);
+                top += v;
+                if (s == last)
+                {
+                    <path class="@Series[s].Css" d="@HomeSvg.TopRoundedBar(cx - bwT / 2, y1, bwT, y0, 3)" />
+                }
+                else
+                {
+                    <rect class="@Series[s].Css" x="@HomeSvg.N(cx - bwT / 2)" y="@HomeSvg.N(y1)" width="@HomeSvg.N(bwT)" height="@HomeSvg.N(Math.Max(0, y0 - y1))" />
+                }
+            }
+        </g>
+    };
+
+    private string Tooltip(int i, double? prev)
+    {
+        var lines = new List<string> { Titles is not null && i < Titles.Count ? Titles[i] : Labels[i] };
+        var any = false;
+        double total = 0;
+        foreach (var s in Series)
+        {
+            if (Val(s.Values, i) is not { } v) continue;
+            any = true;
+            total += v;
+            lines.Add($"{s.Name}: {Format(v)} {Unit}");
+        }
+        if (!any) lines.Add("fără date");
+        else if (Series.Count > 1) lines.Add($"Total: {Format(total)} {Unit}");
+        if (Line is { } l && Val(l.Values, i) is { } lv) lines.Add($"{l.Name}: {Format(lv)} {Unit}");
+        if (Previous is not null) lines.Add($"{PreviousName}: {(prev is { } p ? Format(p) + " " + Unit : "fără date")}");
+        if (Extra?.Invoke(i) is { } extra) lines.Add(extra);
+        return string.Join("\n", lines);
+    }
+}

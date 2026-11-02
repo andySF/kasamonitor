@@ -1,256 +1,229 @@
 @page "/history"
 @rendermode InteractiveServer
-@using KasaMonitor.Core.History
-@inject IServiceScopeFactory ScopeFactory
+@using KasaMonitor.Core.Costing
+@using KasaMonitor.Core.Home
+@using KasaMonitor.Core.Reports
+@using KasaMonitor.Workers
+@using KasaMonitor.Web.Ui
+@inject HomeService Home
+@inject HistoryService HistorySvc
+@inject EnergyReportService Reports
+@inject IKasaSettingsService KasaSettings
+@inject IHeatingSettingsService HeatingSettings
+@inject TariffCalculator DefaultTariff
 @inject NavigationManager Nav
-@inject KasaMonitor.Workers.IKasaSettingsService KasaSettings
+@inject ILogger<History> Log
 
 <PageTitle>KasaMonitor — Istoric</PageTitle>
-<h1 class="h3 mb-3"><i class="bi bi-bar-chart me-2"></i>Istoric</h1>
 
-<HouseReportCard />
+@* /history (0.9.2): one long page for the past of everything monitored, one period for all of it (Zi / Săptămână / Lună /
+   An / Interval, ◀ ▶, kept in the address: ?p=luna&d=2026-11&cmp=1&plug=…), a summary row with anchors, then the sections
+   Curent · Gaz și centrală · Aparate · Consumatori · Climă · Costuri · Evenimente; each loads on its own (cached
+   aggregates: HomeService for electricity, HistoryService for the rest), each has a chart, key figures, a table and its
+   CSV; a click on a bar opens that day (that month). *@
+<div class="home hist">
+    <div class="topbar hist-top">
+        <h1>Istoric</h1>
+        <ReportPeriodPicker Period="_period" PeriodChanged="OnPeriodChangedAsync" Today="_today" AllowRange="true" />
+        <label class="switch" title="Δ față de perioada precedentă (o perioadă în curs: față de aceeași parte din ea, ca în Acasă) și barele ei palide">
+            <input type="checkbox" role="switch" aria-checked="@(_compare ? "true" : "false")" checked="@_compare" @onchange="OnCompareChanged" />
+            <span>@(IsToday ? "Compară cu ieri (la aceeași oră)" : PeriodNames.For(_period.Kind).Compare)</span>
+        </label>
+        <nav class="hist-chips" aria-label="Secțiuni">
+            <a href="#curent">Curent</a><a href="#gaz">Gaz</a><a href="#aparate">Aparate</a><a href="#consumatori">Consumatori</a><a href="#clima">Climă</a><a href="#costuri">Costuri</a><a href="#evenimente">Evenimente</a>
+        </nav>
+    </div>
+    @if (_errors.Count > 0)
+    {
+        <div class="alert alert-warning py-2">Unele secțiuni nu au putut fi calculate acum (@string.Join(", ", _errors)); detaliul e în jurnalul aplicației.</div>
+    }
 
-@if (_plugs is null || _plugs.Count == 0)
-{
-    <div class="alert alert-secondary">No plugs available.</div>
-}
-else
-{
-    <div class="d-flex flex-wrap gap-3 mb-3">
-        <label class="d-flex align-items-center gap-2">Plug
-            <select class="form-select form-select-sm w-auto" value="@(_allSelected ? AllValue : _selectedPlugId.ToString())" @onchange="OnPlugChanged">
-                <option value="@AllValue">Toate</option>
-                @foreach (var p in _plugs.OrderBy(p => p.Alias))
-                {
-                    <option value="@p.Id">@p.Alias</option>
-                }
-            </select>
-        </label>
-        <label class="d-flex align-items-center gap-2">Range
-            <select class="form-select form-select-sm w-auto" value="@_rangeDays" @onchange="OnRangeChanged">
-                <option value="7">Last 7 days</option>
-                <option value="30">Last 30 days</option>
-                <option value="365">Last 12 months</option>
-            </select>
-        </label>
+    @{
+        var c = HomeComparison.Build(_home, IsToday, _prices);
+        var names = PeriodNames.For(_period.Kind);
+        var gas = _gas;
+        var m3 = gas?.Report.Gas.Total;
+        var gasPrev = gas is null ? null : gas.Report.Gas.InProgress ? gas.Report.Gas.PreviousSameFraction : gas.Report.Gas.PreviousTotal;
+        var costNow = _prices.Total(c.CurrentKwh, m3);
+        var costPrev = _prices.Total(c.PreviousKwh, gasPrev);
+        var cost = c with { CurrentCostRon = costNow, PreviousCostRon = costPrev };
+        var miele = _miele;
+        var climate = _climate;
+        var rooms = climate?.Sensors.Where(s => !s.Sensor.IsOutdoor && s.Period.AvgC is not null).ToList();
+        var outdoor = climate?.Sensors.FirstOrDefault(s => s.Sensor.IsOutdoor);
+    }
+    <div class="hist-summary" aria-label="Rezumatul perioadei">
+        <a class="tile plain" href="#curent">
+            <div class="lbl"><i class="sw bar k-plug"></i>Curent</div>
+            <div class="val num">@HomeFormat.Kwh(c.Kwh) <small>kWh</small></div>
+            <div class="meta">@HomeFormat.Lei(c.ElectricityRon)</div>
+            @if (_compare && _home is not null) { <HistoryDelta Delta="@(HomeFormat.Delta(c.CurrentKwh, c.PreviousKwh, v => HomeFormat.Kwh(v), "kWh"))" Partial="c.Partial" Versus="@c.Versus" PreviousName="@c.PreviousName" /> }
+        </a>
+        <a class="tile plain" href="#gaz">
+            <div class="lbl"><i class="sw bar k-gas"></i>Gaz</div>
+            <div class="val num">@HomeFormat.M3(m3) <small>m³</small></div>
+            <div class="meta">@HomeFormat.Lei(_prices.Gas(m3))</div>
+            @if (_compare && m3 is not null)
+            {
+                <HistoryDelta Delta="@(HomeFormat.Delta(m3, gasPrev, v => HomeFormat.M3(v), "m³"))" PreviousName="@names.Previous"
+                              Versus="@(gas!.Report.Gas.InProgress ? "față de aceeași parte din " + names.Previous : names.Versus)" />
+            }
+        </a>
+        <a class="tile plain" href="#costuri">
+            <div class="lbl">Cost total</div>
+            <div class="val num">@HomeFormat.Lei(_prices.Total(c.Kwh, m3))</div>
+            <div class="meta">curent + gaz, la tarifele actuale</div>
+            @if (_compare && _home is not null) { <HistoryDelta Delta="@(HomeFormat.DeltaLei(costNow, costPrev))" Partial="c.Partial" Versus="@c.Versus" PreviousName="@c.PreviousName" /> }
+        </a>
+        <a class="tile plain" href="#gaz">
+            <div class="lbl">Ore de ardere</div>
+            <div class="val num">@(gas?.BurnerHours is { } bh ? HeatingFormat.Number(bh, 1) : "—") <small>h</small></div>
+            <div class="meta">@(gas?.BurnerStarts is { } bs ? $"{bs} porniri" : "—")</div>
+        </a>
+        <a class="tile plain" href="#aparate">
+            <div class="lbl">Cicluri Miele</div>
+            <div class="val num">@(miele is null ? "—" : miele.Cycles.Count.ToString())</div>
+            <div class="meta">@(miele is null ? "" : HomeFormat.KwhU(KasaMonitor.Core.Reports.ReportMath.SumOrNull(miele.Cycles.Select(x => x.BestKwh))))</div>
+        </a>
+        <a class="tile plain" href="#clima">
+            <div class="lbl">Temperatura medie</div>
+            <div class="val num">@HeatingFormat.Number(rooms is { Count: > 0 } r ? r.Average(s => s.Period.AvgC!.Value) : null, 1) <small>°C casă</small></div>
+            <div class="meta">afară @HeatingFormat.Temp(outdoor?.Period.AvgC)</div>
+        </a>
     </div>
 
-    @if (_allSelected)
-    {
-        @if (_all is null)
-        {
-            <p class="text-secondary"><span class="spinner-border spinner-border-sm me-2"></span>Loading data…</p>
-        }
-        else if (_all.Days.Count == 0)
-        {
-            <div class="alert alert-secondary">No daily history yet — it is read from the plugs every 6 h and right after a plug is added.</div>
-        }
-        else
-        {
-            <div class="card mb-3"><div class="card-body">
-            <h2 class="h6 text-secondary" title="Barele: prizele (rol „priză”), stivuite. Linia „Casă”: contorul general, separat (conține deja prizele, nu se adună la ele). Sub-contoarele nu apar aici.">Energie pe zi, toate prizele (kWh) și casa</h2>
-            <ApexChart @key="_chartKey" TItem="DayPoint" Title="kWh / day" Options="_allChartOptions">
-                @foreach (var s in _all.Series)
-                {
-                    <ApexPointSeries TItem="DayPoint"
-                                     Items="@Points(s)"
-                                     Name="@s.Alias"
-                                     Color="@s.Color"
-                                     SeriesType="SeriesType.Bar"
-                                     XValue="@(d => d.Date)"
-                                     YValue="@(d => d.Kwh)" />
-                }
-                @if (_all.House is { } house)
-                {
-                    <ApexPointSeries TItem="DayPoint"
-                                     Items="@Points(house)"
-                                     Name="@house.Alias"
-                                     Color="@house.Color"
-                                     SeriesType="SeriesType.Line"
-                                     XValue="@(d => d.Date)"
-                                     YValue="@(d => d.Kwh)" />
-                }
-            </ApexChart>
-            </div></div>
-
-            <div class="card" style="max-width: 32rem;">
-            <table class="table table-sm mb-0 totals-table">
-                <thead class="table-light"><tr><th>Plug</th><th>kWh</th><th>Cost (RON)</th></tr></thead>
-                <tbody>
-                    @foreach (var s in _all.Series)
-                    {
-                        <tr>
-                            <td><span class="swatch" style="background:@s.Color"></span>@s.Alias</td>
-                            <td>@((s.TotalWh / 1000.0).ToString("0.000"))</td>
-                            <td>@Tariff.CostFromWh(s.TotalWh).ToString("0.00")</td>
-                        </tr>
-                    }
-                </tbody>
-                <tfoot>
-                    <tr>
-                        <th>Total prize</th>
-                        <th>@((_all.TotalWh / 1000.0).ToString("0.000"))</th>
-                        <th>@Tariff.CostFromWh(_all.TotalWh).ToString("0.00")</th>
-                    </tr>
-                    @if (_all.House is { } h)
-                    {
-                        <tr title="Contorul general: conține deja prizele, nu se adună la total">
-                            <td><span class="swatch" style="background:@h.Color"></span>Casă (contor general)</td>
-                            <td>@((h.TotalWh / 1000.0).ToString("0.000"))</td>
-                            <td>@Tariff.CostFromWh(h.TotalWh).ToString("0.00")</td>
-                        </tr>
-                    }
-                </tfoot>
-            </table>
-            </div>
-            <p class="form-text">@_all.Days.First().ToString("yyyy-MM-dd") – @_all.Days.Last().ToString("yyyy-MM-dd"), tariff @Tariff.RonPerKwh.ToString("0.00") RON/kWh. Withdrawn and unsupported plugs are not included.</p>
-        }
-    }
-    else if (_dailyData is null)
-    {
-        <p class="text-secondary"><span class="spinner-border spinner-border-sm me-2"></span>Loading data…</p>
-    }
-    else if (_dailyData.Count == 0)
-    {
-        <div class="alert alert-secondary">No daily history yet for this plug — it is read every 6 h and right after a plug is added.</div>
-    }
-    else
-    {
-        <div class="card"><div class="card-body">
-        <h2 class="h6 text-secondary">Energy per day (kWh)</h2>
-        <ApexChart @key="_chartKey" TItem="DailyKwhPoint" Title="kWh / day"
-                   Options="_chartOptions">
-            <ApexPointSeries TItem="DailyKwhPoint"
-                             Items="_dailyData"
-                             Name="kWh"
-                             SeriesType="SeriesType.Bar"
-                             XValue="@(d => d.Date)"
-                             YValue="@(d => (decimal)(d.EnergyWh / 1000.0))" />
-        </ApexChart>
-        </div></div>
-    }
-}
-
-<style>
-    .totals-table td:nth-child(n+2), .totals-table th:nth-child(n+2) { text-align: right; }
-    .totals-table .swatch { display: inline-block; width: 0.9em; height: 0.9em; margin-right: 0.5em; vertical-align: -0.1em; border-radius: 2px; }
-</style>
+    <HistoryCurrentSection Data="_home" Prices="_prices" Comparison="c" Compare="_compare" Plug="_plug" PlugChanged="OnPlugChangedAsync" Now="_now"
+                           CsvHref="@Csv(HistorySections.Electricity, _plug)" />
+    <HistoryGasSection Data="_gas" Loaded="_gasLoaded" Prices="_prices" Compare="_compare" Now="_now" BoilerTz="Reports.BoilerTimeZone" LocalTz="Reports.TimeZone"
+                       CsvHref="@Csv(HistorySections.Gas)" />
+    <HistoryMieleSection Data="_miele" Prices="_prices" Tz="Reports.TimeZone" CsvHref="@Csv(HistorySections.MieleCycles)" ProgramsCsvHref="@Csv(HistorySections.MielePrograms)" />
+    <HistoryDetectedSection Data="_detected" Period="_period" Compare="_compare" Prices="_prices" CsvHref="@Csv(HistorySections.Consumers)" DetectedCsvHref="@Csv(HistorySections.Detected)" />
+    <HistoryClimateSection Data="_climate" Period="_period" Compare="_compare" Now="_now" CsvHref="@Csv(HistorySections.Climate)" DegreeDaysCsvHref="@Csv(HistorySections.DegreeDays)" />
+    <HistoryCostSection Electricity="_home" Gas="_gas" Bill="_bill" Prices="_prices" Comparison="cost" Period="_period" Today="_today" Compare="_compare" Now="_now"
+                        Tz="Reports.TimeZone" CsvHref="@Csv(HistorySections.Costs)" />
+    <HistoryEventsSection Data="_events" Tz="Reports.TimeZone" CsvHref="@Csv(HistorySections.Events)" />
+</div>
 
 @code {
-    private const string AllValue = "all";
+    [SupplyParameterFromQuery(Name = "p")] public string? QueryKind { get; set; }
+    [SupplyParameterFromQuery(Name = "d")] public string? QueryDay { get; set; }
+    [SupplyParameterFromQuery(Name = "de")] public string? QueryFrom { get; set; }
+    [SupplyParameterFromQuery(Name = "pana")] public string? QueryTo { get; set; }
+    [SupplyParameterFromQuery(Name = "cmp")] public string? QueryCompare { get; set; }
+    // Strings, parsed with TryParse: a malformed id (?plug=abc) is ignored instead of failing the page.
+    [SupplyParameterFromQuery(Name = "plug")] public string? QueryPlug { get; set; }
+    /// <summary>The address of 0.9.0 and before (/history?plugId=…): the same plug filter.</summary>
+    [SupplyParameterFromQuery(Name = "plugId")] public string? QueryPlugId { get; set; }
 
-    [SupplyParameterFromQuery(Name = "plugId")] public Guid? QueryPlugId { get; set; }
+    private ReportPeriod _period;
+    private DateOnly _today;
+    private DateTimeOffset _now;
+    private bool _compare = true;
+    private Guid? _plug;
+    private bool _initialized;
+    private int _version;
+    private EnergyPrices _prices = new(1.30m, KasaMonitor.Core.Heating.ViessmannApi.DefaultKwhPerM3, 0, false);
 
-    private List<Plug>? _plugs;
-    private Guid _selectedPlugId;
-    private bool _allSelected = true;
-    private int _rangeDays = 30;
-    private List<DailyKwhPoint>? _dailyData;
-    private AllPlugsDailyEnergy? _all;
-    private int _chartKey;
-    private ApexChartOptions<DailyKwhPoint> _chartOptions = new()
-    {
-        Chart = new Chart { Toolbar = new Toolbar { Show = false } }
-    };
-    private ApexChartOptions<DayPoint> _allChartOptions = new();
+    private HomePeriod? _home;
+    private HistoryGas? _gas;
+    private bool _gasLoaded;
+    private HistoryMiele? _miele;
+    private HistoryDetected? _detected;
+    private HistoryClimate? _climate;
+    private HistoryEventList? _events;
+    private BillEstimate? _bill;
+    private readonly SortedSet<string> _errors = new();
 
-    public record DailyKwhPoint(string Date, long EnergyWh);
-    public record DayPoint(string Date, decimal Kwh);
-
-    private IEnumerable<DayPoint> Points(PlugDailySeries s) =>
-        _all!.Days.Select((d, i) => new DayPoint(d.ToString("yyyy-MM-dd"), s.DailyWh[i] / 1000m)).ToList();
-
-    private KasaMonitor.Core.Costing.TariffCalculator Tariff = null!;
+    private bool IsToday => _period.Kind == ReportGranularity.Day && _period.Start == _today;
 
     protected override async Task OnInitializedAsync()
     {
-        // Same tariff as the „Prize” page: the value saved in /settings, falling back to the startup value.
-        Tariff = new KasaMonitor.Core.Costing.TariffCalculator((await KasaSettings.GetAsync(CancellationToken.None)).TariffRonPerKwh);
-        using var scope = ScopeFactory.CreateScope();
-        var repo = scope.ServiceProvider.GetRequiredService<IPlugRepository>();
-        _plugs = (await repo.ListAllAsync(CancellationToken.None)).Where(p => !p.IsArchived).ToList();
-        if (_plugs.Count > 0)
-        {
-            if (QueryPlugId is { } qp && _plugs.Any(p => p.Id == qp))
-            {
-                _allSelected = false;
-                _selectedPlugId = qp;
-            }
-            await ReloadDataAsync();
-        }
+        _today = HistorySvc.Today();
+        _prices = _prices with { TariffRonPerKwh = DefaultTariff.RonPerKwh };
+        ReadQuery();
+        _initialized = true;
+        await LoadAsync();
     }
 
-    private async Task OnPlugChanged(ChangeEventArgs e)
+    /// <summary>The address changed (◀ ▶, a link, back/forward): follow it; a new period reloads, the rest only redraws.</summary>
+    protected override async Task OnParametersSetAsync()
     {
-        var value = e.Value?.ToString();
-        if (value == AllValue)
-        {
-            _allSelected = true;
-            await ReloadDataAsync();
-        }
-        else if (Guid.TryParse(value, out var id))
-        {
-            _allSelected = false;
-            _selectedPlugId = id;
-            await ReloadDataAsync();
-        }
+        if (!_initialized) return;
+        var before = _period;
+        ReadQuery();
+        if (_period != before) await LoadAsync();
     }
 
-    private async Task OnRangeChanged(ChangeEventArgs e)
+    private void ReadQuery()
     {
-        if (int.TryParse(e.Value?.ToString(), out var days))
-        {
-            _rangeDays = days;
-            await ReloadDataAsync();
-        }
+        _period = PeriodQuery.Parse(QueryKind, QueryDay, QueryFrom, QueryTo, _today, ReportGranularity.Month);
+        _compare = PeriodQuery.Compare(QueryCompare);
+        _plug = PeriodQuery.Plug(QueryPlug) ?? PeriodQuery.Plug(QueryPlugId);
     }
 
-    private async Task ReloadDataAsync()
-    {
-        using var scope = ScopeFactory.CreateScope();
-        var historyRepo = scope.ServiceProvider.GetRequiredService<IHistoryRepository>();
-        var to = DateOnly.FromDateTime(DateTime.UtcNow);
-        var from = to.AddDays(-_rangeDays);
+    private string Csv(string section, Guid? plug = null) =>
+        "/history/export.csv?section=" + section + "&" + PeriodQuery.Format(_period) + (_compare ? "" : "&cmp=0") + (plug is { } id ? "&plug=" + id : "");
 
-        if (_allSelected)
-        {
-            var rows = await historyRepo.GetDailyRangeAllAsync(from, to, CancellationToken.None);
-            _all = AllPlugsDailyEnergy.Build(_plugs!, rows);
-            _allChartOptions = BuildAllChartOptions(_all);
-        }
-        else
-        {
-            if (_selectedPlugId == Guid.Empty) return;
-            var entries = await historyRepo.GetDailyRangeAsync(_selectedPlugId, from, to, CancellationToken.None);
-            _dailyData = entries.Select(d => new DailyKwhPoint(
-                $"{d.Year:D4}-{d.Month:D2}-{d.Day:D2}", d.EnergyWh)).ToList();
-        }
-        _chartKey++;
-        StateHasChanged();
-    }
-
-    private static ApexChartOptions<DayPoint> BuildAllChartOptions(AllPlugsDailyEnergy all)
+    /// <summary>
+    /// Starts every section at once; each one shows as soon as it is there (interactive), the prerender waits for all of them.
+    /// A section that fails shows its name in the warning; the others are not held back.
+    /// </summary>
+    private async Task LoadAsync()
     {
-        var inv = System.Globalization.CultureInfo.InvariantCulture;
-        var totals = string.Join(",", all.DayTotalsWh.Select(wh => (wh / 1000.0).ToString("0.000", inv)));
-        return new ApexChartOptions<DayPoint>
+        var version = ++_version;
+        _today = HistorySvc.Today();
+        _now = DateTimeOffset.UtcNow;
+        var period = _period;
+        (_home, _gas, _gasLoaded, _miele, _detected, _climate, _events) = (null, null, false, null, null, null, null);
+        _errors.Clear();
+        var ct = CancellationToken.None;
+        var tasks = new List<Task>
         {
-            // Only the plug bars are stacked; the "Casă" line (main meter) stays on its own.
-            Chart = new Chart { Stacked = true, StackOnlyBar = true, Toolbar = new Toolbar { Show = false } },
-            PlotOptions = new PlotOptions { Bar = new PlotOptionsBar { Horizontal = false } },
-            Legend = new Legend { Show = true, OnItemClick = new LegendOnItemClick { ToggleDataSeries = true } },
-            Tooltip = new Tooltip
-            {
-                Shared = true,
-                Intersect = false,
-                X = new TooltipX
-                {
-                    // Day total (all plugs) in the tooltip header; the per-plug values are listed below it.
-                    Formatter = $"function(value, opts) {{ var t = [{totals}]; var i = opts ? opts.dataPointIndex : -1; return (i >= 0 && i < t.length) ? value + ' — total prize ' + t[i].toFixed(3) + ' kWh' : value; }}"
-                },
-                Y = new TooltipY { Formatter = "function(value) { return value == null ? '' : value.toFixed(3) + ' kWh'; }" }
-            },
-            DataLabels = new DataLabels { Enabled = false },
+            Section("prețuri", () => Task.Run(() => HistoryPrices.LoadAsync(KasaSettings, HeatingSettings, false, ct)), p => _prices = p with { HasGas = _gas is not null || _prices.HasGas }, version),
+            Section("curent", () => Home.GetAsync(period, ct), d => _home = d, version),
+            Section("gaz", () => HistorySvc.GetGasAsync(period, ct), g => { _gas = g; _gasLoaded = true; _prices = _prices with { HasGas = g is not null }; }, version),
+            Section("aparate", () => HistorySvc.GetMieleAsync(period, ct), m => _miele = m, version),
+            Section("consumatori", () => HistorySvc.GetDetectedAsync(period, ct), d => _detected = d, version),
+            Section("climă", () => HistorySvc.GetClimateAsync(period, ct), x => _climate = x, version),
+            Section("evenimente", () => HistorySvc.GetEventsAsync(period, ct), e => _events = e, version),
+            Section("estimare", () => Home.Metrics.Bill is { } b ? Task.FromResult<BillEstimate?>(b) : Home.GetBillAsync(ct), b => _bill = b, version),
         };
+        if (!RendererInfo.IsInteractive) await Task.WhenAll(tasks);
+    }
+
+    private async Task Section<T>(string name, Func<Task<T>> load, Action<T> set, int version)
+    {
+        try
+        {
+            var value = await load();
+            if (version != _version) return;
+            set(value);
+        }
+        catch (Exception ex)
+        {
+            Log.LogWarning(ex, "History section {Section} of {Kind} {Start} could not be computed", name, _period.Kind, _period.Start);
+            if (version != _version) return;
+            _errors.Add(name);
+            if (name == "gaz") _gasLoaded = true;
+        }
+        if (RendererInfo.IsInteractive) await InvokeAsync(StateHasChanged);
+    }
+
+    private Task OnPeriodChangedAsync(ReportPeriod p)
+    {
+        Nav.NavigateTo(PeriodQuery.History(p, _compare, _plug));
+        return Task.CompletedTask;
+    }
+
+    private void OnCompareChanged(ChangeEventArgs e)
+    {
+        var on = e.Value is true || e.Value is string s && bool.TryParse(s, out var b) && b;
+        Nav.NavigateTo(PeriodQuery.History(_period, on, _plug), new NavigationOptions { ReplaceHistoryEntry = true });
+    }
+
+    private Task OnPlugChangedAsync(Guid? plug)
+    {
+        Nav.NavigateTo(PeriodQuery.History(_period, _compare, plug, "curent"), new NavigationOptions { ReplaceHistoryEntry = true });
+        return Task.CompletedTask;
     }
 }

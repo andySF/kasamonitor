@@ -1,0 +1,81 @@
+@using KasaMonitor.Core.History
+@using KasaMonitor.Core.Reports
+@using KasaMonitor.Workers
+@using KasaMonitor.Web.Ui
+@inject HistoryService HistorySvc
+@inject IKasaSettingsService KasaSettings
+@inject ILogger<ConsumerSummaryCard> Log
+
+@* The top of /consumatori: the last 7 and 30 days broken down like /history „Consumatori” (identified consumers on their
+   own, the anonymous signatures grouped, „Nedetectat”), with the share identified as the progress of the learning. *@
+<div class="card mb-3">
+    <div class="card-header d-flex flex-wrap align-items-center gap-2">
+        <span class="fw-semibold"><i class="bi bi-pie-chart me-2"></i>Cât din consum e identificat</span>
+        <span class="small text-secondary">identificați = numiți de tine, prize cu un singur aparat sau prize confirmate; neidentificați = semnături fără nume; nedetectat = restul casei; procentul e din contor</span>
+    </div>
+    <div class="card-body">
+        @if (_error)
+        {
+            <div class="text-secondary small">Rezumatul nu a putut fi calculat acum (detaliul e în jurnalul aplicației).</div>
+        }
+        else
+        {
+            <div class="cons-sum">
+                @foreach (var (title, period, data) in new[] { ("Ultimele 7 zile", _week, _d7), ("Ultimele 30 de zile", _month, _d30) })
+                {
+                    <div>
+                        <div class="d-flex align-items-baseline gap-2 mb-1">
+                            <span class="fw-semibold">@title</span>
+                            @if (data?.Breakdown.IdentifiedPct is { } p)
+                            {
+                                <span class="badge text-bg-success">identificat @HeatingFormat.Number(p, 0) %</span>
+                            }
+                            <a class="small ms-auto" href="@PeriodQuery.History(period, anchor: "consumatori")">Istoric →</a>
+                        </div>
+                        @if (data is null)
+                        {
+                            <div class="text-secondary small">Se încarcă…</div>
+                        }
+                        else if (data.Breakdown.Rows.Count == 0)
+                        {
+                            <div class="text-secondary small">Fără contor general.</div>
+                        }
+                        else
+                        {
+                            <ConsumerBreakdownList Data="data.Breakdown" Tariff="_tariff" />
+                        }
+                    </div>
+                }
+            </div>
+        }
+    </div>
+</div>
+
+@code {
+    private ReportPeriod _week;
+    private ReportPeriod _month;
+    private HistoryDetected? _d7;
+    private HistoryDetected? _d30;
+    private decimal _tariff;
+    private bool _error;
+
+    protected override async Task OnInitializedAsync()
+    {
+        var today = HistorySvc.Today();
+        _week = ReportPeriod.Between(today.AddDays(-6), today);
+        _month = ReportPeriod.Between(today.AddDays(-29), today);
+        try
+        {
+            _tariff = (await Task.Run(() => KasaSettings.GetAsync(CancellationToken.None))).TariffRonPerKwh;
+            var w = HistorySvc.GetDetectedAsync(_week, CancellationToken.None);
+            var m = HistorySvc.GetDetectedAsync(_month, CancellationToken.None);
+            await Task.WhenAll(w, m);
+            (_d7, _d30) = (w.Result, m.Result);
+        }
+        catch (Exception ex)
+        {
+            Log.LogWarning(ex, "Consumers' summary could not be computed");
+            _error = true;
+        }
+    }
+}

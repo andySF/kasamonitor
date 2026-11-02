@@ -2,8 +2,11 @@ using KasaMonitor.Core.Protocol.Shelly;
 
 namespace KasaMonitor.Core.Reports;
 
-/// <summary>Length of a report period (the ViCare-style selector): a day by hours, a week or a month by days, a year by months.</summary>
-public enum ReportGranularity { Day, Week, Month, Year }
+/// <summary>
+/// Length of a report period (the ViCare-style selector): a day by hours, a week or a month by days, a year by months;
+/// <see cref="Range"/> = a free interval of whole local days („de la – până la”, /history), by days.
+/// </summary>
+public enum ReportGranularity { Day, Week, Month, Year, Range }
 
 /// <summary>
 /// One bar of a report: <see cref="StartUtc"/> inclusive, <see cref="EndUtc"/> exclusive. <see cref="Day"/> is the
@@ -14,13 +17,29 @@ public sealed record ReportBucket(int Index, DateTimeOffset StartUtc, DateTimeOf
 
 /// <summary>
 /// A calendar period in local time: a day, a week starting on Monday, a month or a year. <see cref="Start"/> is always
-/// the first local day of the period (normalised by <see cref="Containing"/>).
+/// the first local day of the period (normalised by <see cref="Containing"/>). A free interval (<see cref="Between"/>,
+/// kind <see cref="ReportGranularity.Range"/>) also has its last day (<see cref="RangeLastDay"/>; default for the others).
 /// </summary>
-public readonly record struct ReportPeriod(ReportGranularity Kind, DateOnly Start)
+public readonly record struct ReportPeriod(ReportGranularity Kind, DateOnly Start, DateOnly RangeLastDay = default)
 {
-    /// <summary>The period of the given kind that contains <paramref name="day"/> (weeks start on Monday).</summary>
+    /// <summary>The longest free interval (days): about two years of daily bars.</summary>
+    public const int MaxRangeDays = 732;
+
+    /// <summary>
+    /// A free interval of whole local days, <paramref name="from"/> to <paramref name="to"/> inclusive (swapped when given
+    /// the other way round, cut to <see cref="MaxRangeDays"/> from its start).
+    /// </summary>
+    public static ReportPeriod Between(DateOnly from, DateOnly to)
+    {
+        if (to < from) (from, to) = (to, from);
+        if (to.DayNumber - from.DayNumber + 1 > MaxRangeDays) to = from.AddDays(MaxRangeDays - 1);
+        return new ReportPeriod(ReportGranularity.Range, from, to);
+    }
+
+    /// <summary>The period of the given kind that contains <paramref name="day"/> (weeks start on Monday; a range: that day alone).</summary>
     public static ReportPeriod Containing(ReportGranularity kind, DateOnly day) => kind switch
     {
+        ReportGranularity.Range => Between(day, day),
         ReportGranularity.Day => new(kind, day),
         ReportGranularity.Week => new(kind, day.AddDays(-(((int)day.DayOfWeek + 6) % 7))),
         ReportGranularity.Month => new(kind, new DateOnly(day.Year, day.Month, 1)),
@@ -34,6 +53,7 @@ public readonly record struct ReportPeriod(ReportGranularity Kind, DateOnly Star
         ReportGranularity.Day => Start.AddDays(1),
         ReportGranularity.Week => Start.AddDays(7),
         ReportGranularity.Month => Start.AddMonths(1),
+        ReportGranularity.Range => RangeLastDay.AddDays(1),
         _ => Start.AddYears(1),
     };
 
@@ -42,10 +62,17 @@ public readonly record struct ReportPeriod(ReportGranularity Kind, DateOnly Star
 
     public int DayCount => EndExclusive.DayNumber - Start.DayNumber;
 
-    /// <summary>The period of the same kind right before this one (the day before, the week before, February before March, …).</summary>
-    public ReportPeriod Previous() => Containing(Kind, Start.AddDays(-1));
+    /// <summary>
+    /// The period of the same kind right before this one (the day before, the week before, February before March, …; a
+    /// range: the same number of days right before it).
+    /// </summary>
+    public ReportPeriod Previous() => Kind == ReportGranularity.Range
+        ? Between(Start.AddDays(-DayCount), Start.AddDays(-1))
+        : Containing(Kind, Start.AddDays(-1));
 
-    public ReportPeriod Next() => new(Kind, EndExclusive);
+    public ReportPeriod Next() => Kind == ReportGranularity.Range
+        ? Between(EndExclusive, EndExclusive.AddDays(DayCount - 1))
+        : new(Kind, EndExclusive);
 
     public bool Contains(DateOnly day) => day >= Start && day < EndExclusive;
 
@@ -57,7 +84,7 @@ public readonly record struct ReportPeriod(ReportGranularity Kind, DateOnly Star
 
     /// <summary>
     /// The bars of the period: local hours for a day (23 on the spring DST day, 25 on the autumn one; built from whole
-    /// UTC hours, so zones with a whole-hour offset get exact local hours), local days for a week or a month, months
+    /// UTC hours, so zones with a whole-hour offset get exact local hours), local days for a week, a month or a range, months
     /// for a year.
     /// </summary>
     public IReadOnlyList<ReportBucket> Buckets(TimeZoneInfo tz)
@@ -80,6 +107,7 @@ public readonly record struct ReportPeriod(ReportGranularity Kind, DateOnly Star
             }
             case ReportGranularity.Week:
             case ReportGranularity.Month:
+            case ReportGranularity.Range:
                 for (var d = Start; d < EndExclusive; d = d.AddDays(1))
                     list.Add(new ReportBucket(list.Count, ShellyEnergyData.LocalMidnightUtc(d, tz), ShellyEnergyData.LocalMidnightUtc(d.AddDays(1), tz),
                         d.ToDateTime(TimeOnly.MinValue), d));

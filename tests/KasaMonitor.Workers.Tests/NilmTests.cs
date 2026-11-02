@@ -301,6 +301,41 @@ public class NilmServiceTests
     }
 
     [Fact]
+    public async Task PlugStream_LabelsTheEvent_LiveAndFromStorage_WithoutAny10SecondReading()
+    {
+        using var rig = new Rig();
+        var main = await rig.AddAsync("aabbccddee00", "Casa", PlugRole.MainMeter, PlugProtocols.ShellyRpc);
+        var fridge = await rig.AddAsync("aabbccddee01", "Frigider", PlugRole.Plug, PlugProtocols.Legacy);
+        // Stored: the main meter steps +120 W at 300 s; the plug's stream (every 3 s, a ramp reading at the step), no Samples.
+        using (var ctx = rig.Db.CreateContext())
+        {
+            var house = Enumerable.Range(0, 600).Select(t => new LiveSample(main, T0.AddSeconds(t), (t >= 300 ? 420 : 300) + (t % 3 - 1))).ToList();
+            var plug = Enumerable.Range(0, 200).Select(k => k * 3).Select(t => new LiveSample(fridge, T0.AddSeconds(t), t < 300 ? 2 : t == 300 ? 60 : 122)).ToList();
+            await new LiveRepository(ctx).SaveBatchAsync(house.Concat(plug).ToList(), Array.Empty<LiveMinuteAggregate>(), CancellationToken.None);
+        }
+        rig.Now = T0.AddMinutes(11);
+        var svc = rig.Service();
+        await svc.RunOnceAsync(CancellationToken.None);
+        var stored = (await rig.Repo(r => r.ListEventsAsync(T0, rig.Now, CancellationToken.None))).Should().ContainSingle().Subject;
+        stored.LabelPlugId.Should().Be(fridge, "the backfill reads the plug's LiveSamples");
+
+        // Live: a −120 W step at 700 s, the plug's stream published, still no 10-second reading.
+        for (var t = 600; t < 760; t++)
+        {
+            rig.Live.Publish(new LiveSample(main, T0.AddSeconds(t), (t < 700 ? 420 : 300) + (t % 3 - 1)));
+            if (t % 3 == 0) rig.Live.Publish(new LiveSample(fridge, T0.AddSeconds(t), t < 700 ? 122 : 2));
+        }
+        rig.Now = T0.AddSeconds(760);
+        await svc.RunOnceAsync(CancellationToken.None);
+        rig.Now = T0.AddSeconds(800);
+        await svc.RunOnceAsync(CancellationToken.None);
+        var events = await rig.Repo(r => r.ListEventsAsync(T0, rig.Now, CancellationToken.None));
+        events.Should().HaveCount(2);
+        events[1].DeltaP.Should().BeApproximately(-120, 2);
+        events[1].LabelPlugId.Should().Be(fridge, "the live labelling keeps the plugs' stream in memory");
+    }
+
+    [Fact]
     public async Task NoisyPlug_MoreThanTwentyMatchesInAnHour_IsExcludedFromLearning()
     {
         using var rig = new Rig();
@@ -431,6 +466,51 @@ public class NilmServiceTests
         await again.RunOnceAsync(CancellationToken.None);
         again.Classifier.HasModel.Should().BeTrue();
         again.ModelInfo!.Examples.Should().Be(36);
+    }
+
+    [Fact]
+    public async Task Classifier_TrainedAtStartupWithoutASavedModel_AndOnRequest_AndAfterRegroupNow()
+    {
+        using var rig = new Rig(ml: true);
+        var main = await rig.AddAsync("aabbccddee00", "Casa", PlugRole.MainMeter, PlugProtocols.ShellyRpc);
+        await SeedEventsAsync(rig, main);
+        using (var ctx = rig.Db.CreateContext())   // re-clustered recently: only the missing model makes it train
+            await new SettingsRepository(ctx).SetAsync(SettingKeys.NilmLastReclusterTs,
+                T0.ToUnixTimeSeconds().ToString(System.Globalization.CultureInfo.InvariantCulture), CancellationToken.None);
+        var svc = rig.Service();
+
+        await svc.RunOnceAsync(CancellationToken.None);
+        svc.ModelInfo.Should().NotBeNull("36 labels in 3 classes and no saved model: trained at startup, not at 03:30");
+        File.Exists(rig.ModelPath).Should().BeTrue();
+        (await rig.Repo(r => r.ListSignaturesAsync(CancellationToken.None))).Should().BeEmpty("no re-clustering ran");
+
+        var now = await svc.TrainNowAsync(CancellationToken.None);
+        now.Trained.Should().BeTrue();
+        now.Info!.Classes.Should().Equal("Boiler", "Frigider", "TV");
+        now.Info.Accuracy.Should().BeGreaterThan(0.9);
+        now.LabeledEvents.Should().Be(36);
+        now.LabeledClasses.Should().Be(3);
+        now.Duration.Should().BePositive();
+
+        (await svc.RegroupNowAsync(CancellationToken.None)).Training!.Trained.Should().BeTrue("the labels may have moved: retrained");
+
+        // A restart with the saved model does not train again at startup.
+        var again = rig.Service();
+        await again.RunOnceAsync(CancellationToken.None);
+        again.Classifier.HasModel.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task TrainNow_WithTooFewLabels_SaysWhatIsMissing()
+    {
+        using var rig = new Rig(ml: true);
+        var main = await rig.AddAsync("aabbccddee00", "Casa", PlugRole.MainMeter, PlugProtocols.ShellyRpc);
+        await SeedEventsAsync(rig, main, perClass: 4);
+        var r = await rig.Service().TrainNowAsync(CancellationToken.None);
+        r.Trained.Should().BeFalse();
+        r.Info.Should().BeNull();
+        r.LabeledEvents.Should().Be(6);
+        r.LabeledClasses.Should().Be(3);
     }
 
     [Fact]
@@ -605,5 +685,243 @@ public class NilmServiceTests
         s.ClusterWindowDays.Should().Be(KasaSettingsService.MaxClusterWindowDays);
         s.MlEnabled.Should().BeTrue();
         (await TestSettings.Create(rig.Scopes, new KasaSettingsDefaults()).GetAsync(CancellationToken.None)).MlEnabled.Should().BeTrue();
+    }
+
+    // ------------------------------------------------------------------ 0.8.2: anchors, automatic merge, „fișa”, „Regrupează acum”
+
+    private static async Task<ApplianceSignature> AddSigAsync(Rig rig, string name, double p, double q, double t,
+        SignatureLabelSource source = SignatureLabelSource.Cluster, Guid? plug = null) =>
+        await rig.Repo(r => r.AddSignatureAsync(new ApplianceSignature(0, name, "bi-question-circle", ApplianceCategories.Other, p, q, t, 0, null,
+            source, plug, false), CancellationToken.None));
+
+    /// <summary>Stores events (minutes before T0) in a signature; an event with a plug is labelled by it.</summary>
+    private static async Task<List<MeterEvent>> AddEventsAsync(Rig rig, Guid main, long? sig,
+        params (double Minutes, double P, double Q, double Ratio, double Rise, Guid? Plug)[] events)
+    {
+        var list = events.Select(x => new MeterEvent(0, main, T0.AddMinutes(-x.Minutes), x.P, x.Q, 0, x.Ratio, x.Rise, 500, sig,
+            x.Plug is null ? null : "Hol mic", x.Plug is null ? EventLabelSource.None : EventLabelSource.AutoPlug, x.Plug)).ToList();
+        var stored = await rig.Repo(r => r.AddEventsAsync(list, CancellationToken.None));
+        await rig.Repo(r => r.RecomputeSignaturesAsync(sig is { } id ? new[] { id } : Array.Empty<long>(), T0.AddDays(-30), CancellationToken.None));
+        return stored.ToList();
+    }
+
+    [Fact]
+    public async Task NewEvent_GoesToTheLabelledSignatureWithinOneAndAHalfEps_EvenWhenAnAnonymousOneIsNearer()
+    {
+        using var rig = new Rig();
+        var main = await rig.AddAsync("aabbccddee00", "Casa", PlugRole.MainMeter, PlugProtocols.ShellyRpc);
+        var kettle = await AddSigAsync(rig, "Fierbător", 1520, 105, 1.0, SignatureLabelSource.User);
+        var nearer = await AddSigAsync(rig, "", 1400, 20, 1.0);
+        using (var ctx = rig.Db.CreateContext())
+        {
+            var house = Enumerable.Range(0, 900).Select(t => new LiveSample(main, T0.AddSeconds(t), (t >= 300 && t < 420 ? 1825 : 400) + (t % 3 - 1))).ToList();
+            await new LiveRepository(ctx).SaveBatchAsync(house, Array.Empty<LiveMinuteAggregate>(), CancellationToken.None);
+        }
+        rig.Now = T0.AddMinutes(16);
+        await rig.Service().RunOnceAsync(CancellationToken.None);
+
+        var events = await rig.Repo(r => r.ListEventsAsync(T0, rig.Now, CancellationToken.None));
+        events.Should().HaveCount(2);
+        events.Select(e => e.DeltaP).Should().BeEquivalentTo(new[] { 1425.0, -1425.0 }, o => o.Using<double>(x => x.Subject.Should().BeApproximately(x.Expectation, 2)).WhenTypeIs<double>());
+        events.Should().OnlyContain(e => e.SignatureId == kettle.Id, "the kettle is labelled: it is tried first, with 1.5 × eps (−6 % is inside)");
+        (await rig.Repo(r => r.GetSignatureAsync(nearer.Id, CancellationToken.None)))!.Count.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task Nightly_AnchorsTakeTheEventsInTheirRadius_UnknownTransientsDoNotSplitAComponent_UserLabelKept()
+    {
+        using var rig = new Rig();
+        var main = await rig.AddAsync("aabbccddee00", "Casa", PlugRole.MainMeter, PlugProtocols.ShellyRpc);
+        var hol = await rig.AddAsync("aabbccddee03", "Hol mic", PlugRole.Plug, PlugProtocols.Legacy);
+        // Real events of 2 Nov (rounded): the kettle (labelled), its starts at −6 % in two anonymous groups, and the washing
+        // machine's heater split in two by the ratios ≈ 0 of the starts that fell between two samples.
+        var kettle = await AddSigAsync(rig, "Fierbător", 0, 0, 0, SignatureLabelSource.User);
+        await AddEventsAsync(rig, main, kettle.Id, (600, 1570, 109, 1.003, 0, null), (599, -1470, -101, 1.006, 1, null));
+        var s59 = await AddSigAsync(rig, "", 0, 0, 0);
+        var s88 = await AddSigAsync(rig, "", 0, 0, 0);
+        var starts = new List<MeterEvent>();
+        starts.AddRange(await AddEventsAsync(rig, main, s59.Id, (60, 1425, 63, 0.999, 0, null), (300, 1394, 74, 1.013, 0, null), (299, -1383, -11, 1.004, 0, null)));
+        starts.AddRange(await AddEventsAsync(rig, main, s88.Id, (62, 1411, 113, 0.026, 5, null), (61, -1417, -111, 1.001, 0, null), (58, 1439, 87, 0.012, 2, null)));
+        var s53 = await AddSigAsync(rig, "", 0, 0, 0);
+        var s55 = await AddSigAsync(rig, "", 0, 0, 0);
+        await AddEventsAsync(rig, main, s53.Id, (200, 2008, 122, 1.001, 0, null), (199, -2002, -134, 0, 2, null), (190, -1994, -108, 0.999, 0, hol),
+            (180, 1963, 115, 1.013, 0, null), (170, 1993, 126, 0.985, 1, hol), (169, -1991, -101, 1.007, 0, hol));
+        await AddEventsAsync(rig, main, s55.Id, (198, 1967, 117, 0, 2, null), (189, 1978, 99, 1.018, 0, hol), (188, -1929, -156, 1.008, 1, null),
+            (179, -1945, -132, 1.038, 11, null), (175, 2007, 175, 0.008, 2, hol), (174, -1958, -110, 1.033, 6, hol));
+        var svc = rig.Service();
+        await svc.RunOnceAsync(CancellationToken.None);   // stored events and no re-clustering yet: it runs at startup
+
+        var after = await rig.Repo(r => r.ListEventsAsync(T0.AddDays(-1), T0, CancellationToken.None));
+        foreach (var e in starts.Where(e => e.DeltaP > 1400))
+            after.Single(x => x.Id == e.Id).SignatureId.Should().Be(kettle.Id, $"the start of {e.DeltaP:0} W is within 1.5 × eps of the kettle");
+        var k = await rig.Repo(r => r.GetSignatureAsync(kettle.Id, CancellationToken.None));
+        k!.Name.Should().Be("Fierbător");
+        k.LabelSource.Should().Be(SignatureLabelSource.User);
+        var washer = after.Where(e => Math.Abs(e.DeltaP) > 1900).Select(e => e.SignatureId).Distinct().ToList();
+        washer.Should().ContainSingle("one heater, one signature").Which.Should().NotBeNull();
+        (await rig.Repo(r => r.GetSignatureAsync(washer[0]!.Value, CancellationToken.None)))!.Count.Should().Be(12);
+        using (var ctx = rig.Db.CreateContext())
+            long.Parse((await new SettingsRepository(ctx).GetAsync(SettingKeys.NilmLastReclusterTs, CancellationToken.None))!)
+                .Should().Be(T0.ToUnixTimeSeconds());
+    }
+
+    /// <summary>Two components 9 % apart in |ΔP|, apart in ΔQ (two clusters), both „posibil Hol mic”: rule b merges them.</summary>
+    private static async Task<(ApplianceSignature X, ApplianceSignature Y)> SeedSamePlugAsync(Rig rig, Guid main, Guid hol)
+    {
+        var x = await AddSigAsync(rig, "", 0, 0, 0);
+        var y = await AddSigAsync(rig, "", 0, 0, 0);
+        await AddEventsAsync(rig, main, x.Id, (100, 1000, 0, 1, 0, hol), (95, -1000, 0, 1, 0, hol), (90, 1005, 0, 1, 0, hol),
+            (85, -1003, 0, 1, 0, null), (80, 998, 0, 1, 0, null), (75, -997, 0, 1, 0, null));
+        await AddEventsAsync(rig, main, y.Id, (70, 1100, 200, 1, 0, hol), (65, -1100, -200, 1, 0, hol), (60, 1102, 200, 1, 0, null),
+            (55, -1098, -200, 1, 0, null), (50, 1101, 200, 1, 0, null), (45, -1099, -200, 1, 0, null));
+        await rig.Repo(r => r.SaveRunsAsync(new[] { new ApplianceRun(0, y.Id, T0.AddDays(-40), T0.AddDays(-40).AddHours(1), 1100, 1100, 1, 2) },
+            CancellationToken.None));
+        return (x, y);
+    }
+
+    [Fact]
+    public async Task RegroupNow_MergesSignaturesOfTheSamePlug_EventsAndRunsGoToTheSurvivor()
+    {
+        using var rig = new Rig();
+        var main = await rig.AddAsync("aabbccddee00", "Casa", PlugRole.MainMeter, PlugProtocols.ShellyRpc);
+        var hol = await rig.AddAsync("aabbccddee03", "Hol mic", PlugRole.Plug, PlugProtocols.Legacy);
+        var (x, y) = await SeedSamePlugAsync(rig, main, hol);
+        var svc = rig.Service();
+
+        var result = await svc.RegroupNowAsync(CancellationToken.None);
+
+        result.Merged.Should().Be(1);
+        result.Signatures.Should().Be(1);
+        var sigs = await rig.Repo(r => r.ListSignaturesAsync(CancellationToken.None));
+        sigs.Should().ContainSingle().Which.Id.Should().Be(x.Id, "6 events each: the older id survives");
+        sigs[0].Count.Should().Be(12);
+        sigs[0].PlugId.Should().BeNull("5 of 12 from the plug: still only „posibil”");
+        (await rig.Repo(r => r.ListRunsAsync(T0.AddDays(-41), T0.AddDays(-39), CancellationToken.None))).Should().ContainSingle()
+            .Which.SignatureId.Should().Be(x.Id, "the absorbed signature's runs are re-indexed, not deleted");
+        (await rig.Repo(r => r.GetSignatureAsync(y.Id, CancellationToken.None))).Should().BeNull();
+
+        var view = await svc.GetProfileAsync(x.Id, CancellationToken.None);
+        view!.PlugAlias.Should().Be("Hol mic");
+        view.PlugLinked.Should().BeFalse();
+        view.Profile.Events.Should().Be(12);
+        view.Profile.TopPlugEvents.Should().Be(5);
+        (await svc.GetProfileAsync(y.Id, CancellationToken.None)).Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Startup_ReclustersWhenTheLastJobIsOlderThan24h_NotWhenItIsRecent()
+    {
+        foreach (var (hoursAgo, merged) in new[] { (25, true), (1, false) })
+        {
+            using var rig = new Rig();
+            var main = await rig.AddAsync("aabbccddee00", "Casa", PlugRole.MainMeter, PlugProtocols.ShellyRpc);
+            var hol = await rig.AddAsync("aabbccddee03", "Hol mic", PlugRole.Plug, PlugProtocols.Legacy);
+            await SeedSamePlugAsync(rig, main, hol);
+            using (var ctx = rig.Db.CreateContext())
+                await new SettingsRepository(ctx).SetAsync(SettingKeys.NilmLastReclusterTs,
+                    T0.AddHours(-hoursAgo).ToUnixTimeSeconds().ToString(System.Globalization.CultureInfo.InvariantCulture), CancellationToken.None);
+
+            await rig.Service().RunOnceAsync(CancellationToken.None);
+
+            (await rig.Repo(r => r.ListSignaturesAsync(CancellationToken.None))).Should().HaveCount(merged ? 1 : 2, $"last job {hoursAgo} h ago");
+        }
+    }
+
+    [Fact]
+    public async Task MergeWith_TheUserLabelledSignatureSurvives_AddTo_KeepsTheChosenOne()
+    {
+        using var rig = new Rig();
+        var main = await rig.AddAsync("aabbccddee00", "Casa", PlugRole.MainMeter, PlugProtocols.ShellyRpc);
+        var lamp = await AddSigAsync(rig, "Lampă", 0, 0, 0, SignatureLabelSource.User);
+        await AddEventsAsync(rig, main, lamp.Id, (30, 60, 0, 1, 0, null));
+        var big = await AddSigAsync(rig, "", 0, 0, 0);
+        await AddEventsAsync(rig, main, big.Id, (20, 61, 0, 1, 0, null), (19, -61, 0, 1, 0, null), (18, 59, 0, 1, 0, null));
+        var other = await AddSigAsync(rig, "", 0, 0, 0);
+        await AddEventsAsync(rig, main, other.Id, (10, 300, 0, 1, 0, null), (9, -300, 0, 1, 0, null));
+        await rig.Repo(async r => { await r.UpdateSignatureAsync(other with { Category = "lighting", Icon = "bi-lightbulb" }, CancellationToken.None); return true; });
+        var svc = rig.Service();
+
+        (await svc.MergeWithAsync(big.Id, lamp.Id, CancellationToken.None)).Should().Be(lamp.Id, "the user's label wins over more events");
+        (await rig.Repo(r => r.GetSignatureAsync(lamp.Id, CancellationToken.None)))!.Count.Should().Be(4);
+        (await rig.Repo(r => r.GetSignatureAsync(big.Id, CancellationToken.None))).Should().BeNull();
+
+        (await svc.MergeAsync(other.Id, lamp.Id, CancellationToken.None)).Should().BeTrue();   // the selector above the table: explicit
+        var l = await rig.Repo(r => r.GetSignatureAsync(lamp.Id, CancellationToken.None));
+        l!.Name.Should().Be("Lampă");
+        l.Count.Should().Be(6);
+        l.Category.Should().Be("lighting", "the survivor had no category: it takes the absorbed one's");
+        (await svc.MergeWithAsync(lamp.Id, lamp.Id, CancellationToken.None)).Should().BeNull();
+    }
+
+    [Fact]
+    public async Task AddTo_MergesACloseComponent_OnlyNamesADistantOne()
+    {
+        using var rig = new Rig();
+        var main = await rig.AddAsync("aabbccddee00", "Casa", PlugRole.MainMeter, PlugProtocols.ShellyRpc);
+        var heater = await AddSigAsync(rig, "Mașina de spălat", 0, 0, 0, SignatureLabelSource.User);
+        await AddEventsAsync(rig, main, heater.Id, (90, 1990, 120, 1, 0, null), (80, -1985, -118, 1, 0, null));
+        await rig.Repo(async r => { await r.UpdateSignatureAsync((await r.GetSignatureAsync(heater.Id, CancellationToken.None))! with { Category = "washer", Icon = "bi-water" }, CancellationToken.None); return true; });
+        var heater2 = await AddSigAsync(rig, "", 0, 0, 0);
+        await AddEventsAsync(rig, main, heater2.Id, (70, 1900, 130, 1, 0, null), (60, -1905, -128, 1, 0, null));
+        var motor = await AddSigAsync(rig, "", 0, 0, 0);
+        await AddEventsAsync(rig, main, motor.Id, (50, 280, 230, 1, 0, null), (49, -282, -231, 1, 0, null), (48, 279, 229, 1, 0, null));
+        var svc = rig.Service();
+        var sigs = (await rig.Repo(r => r.ListSignaturesAsync(CancellationToken.None))).ToDictionary(x => x.Id);
+        NilmService.AddToMerges(sigs[heater2.Id], sigs[heater.Id]).Should().BeTrue();
+        NilmService.AddToMerges(sigs[motor.Id], sigs[heater.Id]).Should().BeFalse();
+
+        (await svc.AddToAsync(motor.Id, heater.Id, CancellationToken.None)).Should().Be(AddToOutcome.Named);
+        var m = await rig.Repo(r => r.GetSignatureAsync(motor.Id, CancellationToken.None));
+        m!.Name.Should().Be("Mașina de spălat");
+        m.Category.Should().Be("washer");
+        m.LabelSource.Should().Be(SignatureLabelSource.User);
+        m.Count.Should().Be(3, "a distant component keeps its events: two rows with one name");
+        (await rig.Repo(r => r.GetSignatureAsync(heater.Id, CancellationToken.None)))!.Count.Should().Be(2);
+
+        (await svc.AddToAsync(heater2.Id, heater.Id, CancellationToken.None)).Should().Be(AddToOutcome.Merged);
+        (await rig.Repo(r => r.GetSignatureAsync(heater.Id, CancellationToken.None)))!.Count.Should().Be(4);
+        (await rig.Repo(r => r.GetSignatureAsync(heater2.Id, CancellationToken.None))).Should().BeNull();
+
+        // The next re-clustering keeps both rows: the same name on distant components is not merged (rule c needs close centres).
+        await svc.RegroupNowAsync(CancellationToken.None);
+        (await rig.Repo(r => r.ListSignaturesAsync(CancellationToken.None))).Where(x => x.Name == "Mașina de spălat").Should().HaveCount(2);
+    }
+
+    [Fact]
+    public async Task Regroup_EventsAnAnchorCaughtCanLeave_OnlyTheUsersOwnLabelsArePinned()
+    {
+        using var rig = new Rig();
+        var main = await rig.AddAsync("aabbccddee00", "Casa", PlugRole.MainMeter, PlugProtocols.ShellyRpc);
+        var kettle = await AddSigAsync(rig, "Fierbător", 0, 0, 0, SignatureLabelSource.User);
+        var own = await AddEventsAsync(rig, main, kettle.Id, (500, 1520, 105, 1, 0, null), (499, -1515, -100, 1, 0, null));
+        await rig.Repo(async r => { await r.UpdateEventAsync(own[0] with { Label = "Fierbător", Source = EventLabelSource.User }, CancellationToken.None); return true; });
+        // Caught earlier by the kettle: a 1.9 kW load (far from 1.5 kW now) and a 1.2 kW one.
+        var stray = await AddEventsAsync(rig, main, kettle.Id, (300, 1900, 300, 1, 0, null), (200, 1200, 300, 1, 0, null));
+        await rig.Repo(r => r.RecomputeSignaturesAsync(new[] { kettle.Id }, T0.AddDays(-30), CancellationToken.None));
+        var svc = rig.Service();
+
+        await svc.RegroupNowAsync(CancellationToken.None);
+
+        var after = (await rig.Repo(r => r.ListEventsAsync(T0.AddDays(-1), T0, CancellationToken.None))).ToDictionary(e => e.Id);
+        after[own[0].Id].SignatureId.Should().Be(kettle.Id, "labelled by the user: pinned");
+        after[own[1].Id].SignatureId.Should().Be(kettle.Id, "within the kettle's radius: stays");
+        after[stray[0].Id].SignatureId.Should().NotBe(kettle.Id, "outside the radius: it leaves (no ratchet)");
+        after[stray[1].Id].SignatureId.Should().NotBe(kettle.Id);
+        var k = await rig.Repo(r => r.GetSignatureAsync(kettle.Id, CancellationToken.None));
+        k!.Name.Should().Be("Fierbător");
+        k.Count.Should().Be(2);
+    }
+
+    [Fact]
+    public async Task Regroup_AHiddenNamedSignatureIsNoAnchor()
+    {
+        using var rig = new Rig();
+        var main = await rig.AddAsync("aabbccddee00", "Casa", PlugRole.MainMeter, PlugProtocols.ShellyRpc);
+        var hidden = await AddSigAsync(rig, "Ignorat", 500, 0, 1, SignatureLabelSource.User);
+        await rig.Repo(async r => { await r.UpdateSignatureAsync((await r.GetSignatureAsync(hidden.Id, CancellationToken.None))! with { Hidden = true }, CancellationToken.None); return true; });
+        var events = await AddEventsAsync(rig, main, null, (30, 505, 0, 1, 0, null), (20, -505, 0, 1, 0, null), (10, 498, 0, 1, 0, null));
+        await rig.Service().RegroupNowAsync(CancellationToken.None);
+        var after = await rig.Repo(r => r.ListEventsAsync(T0.AddDays(-1), T0, CancellationToken.None));
+        after.Where(e => events.Any(x => x.Id == e.Id)).Should().OnlyContain(e => e.SignatureId != hidden.Id);
     }
 }

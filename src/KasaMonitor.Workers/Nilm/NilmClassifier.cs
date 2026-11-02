@@ -7,7 +7,10 @@ namespace KasaMonitor.Workers.Nilm;
 /// <summary>One row of the confusion matrix: how the events of class <see cref="Actual"/> were predicted (counts aligned to <see cref="NilmModelInfo.Classes"/>).</summary>
 public sealed record NilmConfusionRow(string Actual, IReadOnlyList<int> Predicted);
 
-/// <summary>Centre of one class of the training set (means as for a signature), for the open-set check of predictions.</summary>
+/// <summary>
+/// Centre of one class of the training set (means as for a signature), for the open-set check of predictions.
+/// <see cref="HasOnEvents"/> (name kept for the stored JSON): the class has switch-ons with a known transient.
+/// </summary>
 public sealed record NilmClassCentre(string Label, double MeanDeltaP, double MeanDeltaQ, double MeanTransient, bool HasOnEvents)
 {
     public SignatureCentre Centre => new(0, MeanDeltaP, MeanDeltaQ, MeanTransient, HasOnEvents);
@@ -149,7 +152,7 @@ public sealed class NilmClassifier
             .Select(g =>
             {
                 var (p, q, t) = SignatureClusterer.Means(g.Select(EventFeatures.Of).ToList());
-                return new NilmClassCentre(g.Key, p, q, t, g.Any(e => e.DeltaP > 0));
+                return new NilmClassCentre(g.Key, p, q, t, t > 0);
             }).ToList();
         return new NilmModelInfo(nowUtc, rows.Count, classes, predicted > 0 ? (double)correct / predicted : 0, folds,
             classes.Select((c, i) => new NilmConfusionRow(c, matrix[i])).ToList(), centres);

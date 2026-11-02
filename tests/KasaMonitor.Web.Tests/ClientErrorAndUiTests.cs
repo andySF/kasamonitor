@@ -106,6 +106,16 @@ public class UiFormatTests
         UiFormat.RelativeRo(Now.AddSeconds(-secondsAgo), Now).Should().Be(expected);
     }
 
+    [Theory]
+    [InlineData(45.4, "45 s")]
+    [InlineData(750.0, "12 min")]
+    [InlineData(3900.0, "1 h 05 min")]
+    [InlineData(null, "—")]
+    public void DurationRo(double? seconds, string expected)
+    {
+        UiFormat.DurationRo(seconds).Should().Be(expected);
+    }
+
     [Fact]
     public void ProtocolBadges_AreDistinct()
     {

@@ -6,7 +6,7 @@ public enum EventLabelSource
     /// <summary>Not labelled: the event only belongs to its DBSCAN signature (if any).</summary>
     None = 0,
 
-    /// <summary>A plug changed by the same ΔP within ±15 s (<see cref="PlugEventMatcher"/>): label = the plug's alias.</summary>
+    /// <summary>A plug's level changed by the same ΔP around the event (<see cref="PlugEventMatcher"/>): label = the plug's alias.</summary>
     AutoPlug = 1,
 
     /// <summary>Labelled by the user on /consumatori ("a fost boilerul").</summary>
@@ -142,6 +142,27 @@ public static class ApplianceCategories
 }
 
 /// <summary>
+/// When the transient ratio of a switch-on is a real measurement. The rule: <b>known</b> when the step reached its new
+/// level inside one sample (<see cref="MeterEvent.RiseSeconds"/> = 0) <b>or</b> the ratio is above
+/// <see cref="MinInrushRatio"/>; <b>unknown</b> only when the step took ≥ 1 s (<see cref="MaxRiseSeconds"/>) and the ratio
+/// is ≤ 1.5. Why: a step that falls between two 1-second samples, or a transition started by a small wobble before the
+/// real step, can only make the measured peak <i>smaller</i> (ratio ≈ 0–1 instead of the true value); a peak above 1.5
+/// can only be real (a motor's inrush, which also makes the rise last 2 s or more). The stored value stays as measured;
+/// only its use changes: an unknown transient is never compared (clustering, matching, merging) and never enters a
+/// signature's mean.
+/// </summary>
+public static class TransientRule
+{
+    /// <summary>A switch-on that took this many seconds or more to reach its new level may have missed its peak.</summary>
+    public const double MaxRiseSeconds = 1;
+
+    /// <summary>A ratio above this is a real inrush peak, whatever the rise.</summary>
+    public const double MinInrushRatio = 1.5;
+
+    public static bool IsKnown(double riseSeconds, double ratio) => riseSeconds < MaxRiseSeconds || ratio > MinInrushRatio;
+}
+
+/// <summary>
 /// One detected step of the main meter (table <c>MeterEvents</c>): a change between two steady states of the house
 /// power. <see cref="DeltaP"/> is signed (+ = something turned on); <see cref="DeltaQ"/> is the change of reactive power
 /// |Q| = √(S² − P²); <see cref="TransientRatio"/> = peak in the first 2 s / steady ΔP (motors 3–8, resistive ≈ 1);
@@ -164,12 +185,16 @@ public sealed record MeterEvent(
     Guid? LabelPlugId = null)
 {
     public bool IsOn => DeltaP > 0;
+
+    /// <summary>A switch-on whose transient ratio is a real measurement (<see cref="TransientRule"/>).</summary>
+    public bool TransientKnown => IsOn && TransientRule.IsKnown(RiseSeconds, TransientRatio);
 }
 
 /// <summary>
-/// A group of similar events = one appliance (table <c>ApplianceSignatures</c>). Means are over the events' magnitudes:
-/// <see cref="MeanDeltaP"/> = mean |ΔP|, <see cref="MeanDeltaQ"/> = mean ΔQ seen from the switch-on side,
-/// <see cref="MeanTransient"/> = mean transient ratio of the switch-on events.
+/// A group of similar events = one component of an appliance (table <c>ApplianceSignatures</c>). Means are over the
+/// events' magnitudes: <see cref="MeanDeltaP"/> = mean |ΔP|, <see cref="MeanDeltaQ"/> = mean ΔQ seen from the switch-on
+/// side, <see cref="MeanTransient"/> = mean transient ratio of the switch-ons whose transient is known
+/// (<see cref="TransientRule"/>; 0 = none known).
 /// </summary>
 public sealed record ApplianceSignature(
     long Id,
@@ -190,6 +215,17 @@ public sealed record ApplianceSignature(
     /// never counted as a detected appliance (cards, detected energy, <c>kasa_appliance_*</c>) nor added to the rest of the house.
     /// </summary>
     public bool ConfirmedByPlug => PlugId is not null;
+
+    /// <summary>Labelled by the user or linked to a plug (never reused by the clustering for another group).</summary>
+    public bool IsLabelled => LabelSource == SignatureLabelSource.User || PlugId is not null;
+
+    /// <summary>
+    /// Labelled (<see cref="IsLabelled"/>) and not hidden: an anchor of the classification. A new event tries these first,
+    /// with a wider tolerance (<see cref="SignatureClusterer.AnchorScale"/>), and the nightly re-clustering gives them the
+    /// events within that radius before clustering the rest. A hidden signature (the user chose to ignore it) attracts
+    /// nothing.
+    /// </summary>
+    public bool IsAnchor => IsLabelled && !Hidden;
 }
 
 /// <summary>

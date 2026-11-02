@@ -1,27 +1,43 @@
 namespace KasaMonitor.Core.Nilm;
 
-/// <summary>The clustering features of one event.</summary>
+/// <summary>
+/// The clustering features of one event. <see cref="Transient"/> is NaN when unknown: a switch-off (no inrush) or a
+/// switch-on whose peak was not seen (<see cref="TransientRule"/>).
+/// </summary>
 public readonly record struct EventFeatures(long Id, double DeltaP, double DeltaQ, double Transient)
 {
-    public static EventFeatures Of(MeterEvent e) => new(e.Id, e.DeltaP, e.DeltaQ, e.TransientRatio);
+    public static EventFeatures Of(MeterEvent e) => new(e.Id, e.DeltaP, e.DeltaQ, e.TransientKnown ? e.TransientRatio : double.NaN);
 
     /// <summary>|ΔP|: a switch-on and the switch-off of the same appliance have the same magnitude.</summary>
     public double Magnitude => Math.Abs(DeltaP);
 
     /// <summary>ΔQ seen from the switch-on side (a switch-off's ΔQ is mirrored).</summary>
     public double OnSideQ => DeltaP >= 0 ? DeltaQ : -DeltaQ;
+
+    /// <summary>A switch-on with a known transient ratio: the only events whose transient is compared.</summary>
+    public bool HasTransient => DeltaP > 0 && !double.IsNaN(Transient);
 }
 
-/// <summary>Running means of a cluster or signature (the matching "centre" of incremental attachment).</summary>
-public readonly record struct SignatureCentre(long Id, double MeanDeltaP, double MeanDeltaQ, double MeanTransient, bool HasOnEvents)
+/// <summary>
+/// Running means of a cluster or signature (the matching "centre" of incremental attachment). <see cref="HasTransient"/>:
+/// at least one of its switch-ons has a known transient (<see cref="MeanTransient"/> is their mean).
+/// </summary>
+public readonly record struct SignatureCentre(long Id, double MeanDeltaP, double MeanDeltaQ, double MeanTransient, bool HasTransient)
 {
+    /// <summary>A stored signature: a mean transient of 0 means none known (a known ratio is ≈ 1 or more: rise 0 or an inrush, see <see cref="TransientRule"/>).</summary>
     public static SignatureCentre Of(ApplianceSignature s) => new(s.Id, s.MeanDeltaP, s.MeanDeltaQ, s.MeanTransient, s.MeanTransient > 0);
+}
+
+/// <summary>An anchor's centre and the plug it is linked to (an event labelled by another plug never goes to it).</summary>
+public readonly record struct AnchorCentre(SignatureCentre Centre, Guid? PlugId)
+{
+    public static AnchorCentre Of(ApplianceSignature s) => new(SignatureCentre.Of(s), s.PlugId);
 }
 
 /// <summary>
 /// DBSCAN over the events (own implementation): two events are neighbours when their |ΔP| (compared relatively, i.e. on
 /// a log scale), their ΔQ (seen from the switch-on side) and, for two switch-ons, their transient ratio are all within
-/// eps. eps(|ΔP|) = <see cref="EpsRelative"/> × |ΔP| + <see cref="EpsAbsoluteW"/> (8 % + 3 W); eps(ΔQ) = 8 % of |ΔP| +
+/// eps (a transient ratio that is unknown, see <see cref="TransientRule"/>, is not compared). eps(|ΔP|) = <see cref="EpsRelative"/> × |ΔP| + <see cref="EpsAbsoluteW"/> (8 % + 3 W); eps(ΔQ) = 8 % of |ΔP| +
 /// <see cref="EpsAbsoluteVar"/> (ΔQ is a whole-house difference, noisier than ΔP); transient eps = 0.5 + 25 %. A
 /// cluster needs <see cref="MinPoints"/> events, and is cut where it grows wider than <see cref="MaxSpan"/> (a dense band
 /// of small loads would otherwise chain 30 ↔ 33 ↔ 36 W … into one cluster). Switch-ons and switch-offs of the same
@@ -33,6 +49,12 @@ public static class SignatureClusterer
     public const double EpsAbsoluteW = 3;
     public const double EpsAbsoluteVar = 15;
     public const int MinPoints = 3;
+
+    /// <summary>
+    /// Tolerance scale of the anchors (<see cref="ApplianceSignature.IsAnchor"/>: labelled by the user or linked to a
+    /// plug): 1.5 × eps ≈ 12 % of |ΔP|. A labelled appliance wins over an anonymous group that happens to be closer.
+    /// </summary>
+    public const double AnchorScale = 1.5;
 
     /// <summary>Most events clustered in one run (the newest); bounds time and memory of the nightly job.</summary>
     public const int MaxEvents = 20_000;
@@ -51,24 +73,24 @@ public static class SignatureClusterer
 
     /// <summary>
     /// Normalised distance (≤ 1 = neighbours): the largest of the three feature differences divided by its eps.
-    /// The transient ratio counts only when both are switch-ons (a switch-off has no inrush).
+    /// The transient ratio counts only when both are switch-ons with a known transient (a switch-off has no inrush).
     /// </summary>
-    public static double Distance(EventFeatures a, EventFeatures b, double scale = 1)
-    {
-        var d = Math.Max(Math.Abs(a.Magnitude - b.Magnitude) / Eps(a.Magnitude, b.Magnitude, scale),
-            Math.Abs(a.OnSideQ - b.OnSideQ) / EpsQ(a.Magnitude, b.Magnitude, scale));
-        if (a.DeltaP > 0 && b.DeltaP > 0)
-            d = Math.Max(d, Math.Abs(a.Transient - b.Transient) / TransientEps(a.Transient, b.Transient, scale));
-        return d;
-    }
+    public static double Distance(EventFeatures a, EventFeatures b, double scale = 1) =>
+        Distance(a.Magnitude, a.OnSideQ, a.HasTransient ? a.Transient : null, b.Magnitude, b.OnSideQ, b.HasTransient ? b.Transient : null, scale);
 
-    /// <summary>Distance of an event to a signature centre (transient compared only for a switch-on and a centre with switch-ons).</summary>
-    public static double Distance(EventFeatures e, SignatureCentre c, double scale = 1)
+    /// <summary>Distance of an event to a signature centre (transient compared only for a switch-on and a centre that both have one).</summary>
+    public static double Distance(EventFeatures e, SignatureCentre c, double scale = 1) =>
+        Distance(e.Magnitude, e.OnSideQ, e.HasTransient ? e.Transient : null, c.MeanDeltaP, c.MeanDeltaQ, c.HasTransient ? c.MeanTransient : null, scale);
+
+    /// <summary>Distance between two signature centres (the automatic merge, <see cref="SignatureMerger"/>).</summary>
+    public static double Distance(SignatureCentre a, SignatureCentre b, double scale = 1) =>
+        Distance(a.MeanDeltaP, a.MeanDeltaQ, a.HasTransient ? a.MeanTransient : null, b.MeanDeltaP, b.MeanDeltaQ, b.HasTransient ? b.MeanTransient : null, scale);
+
+    private static double Distance(double pA, double qA, double? tA, double pB, double qB, double? tB, double scale)
     {
-        var d = Math.Max(Math.Abs(e.Magnitude - c.MeanDeltaP) / Eps(e.Magnitude, c.MeanDeltaP, scale),
-            Math.Abs(e.OnSideQ - c.MeanDeltaQ) / EpsQ(e.Magnitude, c.MeanDeltaP, scale));
-        if (e.DeltaP > 0 && c.HasOnEvents)
-            d = Math.Max(d, Math.Abs(e.Transient - c.MeanTransient) / TransientEps(e.Transient, c.MeanTransient, scale));
+        var d = Math.Max(Math.Abs(pA - pB) / Eps(pA, pB, scale), Math.Abs(qA - qB) / EpsQ(pA, pB, scale));
+        if (tA is { } ta && tB is { } tb)
+            d = Math.Max(d, Math.Abs(ta - tb) / TransientEps(ta, tb, scale));
         return d;
     }
 
@@ -173,11 +195,30 @@ public static class SignatureClusterer
         return best;
     }
 
-    /// <summary>Means of a group of events: |ΔP|, switch-on side ΔQ, transient of the switch-ons (0 when none).</summary>
+    /// <summary>
+    /// The anchor of an event within <see cref="AnchorScale"/> × eps, or null. An event labelled by a plug
+    /// (<paramref name="labelPlug"/>) goes first to an anchor linked to that plug, and never to an anchor linked to
+    /// another plug.
+    /// </summary>
+    public static long? NearestAnchor(EventFeatures e, Guid? labelPlug, IEnumerable<AnchorCentre> anchors)
+    {
+        var list = anchors as IReadOnlyCollection<AnchorCentre> ?? anchors.ToList();
+        if (labelPlug is { } plug && Nearest(e, list.Where(a => a.PlugId == plug).Select(a => a.Centre), AnchorScale) is { } own) return own;
+        return Nearest(e, list.Where(a => a.PlugId is null || labelPlug is null || a.PlugId == labelPlug).Select(a => a.Centre), AnchorScale);
+    }
+
+    /// <summary>
+    /// The classification of an event: its anchor first (<see cref="NearestAnchor"/>: labelled by the user or linked to a
+    /// plug, 1.5 × eps), otherwise the nearest of the other centres within eps; null when none.
+    /// </summary>
+    public static long? Assign(EventFeatures e, Guid? labelPlug, IEnumerable<AnchorCentre> anchors, IEnumerable<SignatureCentre> others) =>
+        NearestAnchor(e, labelPlug, anchors) ?? Nearest(e, others);
+
+    /// <summary>Means of a group of events: |ΔP|, switch-on side ΔQ, transient of the switch-ons whose transient is known (0 when none).</summary>
     public static (double MeanDeltaP, double MeanDeltaQ, double MeanTransient) Means(IReadOnlyCollection<EventFeatures> events)
     {
         if (events.Count == 0) return (0, 0, 0);
-        var on = events.Where(e => e.DeltaP > 0).ToList();
-        return (events.Average(e => e.Magnitude), events.Average(e => e.OnSideQ), on.Count > 0 ? on.Average(e => e.Transient) : 0);
+        var known = events.Where(e => e.HasTransient).ToList();
+        return (events.Average(e => e.Magnitude), events.Average(e => e.OnSideQ), known.Count > 0 ? known.Average(e => e.Transient) : 0);
     }
 }

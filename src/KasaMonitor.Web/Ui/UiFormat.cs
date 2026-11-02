@@ -19,6 +19,16 @@ public static class UiFormat
         return future ? $"peste {body}" : $"acum {body}";
     }
 
+    /// <summary>A duration: "45 s", "12 min", "1 h 05 min" ("—" when null).</summary>
+    public static string DurationRo(double? seconds)
+    {
+        if (seconds is not { } s) return "—";
+        var a = TimeSpan.FromSeconds(Math.Round(Math.Max(0, s)));
+        return a.TotalSeconds < 60 ? $"{(int)a.TotalSeconds} s"
+            : a.TotalMinutes < 60 ? $"{(int)a.TotalMinutes} min"
+            : $"{(int)a.TotalHours} h {a.Minutes:00} min";
+    }
+
     public static string FullLocal(DateTimeOffset when) =>
         when.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture);
 

@@ -60,6 +60,30 @@ public sealed record NilmOverview(IReadOnlyList<SignatureRow> Detected, int Dete
     NilmModelInfo? Model, int LabeledEvents, int LabeledClasses, NilmSummary Summary, string? MainMeterAlias, NilmSettings Settings,
     IReadOnlyList<PlugNilmRow> Plugs, bool Busy, int RareCount = 0, int CleanableCount = 0, bool ShowRare = false);
 
+/// <summary>The „fișa” of one signature on /consumatori: its profile and the plug it matches (alias), linked or only „posibil”.</summary>
+public sealed record SignatureProfileView(ApplianceSignature Signature, SignatureProfile Profile, string? PlugAlias, bool PlugLinked);
+
+/// <summary>
+/// What a re-clustering did: events re-clustered, of which given to an anchor (labelled signature) before DBSCAN, clusters
+/// found, signatures left, events moved, signatures merged automatically (<see cref="Merges"/>: which, and why).
+/// </summary>
+public sealed record NilmRegroupResult(int Events, int Anchored, int Clusters, int Signatures, int Moved, int Merged,
+    IReadOnlyList<MergeStep>? Merges = null, NilmTrainResult? Training = null);
+
+/// <summary>
+/// One training of the classifier: <see cref="Info"/> when it trained (classes, cross-validated accuracy); otherwise
+/// the labelled events and classes found (not enough, or the model is off). <see cref="Duration"/> = wall time.
+/// </summary>
+public sealed record NilmTrainResult(bool Trained, int LabeledEvents, int LabeledClasses, NilmModelInfo? Info, TimeSpan Duration);
+
+/// <summary>What „Adaugă la aparatul…” did: merged the events (close components) or only gave the name (distant ones).</summary>
+public enum AddToOutcome
+{
+    Failed = 0,
+    Merged = 1,
+    Named = 2,
+}
+
 /// <summary>The NILM settings in effect.</summary>
 public sealed record NilmSettings(bool Enabled, int MinEventDeltaW, int ClusterWindowDays, bool MlEnabled);
 
@@ -71,22 +95,25 @@ public sealed class NilmBusyException() : Exception("Procesare în curs (istoric
 /// stored <c>LiveSamples</c> not processed yet at start: the backfill) to the <see cref="MeterEventDetector"/>. Events are
 /// processed in batches, <see cref="LabelDelay"/> after they happened (so the plugs' readings around them exist):
 /// <list type="number">
-/// <item>label from a plug that made the same clean step (<see cref="PlugEventMatcher"/>, plug readings kept in memory for
+/// <item>label from the plug whose stabilised level changed by the same ΔP (<see cref="PlugEventMatcher"/>, plug readings kept in memory for
 /// the last minutes, or loaded once per backfill batch); a plug matching more than
 /// <see cref="PlugNilmStates.MaxMatchesPerHour"/> events in an hour is excluded from learning automatically;</item>
 /// <item>otherwise the classifier's label when it is sure (≥ 0.7) and the event is near that class (open set);</item>
-/// <item>the nearest signature within eps (the predicted one for a model label), else a new "Necunoscut #n";</item>
+/// <item>the signature: the predicted one for a model label; else the nearest anchor (labelled by the user or linked to a
+/// plug) within 1.5 × eps; else the nearest other signature within eps; else a new "Necunoscut #n";</item>
 /// <item>runs opened/closed (<see cref="ApplianceRunBuilder"/>), events and runs written in one transaction each.</item>
 /// </list>
-/// Every night at <see cref="NightlyAt"/> (local) the newest <see cref="SignatureClusterer.MaxEvents"/> events of the last
-/// <c>ClusterWindowDays</c> are re-clustered and the classifier retrained, both on a low-priority thread outside the
-/// processing lock; events and runs older than <see cref="RetentionDays"/> days are deleted.
+/// Every night at <see cref="NightlyAt"/> (local), at startup when the last re-clustering is older than
+/// <see cref="ReclusterMaxAge"/>, and on „Regrupează acum”, the newest <see cref="SignatureClusterer.MaxEvents"/> events of
+/// the last <c>ClusterWindowDays</c> are re-clustered (anchors first, then DBSCAN), signatures that are the same component
+/// are merged (<see cref="SignatureMerger"/>) and the classifier retrained, the heavy parts on a low-priority thread
+/// outside the processing lock; events and runs older than <see cref="RetentionDays"/> days are deleted.
 /// </summary>
 public sealed class NilmService : BackgroundService
 {
     /// <summary>
-    /// How long an event waits before it is labelled: the ±15 s window plus two 10-second polls, so the plug reading
-    /// "steady after" a step late in the window is there.
+    /// How long an event waits before it is labelled: the plug window after the event (20 s) plus two 10-second polls, so the plug readings
+    /// of the whole "after" window are there.
     /// </summary>
     public static readonly TimeSpan LabelDelay = TimeSpan.FromSeconds(45);
 
@@ -104,6 +131,9 @@ public sealed class NilmService : BackgroundService
     public static readonly TimeSpan ReclusterAfterBackfill = TimeSpan.FromHours(6);
 
     public static readonly TimeOnly NightlyAt = new(3, 30);
+
+    /// <summary>At startup the re-clustering runs right away when the last one is older than this (or never ran on stored events).</summary>
+    public static readonly TimeSpan ReclusterMaxAge = TimeSpan.FromHours(24);
     public const int RetentionDays = 365;
     public const int MaxQueuedSamples = 100_000;
     public const int PageSize = 50;
@@ -123,10 +153,12 @@ public sealed class NilmService : BackgroundService
     private readonly MeterEventDetector _detector = new();
     private readonly ConcurrentQueue<LiveSample> _queue = new();
     private readonly SemaphoreSlim _gate = new(1, 1);
+    private readonly SemaphoreSlim _nightlyGate = new(1, 1);   // one re-clustering at a time (nightly, startup, button)
     private readonly List<MeterEvent> _pending = new();
     private readonly ConcurrentDictionary<long, double> _applianceWh = new();
     private readonly ConcurrentDictionary<Guid, List<PlugPowerPoint>> _plugMemory = new();
-    private readonly HashSet<(Guid, DateTimeOffset)> _usedChanges = new();
+    private readonly ConcurrentDictionary<Guid, List<PlugPowerPoint>> _plugStream = new();   // plugs' live stream (≈ 3 s)
+    private readonly HashSet<UsedPlugStep> _usedChanges = new();
     private readonly Dictionary<Guid, Queue<DateTimeOffset>> _plugMatches = new();
     private ApplianceRunBuilder _runs = new();
     private IReadOnlyList<ApplianceRun> _openSnapshot = Array.Empty<ApplianceRun>();
@@ -137,6 +169,9 @@ public sealed class NilmService : BackgroundService
     private volatile bool _busy;
     private bool _backfilled;
     private bool _initialized;
+    private bool _reclusterDue;
+    private bool _trainDue;
+    private readonly List<MeterEvent> _recentLabelled = new();   // the last minute of labelled events (neighbours of the next batch)
     private NilmSettings _current = new(true, KasaSettingsDefaults.DefaultMinEventDeltaW, KasaSettingsDefaults.DefaultClusterWindowDays, true);
     private DateTimeOffset _lastMarker = DateTimeOffset.MinValue, _lastSummary = DateTimeOffset.MinValue, _lastPlugs = DateTimeOffset.MinValue;
     private DateTimeOffset _nextNightly;
@@ -174,7 +209,12 @@ public sealed class NilmService : BackgroundService
 
     private void OnSample(LiveSample s)
     {
-        if (!_acceptSamples || s.PlugId != _mainId) return;
+        if (!_acceptSamples) return;
+        if (s.PlugId != _mainId)
+        {
+            if (_plugs.Any(p => p.Id == s.PlugId && p.Role == PlugRole.Plug)) Remember(_plugStream, s.PlugId, s.TsUtc, s.PowerW);
+            return;
+        }
         if (Interlocked.Increment(ref _queued) > MaxQueuedSamples)
         {
             Interlocked.Decrement(ref _queued);
@@ -187,15 +227,27 @@ public sealed class NilmService : BackgroundService
     private void OnPlugState(PlugLiveState s)
     {
         if (s.Role != PlugRole.Plug || !s.IsOnline || s.LastReading is null) return;
-        var ring = _plugMemory.GetOrAdd(s.PlugId, _ => new List<PlugPowerPoint>());
+        Remember(_plugMemory, s.PlugId, s.LastSampleUtc, s.LastReading.PowerMw / 1000.0);
+    }
+
+    /// <summary>Appends a reading to a plug's ring, keeping the last <see cref="PlugMemory"/>.</summary>
+    private static void Remember(ConcurrentDictionary<Guid, List<PlugPowerPoint>> rings, Guid plugId, DateTimeOffset ts, double watts)
+    {
+        var ring = rings.GetOrAdd(plugId, _ => new List<PlugPowerPoint>());
         lock (ring)
         {
-            if (ring.Count > 0 && ring[^1].TsUtc >= s.LastSampleUtc) return;
-            ring.Add(new PlugPowerPoint(s.LastSampleUtc, s.LastReading.PowerMw / 1000.0));
-            var cutoff = s.LastSampleUtc - PlugMemory;
+            if (ring.Count > 0 && ring[^1].TsUtc >= ts) return;
+            ring.Add(new PlugPowerPoint(ts, watts));
+            var cutoff = ts - PlugMemory;
             var old = ring.FindIndex(p => p.TsUtc >= cutoff);
             if (old > 0) ring.RemoveRange(0, old);
         }
+    }
+
+    private static List<PlugPowerPoint> Slice(ConcurrentDictionary<Guid, List<PlugPowerPoint>> rings, Guid plugId, DateTimeOffset from, DateTimeOffset to)
+    {
+        if (!rings.TryGetValue(plugId, out var ring)) return new List<PlugPowerPoint>();
+        lock (ring) return ring.Where(p => p.TsUtc >= from && p.TsUtc <= to).ToList();
     }
 
     private DateTimeOffset LocalMidnightUtc(DateTimeOffset nowUtc)
@@ -286,7 +338,8 @@ public sealed class NilmService : BackgroundService
             {
                 var covered = await BackfillAsync(mainId, now, ct);
                 _backfilled = true;
-                nightly = covered >= ReclusterAfterBackfill;
+                nightly = covered >= ReclusterAfterBackfill || _reclusterDue;
+                _reclusterDue = false;
             }
 
             while (_queue.TryDequeue(out var sample))
@@ -310,7 +363,21 @@ public sealed class NilmService : BackgroundService
         {
             _gate.Release();
         }
-        if (nightly) await NightlyAsync(_clock(), ct);
+        if (nightly)
+        {
+            _trainDue = false;   // the re-clustering trains too
+            await NightlyAsync(_clock(), ct);
+        }
+        else if (_trainDue && _mainId is not null && _current.Enabled && await _nightlyGate.WaitAsync(TimeSpan.Zero, ct))
+        {
+            // One training at a time („Antrenează acum” takes the same gate); busy now: the next pass tries again.
+            try
+            {
+                _trainDue = false;
+                await TrainAsync(_clock(), ct);
+            }
+            finally { _nightlyGate.Release(); }
+        }
     }
 
     private async Task LoadPlugsAsync(CancellationToken ct)
@@ -335,7 +402,15 @@ public sealed class NilmService : BackgroundService
         }
         if (_current.MlEnabled && Classifier.Load(_modelPath))
             _log.LogInformation("NILM: classifier loaded from {Path}", _modelPath);
-        _nextNightly = NextNightly(_clock());
+        var now = _clock();
+        _nextNightly = NextNightly(now);
+        var last = await scope.ServiceProvider.GetRequiredService<ISettingsRepository>().GetAsync(SettingKeys.NilmLastReclusterTs, ct);
+        // A night missed (the service was down at 03:30) or an upgrade from a version without the marker: re-cluster now.
+        _reclusterDue = long.TryParse(last, NumberStyles.Integer, CultureInfo.InvariantCulture, out var unix)
+            ? now - DateTimeOffset.FromUnixTimeSeconds(unix) > ReclusterMaxAge
+            : _events > 0;
+        // No saved model: train at startup when the labels allow it (not only at 03:30).
+        _trainDue = _current.MlEnabled && !Classifier.HasModel;
         _initialized = true;
     }
 
@@ -346,7 +421,8 @@ public sealed class NilmService : BackgroundService
     }
 
     /// <summary>
-    /// Every polled plug (role plug) around an event, from the readings kept in memory; those excluded from learning come
+    /// Every polled plug (role plug) around an event, from the readings kept in memory: its live stream when it covers
+    /// both windows, else its 10-second polls (<see cref="PlugEventMatcher.Readings"/>); those excluded from learning come
     /// with <see cref="PlugSeries.CanLabel"/> = false (they still make an event ambiguous).
     /// </summary>
     private IEnumerable<PlugSeries> LivePlugs(MeterEvent e)
@@ -355,25 +431,30 @@ public sealed class NilmService : BackgroundService
         var to = e.TsUtc + PlugEventMatcher.LoadMargin;
         foreach (var plug in _plugs.Where(p => p.IsPolled && p.Role == PlugRole.Plug))
         {
-            if (!_plugMemory.TryGetValue(plug.Id, out var ring)) continue;
-            List<PlugPowerPoint> points;
-            lock (ring) points = ring.Where(p => p.TsUtc >= from && p.TsUtc <= to).ToList();
+            var points = PlugEventMatcher.Readings(e.TsUtc, Slice(_plugStream, plug.Id, from, to), Slice(_plugMemory, plug.Id, from, to));
             if (points.Count >= 2) yield return new PlugSeries(plug.Id, plug.Alias, points, plug.TeachesNilm);
         }
     }
 
-    /// <summary>The readings of every polled plug in [fromUtc, toUtc] from <c>Samples</c>, loaded once (backfill batch, late events).</summary>
+    /// <summary>
+    /// The readings of every polled plug in [fromUtc, toUtc], loaded once (backfill batch, late events): the 10-second
+    /// polls from <c>Samples</c> and the live stream from <c>LiveSamples</c> (used when it covers both windows).
+    /// </summary>
     private async Task<Func<MeterEvent, IEnumerable<PlugSeries>>> StoredPlugsAsync(DateTimeOffset fromUtc, DateTimeOffset toUtc, CancellationToken ct)
     {
-        var plugs = new Dictionary<Guid, (string Alias, List<PlugPowerPoint> Points)>();
+        var plugs = new Dictionary<Guid, (string Alias, List<PlugPowerPoint> Polled, List<PlugPowerPoint> Stream)>();
         using (var scope = _scopes.CreateScope())
         {
             var sampleRepo = scope.ServiceProvider.GetRequiredService<ISampleRepository>();
+            var liveRepo = scope.ServiceProvider.GetRequiredService<ILiveRepository>();
             foreach (var plug in _plugs.Where(p => p.IsPolled && p.Role == PlugRole.Plug))
             {
                 var rows = await sampleRepo.ListByPlugAsync(plug.Id, fromUtc - PlugEventMatcher.LoadMargin, toUtc + PlugEventMatcher.LoadMargin, ct);
-                plugs[plug.Id] = (plug.Alias, rows.Where(r => r.Online && r.PowerMw is not null)
-                    .Select(r => new PlugPowerPoint(r.TimestampUtc, r.PowerMw!.Value / 1000.0)).OrderBy(p => p.TsUtc).ToList());
+                var stream = await liveRepo.ListSamplesAsync(plug.Id, fromUtc - PlugEventMatcher.LoadMargin, toUtc + PlugEventMatcher.LoadMargin, ct);
+                plugs[plug.Id] = (plug.Alias,
+                    rows.Where(r => r.Online && r.PowerMw is not null)
+                        .Select(r => new PlugPowerPoint(r.TimestampUtc, r.PowerMw!.Value / 1000.0)).OrderBy(p => p.TsUtc).ToList(),
+                    stream.Select(x => new PlugPowerPoint(x.TsUtc, x.PowerW)).OrderBy(p => p.TsUtc).ToList());
             }
         }
         return e =>
@@ -381,9 +462,10 @@ public sealed class NilmService : BackgroundService
             var lo = e.TsUtc - PlugEventMatcher.LoadMargin;
             var hi = e.TsUtc + PlugEventMatcher.LoadMargin;
             var list = new List<PlugSeries>();
-            foreach (var (id, (alias, points)) in plugs)
+            foreach (var (id, (alias, polled, stream)) in plugs)
             {
-                var slice = points.Where(p => p.TsUtc >= lo && p.TsUtc <= hi).ToList();
+                var slice = PlugEventMatcher.Readings(e.TsUtc, stream.Where(p => p.TsUtc >= lo && p.TsUtc <= hi).ToList(),
+                    polled.Where(p => p.TsUtc >= lo && p.TsUtc <= hi).ToList());
                 // Excluded meanwhile (noisy): still counts as a plug that moved, cannot label.
                 if (slice.Count >= 2) list.Add(new PlugSeries(id, alias, slice, _plugs.Any(p => p.Id == id && p.TeachesNilm)));
             }
@@ -487,29 +569,33 @@ public sealed class NilmService : BackgroundService
     private async Task ProcessRipeAsync(DateTimeOffset nowUtc, Func<MeterEvent, IEnumerable<PlugSeries>> plugsFor, CancellationToken ct)
     {
         List<MeterEvent> ripe;
+        List<MeterEvent> later;
         lock (_pending)
         {
             ripe = _pending.Where(e => nowUtc - e.TsUtc >= LabelDelay).OrderBy(e => e.TsUtc).ToList();
             if (ripe.Count == 0) return;
             _pending.RemoveAll(e => nowUtc - e.TsUtc >= LabelDelay);
+            later = _pending.ToList();
         }
         using var scope = _scopes.CreateScope();
-        await ProcessBatchAsync(scope.ServiceProvider, ripe, plugsFor, ct);
+        await ProcessBatchAsync(scope.ServiceProvider, ripe, plugsFor, later, ct);
         var newest = ripe[^1].TsUtc;
-        _usedChanges.RemoveWhere(k => newest - k.Item2 > TimeSpan.FromMinutes(10));
+        _usedChanges.RemoveWhere(k => newest - k.ToUtc > TimeSpan.FromMinutes(10));
     }
 
     /// <summary>Label (plug, then model), signature (predicted, nearest, or new), then one write for the events and one for the runs.</summary>
+    /// <param name="later">The events still waiting after this batch (neighbours of its last events).</param>
     private async Task ProcessBatchAsync(IServiceProvider sp, IReadOnlyList<MeterEvent> batch, Func<MeterEvent, IEnumerable<PlugSeries>> plugsFor,
-        CancellationToken ct)
+        IReadOnlyList<MeterEvent> later, CancellationToken ct)
     {
         var repo = sp.GetRequiredService<INilmRepository>();
         var prepared = new List<MeterEvent>(batch.Count);
         var created = new List<long>();
-        foreach (var raw in batch)
+        for (var i = 0; i < batch.Count; i++)
         {
-            var e = raw;
-            if (PlugEventMatcher.Match(e.TsUtc, e.DeltaP, plugsFor(e), _usedChanges) is { } m && await RegisterMatchAsync(m.PlugId, e.TsUtc, ct))
+            var e = batch[i];
+            var neighbours = NeighboursOf(e, batch, later);
+            if (PlugEventMatcher.Match(e.TsUtc, e.DeltaP, plugsFor(e), _usedChanges, neighbours) is { } m && await RegisterMatchAsync(m.PlugId, e.TsUtc, ct))
                 e = e with { Label = m.Alias, Source = EventLabelSource.AutoPlug, LabelPlugId = m.PlugId };
             if (e.Source == EventLabelSource.None && _current.MlEnabled && Classifier.Predict(e) is { } p
                 && p.Probability >= NilmClassifier.MinProbability && ModelInfo?.NearClass(e, p.Label) == true)
@@ -519,7 +605,10 @@ public sealed class NilmService : BackgroundService
             if (e.Source == EventLabelSource.Model)
                 sigId = _signatures.Where(s => string.Equals(s.Name, e.Label, StringComparison.Ordinal))
                     .OrderByDescending(s => s.LabelSource).ThenByDescending(s => s.Count).FirstOrDefault()?.Id;
-            sigId ??= SignatureClusterer.Nearest(EventFeatures.Of(e), _signatures.Select(SignatureCentre.Of));
+            // Anchors (named or linked, not hidden) first with 1.5 × eps — never one linked to another plug than the event's
+            // label —, then the nearest other signature within eps.
+            sigId ??= SignatureClusterer.Assign(EventFeatures.Of(e), e.LabelPlugId, _signatures.Where(s => s.IsAnchor).Select(AnchorCentre.Of),
+                _signatures.Where(s => !s.IsAnchor).Select(SignatureCentre.Of));
             if (sigId is null)
             {
                 var (mp, mq, mt) = SignatureClusterer.Means(new[] { EventFeatures.Of(e) });
@@ -533,6 +622,9 @@ public sealed class NilmService : BackgroundService
             prepared.Add(e with { SignatureId = sigId });
         }
 
+        _recentLabelled.AddRange(batch);
+        var newestTs = batch[^1].TsUtc;
+        _recentLabelled.RemoveAll(x => newestTs - x.TsUtc > TimeSpan.FromMinutes(1));
         var stored = await repo.AddEventsAsync(prepared, ct);
         Interlocked.Add(ref _events, stored.Count);
         // A signature created for an event that turned out to be a duplicate stays empty: remove it.
@@ -551,6 +643,21 @@ public sealed class NilmService : BackgroundService
         }
         await SaveRunsAsync(runs.Values.ToList(), ct, sp);
         await RefreshSignaturesAsync(repo, stored.Select(e => e.SignatureId!.Value).Distinct().ToList(), ct);
+    }
+
+    /// <summary>
+    /// The main meter's events around <paramref name="e"/> that could move a plug's level beyond the tolerance of
+    /// <paramref name="e"/> (|ΔP| ≥ <see cref="PlugEventMatcher.Tolerance"/>): the plug windows stop before them. Smaller
+    /// steps (a UPS's 30 W next to a 2 kW heater) cannot spoil the median and do not shorten the windows.
+    /// </summary>
+    private Neighbours NeighboursOf(MeterEvent e, IReadOnlyList<MeterEvent> batch, IReadOnlyList<MeterEvent> later)
+    {
+        var tol = PlugEventMatcher.Tolerance(e.DeltaP);
+        var around = _recentLabelled.Concat(batch).Concat(later)
+            .Where(x => x.TsUtc != e.TsUtc && Math.Abs(x.DeltaP) >= tol && (x.TsUtc - e.TsUtc).Duration() <= PlugEventMatcher.Outer + PlugEventMatcher.Inner)
+            .ToList();
+        return new Neighbours(around.Where(x => x.TsUtc < e.TsUtc).Select(x => (DateTimeOffset?)x.TsUtc).Max(),
+            around.Where(x => x.TsUtc > e.TsUtc).Select(x => (DateTimeOffset?)x.TsUtc).Min());
     }
 
     /// <summary>Stores opened and closed runs (closed ones corrected, counted in the energy metric) in one transaction.</summary>
@@ -630,11 +737,37 @@ public sealed class NilmService : BackgroundService
 
     /// <summary>
     /// Re-clusters the newest <see cref="SignatureClusterer.MaxEvents"/> events of the window, except those in user
-    /// signatures (model labels are re-evaluated); clusters keep the id (name, category) of the signature most of their
-    /// events already had, noise joins the nearest signature within eps or none. The clustering and the training run on a
-    /// low-priority thread outside the processing lock; reading the snapshot and applying the result take the lock.
+    /// signatures (a user label is never lost; model labels are re-evaluated):
+    /// <list type="number">
+    /// <item>anchors first: an event within <see cref="SignatureClusterer.AnchorScale"/> × eps of a signature labelled by
+    /// the user or linked to a plug goes to the nearest such signature;</item>
+    /// <item>DBSCAN on the rest: clusters keep the id (name, category) of the anonymous signature most of their events
+    /// already had, noise joins the nearest new cluster within eps or none;</item>
+    /// <item>signatures that are the same component are merged (<see cref="SignatureMerger"/>, from the same profiles as
+    /// the „fișa”), then the runs of the window are rebuilt.</item>
+    /// </list>
+    /// The clustering and the training run on a low-priority thread outside the processing lock; reading the snapshot and
+    /// applying the result take the lock. One re-clustering at a time.
     /// </summary>
-    public async Task NightlyAsync(DateTimeOffset nowUtc, CancellationToken ct)
+    public async Task<NilmRegroupResult> NightlyAsync(DateTimeOffset nowUtc, CancellationToken ct)
+    {
+        await _nightlyGate.WaitAsync(ct);
+        try { return await ReclusterAsync(nowUtc, ct); }
+        finally { _nightlyGate.Release(); }
+    }
+
+    /// <summary>
+    /// „Regrupează acum” on /consumatori: the nightly job on request (re-clustering, automatic merge, training). Throws
+    /// <see cref="NilmBusyException"/> when a re-clustering is already running.
+    /// </summary>
+    public async Task<NilmRegroupResult> RegroupNowAsync(CancellationToken ct)
+    {
+        if (!await _nightlyGate.WaitAsync(TimeSpan.Zero, ct)) throw new NilmBusyException();
+        try { return await ReclusterAsync(_clock(), ct); }
+        finally { _nightlyGate.Release(); }
+    }
+
+    private async Task<NilmRegroupResult> ReclusterAsync(DateTimeOffset nowUtc, CancellationToken ct)
     {
         _busy = true;
         try
@@ -651,20 +784,28 @@ public sealed class NilmService : BackgroundService
             }
             finally { _gate.Release(); }
 
-            var pinned = signatures.Values.Where(s => s.LabelSource == SignatureLabelSource.User).Select(s => s.Id).ToHashSet();
-            var free = events.Where(e => !(e.SignatureId is { } sid && pinned.Contains(sid))).ToList();
-            var features = free.Select(EventFeatures.Of).ToList();
-            var labels = await LowPriority.Run(() => SignatureClusterer.Cluster(features), "nilm-cluster");
+            var free = events.Where(e => !IsPinned(e, signatures)).ToList();
+            var anchors = signatures.Values.Where(s => s.IsAnchor).Select(AnchorCentre.Of).ToList();
+            var anchorOf = free.Select(e => SignatureClusterer.NearestAnchor(EventFeatures.Of(e), e.LabelPlugId, anchors)).ToArray();
+            var rest = Enumerable.Range(0, free.Count).Where(i => anchorOf[i] is null).ToList();
+            var features = rest.Select(i => EventFeatures.Of(free[i])).ToList();
+            var restLabels = await LowPriority.Run(() => SignatureClusterer.Cluster(features), "nilm-cluster");
+            var labels = Enumerable.Repeat(-1, free.Count).ToArray();
+            for (var k = 0; k < rest.Count; k++) labels[rest[k]] = restLabels[k];
 
+            NilmRegroupResult result;
             await _gate.WaitAsync(ct);
             try
             {
                 using var scope = _scopes.CreateScope();
-                await ApplyClustersAsync(scope.ServiceProvider, free, labels, nowUtc, ct);
+                result = await ApplyClustersAsync(scope.ServiceProvider, free, anchorOf, labels, nowUtc, ct);
+                await scope.ServiceProvider.GetRequiredService<ISettingsRepository>()
+                    .SetAsync(SettingKeys.NilmLastReclusterTs, nowUtc.ToUnixTimeSeconds().ToString(CultureInfo.InvariantCulture), ct);
             }
             finally { _gate.Release(); }
 
-            if (_current.MlEnabled) await TrainAsync(nowUtc, ct);
+            // The labels may have moved with the events: retrain (nightly, startup, „Regrupează acum”).
+            return _current.MlEnabled ? result with { Training = await TrainAsync(nowUtc, ct) } : result;
         }
         finally
         {
@@ -672,28 +813,40 @@ public sealed class NilmService : BackgroundService
         }
     }
 
-    private async Task ApplyClustersAsync(IServiceProvider sp, IReadOnlyList<MeterEvent> snapshot, int[] snapshotLabels, DateTimeOffset nowUtc,
-        CancellationToken ct)
+    /// <param name="sp">Services of the caller's scope.</param>
+    /// <param name="snapshot">The re-clustered events (not in user signatures) as read before the clustering.</param>
+    /// <param name="anchorOf">Per event: the anchor it went to (within 1.5 × eps), or null.</param>
+    /// <param name="snapshotLabels">Per event: its DBSCAN cluster (-1 = noise or anchored).</param>
+    /// <param name="nowUtc">Time of the job.</param>
+    /// <param name="ct">Cancellation.</param>
+    private async Task<NilmRegroupResult> ApplyClustersAsync(IServiceProvider sp, IReadOnlyList<MeterEvent> snapshot, long?[] anchorOf,
+        int[] snapshotLabels, DateTimeOffset nowUtc, CancellationToken ct)
     {
         var repo = sp.GetRequiredService<INilmRepository>();
         var signatures = (await repo.ListSignaturesAsync(ct)).ToDictionary(s => s.Id);
-        var pinned = signatures.Values.Where(s => s.LabelSource == SignatureLabelSource.User).Select(s => s.Id).ToHashSet();
-        // The clustering ran without the lock: events the user labelled or merged meanwhile (now in another or a pinned
-        // signature, or deleted) keep what the user did.
-        var current = await repo.GetSignatureIdsAsync(snapshot.Select(e => e.Id).ToList(), ct);
+        var labelledIds = signatures.Values.Where(s => s.IsLabelled).Select(s => s.Id).ToHashSet();
+        // The clustering ran without the lock: events the user labelled or merged meanwhile (now in another signature,
+        // pinned, or deleted) keep what the user did.
+        var current = (await repo.ListNewestEventsAsync(WindowStart(nowUtc), nowUtc, SignatureClusterer.MaxEvents, ct)).ToDictionary(e => e.Id);
         var keep = snapshot.Select((e, i) => (e, i))
-            .Where(x => current.TryGetValue(x.e.Id, out var sid) && sid == x.e.SignatureId && !(sid is { } p && pinned.Contains(p)))
+            .Where(x => current.TryGetValue(x.e.Id, out var now) && now.SignatureId == x.e.SignatureId && !IsPinned(now, signatures))
             .ToList();
         var free = keep.Select(x => x.e).ToList();
         var labels = keep.Select(x => snapshotLabels[x.i]).ToArray();
+        // An anchor deleted meanwhile: the event is treated as noise.
+        var anchored = keep.Select(x => anchorOf[x.i] is { } a && signatures.ContainsKey(a) ? a : (long?)null).ToArray();
         var assignment = new Dictionary<long, long?>();
+        for (var i = 0; i < free.Count; i++)
+            if (anchored[i] is { } a) assignment[free[i].Id] = a;
+
         var taken = new HashSet<long>();
         var centres = new List<SignatureCentre>();
-        foreach (var group in free.Select((e, i) => (e, label: labels[i])).Where(x => x.label >= 0).GroupBy(x => x.label)
-                     .OrderByDescending(g => g.Count()))
+        var clustered = free.Select((e, i) => (e, i, label: labels[i])).Where(x => anchored[x.i] is null && x.label >= 0);
+        foreach (var group in clustered.GroupBy(x => x.label).OrderByDescending(g => g.Count()))
         {
             var members = group.Select(x => x.e).ToList();
-            var reuse = members.Where(m => m.SignatureId is { } sid && signatures.ContainsKey(sid) && !pinned.Contains(sid) && !taken.Contains(sid))
+            // Reuse an anonymous signature only: a labelled one keeps just the events within its radius.
+            var reuse = members.Where(m => m.SignatureId is { } sid && signatures.ContainsKey(sid) && !labelledIds.Contains(sid) && !taken.Contains(sid))
                 .GroupBy(m => m.SignatureId!.Value).OrderByDescending(g => g.Count()).Select(g => (long?)g.Key).FirstOrDefault();
             var (mp, mq, mt) = SignatureClusterer.Means(members.Select(EventFeatures.Of).ToList());
             long id;
@@ -710,12 +863,11 @@ public sealed class NilmService : BackgroundService
                 id = sig.Id;
             }
             taken.Add(id);
-            centres.Add(new SignatureCentre(id, mp, mq, mt, members.Any(m => m.DeltaP > 0)));
+            centres.Add(new SignatureCentre(id, mp, mq, mt, mt > 0));
             foreach (var m in members) assignment[m.Id] = id;
         }
-        centres.AddRange(signatures.Values.Where(s => pinned.Contains(s.Id)).Select(SignatureCentre.Of));
         for (var i = 0; i < free.Count; i++)
-            if (labels[i] < 0) assignment[free[i].Id] = SignatureClusterer.Nearest(EventFeatures.Of(free[i]), centres);
+            if (anchored[i] is null && labels[i] < 0) assignment[free[i].Id] = SignatureClusterer.Nearest(EventFeatures.Of(free[i]), centres);
 
         var before = free.ToDictionary(e => e.Id, e => e.SignatureId);
         var changed = assignment.Where(kv => before[kv.Key] != kv.Value).ToDictionary(kv => kv.Key, kv => kv.Value);
@@ -729,15 +881,96 @@ public sealed class NilmService : BackgroundService
             _signatures.Remove(s);
         }
 
+        var merges = await AutoMergeAsync(repo, nowUtc, ct);
+        var merged = merges.Count;
+
         await RebuildRunsAsync(sp, null, WindowStart(nowUtc), nowUtc, ct);
         var deleted = await repo.DeleteOlderThanAsync(nowUtc.AddDays(-RetentionDays), ct);
-        _log.LogInformation("NILM re-clustering: {Events} events, {Clusters} clusters, {Signatures} signatures, {Changed} events moved, {Deleted} old rows deleted",
-            free.Count, taken.Count, _signatures.Count, changed.Count, deleted);
+        var anchoredCount = anchored.Count(a => a is not null);
+        _log.LogInformation("NILM re-clustering: {Events} events ({Anchored} to labelled signatures), {Clusters} clusters, {Signatures} signatures, {Changed} events moved, {Merged} signatures merged, {Deleted} old rows deleted",
+            free.Count, anchoredCount, taken.Count, _signatures.Count, changed.Count, merged, deleted);
         await RefreshSummaryAsync(nowUtc, ct);
+        return new NilmRegroupResult(free.Count, anchoredCount, taken.Count, _signatures.Count, changed.Count, merged, merges);
     }
 
-    private async Task TrainAsync(DateTimeOffset nowUtc, CancellationToken ct)
+    /// <summary>
+    /// An event the re-clustering never moves: labelled by the user, or labelled by the plug its signature is linked to.
+    /// The other events of a labelled signature go through the anchors again (they stay when within its radius), so a
+    /// signature's centre cannot ratchet away by keeping everything it once caught.
+    /// </summary>
+    private static bool IsPinned(MeterEvent e, IReadOnlyDictionary<long, ApplianceSignature> signatures) =>
+        e.Source == EventLabelSource.User
+        || (e.LabelPlugId is { } plug && e.SignatureId is { } sid && signatures.TryGetValue(sid, out var s) && s.PlugId == plug);
+
+    /// <summary>
+    /// The automatic merge (<see cref="SignatureMerger"/>) over the profiles of every signature in the window (the same
+    /// profiles as the „fișa”). Returns the merges applied. Runs are rebuilt by the caller.
+    /// </summary>
+    private async Task<IReadOnlyList<MergeStep>> AutoMergeAsync(INilmRepository repo, DateTimeOffset nowUtc, CancellationToken ct)
     {
+        var from = WindowStart(nowUtc);
+        var profiles = SignatureProfiles.Build(await repo.ListNewestEventsAsync(from, nowUtc, SignatureClusterer.MaxEvents, ct), await repo.ListRunsAsync(from, nowUtc, ct),
+            ExcludedPlugs, nowUtc, _tz);
+        var steps = SignatureMerger.Plan(_signatures.Select(s => new MergeCandidate(s, profiles.GetValueOrDefault(s.Id))).ToList());
+        var survivors = new HashSet<long>();
+        var merged = new List<MergeStep>();
+        foreach (var step in steps)
+        {
+            if (!await MergeCoreAsync(repo, step.SurvivorId, step.AbsorbedId, byUser: false, ct)) continue;
+            merged.Add(step);
+            survivors.Remove(step.AbsorbedId);
+            survivors.Add(step.SurvivorId);
+            _log.LogInformation("NILM: signature #{Absorbed} merged into #{Survivor} ({Reason})", step.AbsorbedId, step.SurvivorId, step.Reason);
+        }
+        if (survivors.Count > 0) await RefreshSignaturesAsync(repo, survivors.ToList(), ct);
+        return merged;
+    }
+
+    /// <summary>
+    /// Moves every event and run of <paramref name="absorbedId"/> into <paramref name="survivorId"/> and deletes it: the
+    /// single merge routine (automatic merge, „Unește cu…”, „Adaugă la aparatul…”, the selector above the table). The
+    /// survivor keeps its name; it takes the absorbed one's plug and category when it has none; a merge by the user marks an
+    /// automatic survivor as the user's. The absorbed signature's metric series disappears, the survivor's continues.
+    /// Means, the plug rule and the runs are refreshed by the caller.
+    /// </summary>
+    private async Task<bool> MergeCoreAsync(INilmRepository repo, long survivorId, long absorbedId, bool byUser, CancellationToken ct)
+    {
+        if (survivorId == absorbedId || await repo.GetSignatureAsync(absorbedId, ct) is not { } source
+            || await repo.GetSignatureAsync(survivorId, ct) is not { } into)
+            return false;
+        await repo.MoveSignatureAsync(absorbedId, survivorId, ct);
+        var takeCategory = into.Category == ApplianceCategories.Other && source.Category != ApplianceCategories.Other;
+        await repo.UpdateSignatureAsync(into with
+        {
+            LabelSource = byUser && into.LabelSource == SignatureLabelSource.Cluster ? SignatureLabelSource.User : into.LabelSource,
+            PlugId = into.PlugId ?? source.PlugId,
+            Category = takeCategory ? source.Category : into.Category,
+            Icon = takeCategory ? source.Icon : into.Icon,
+        }, ct);
+        _signatures.RemoveAll(s => s.Id == absorbedId);
+        _applianceWh.TryRemove(absorbedId, out _);
+        return true;
+    }
+
+    /// <summary>
+    /// „Antrenează acum” on /consumatori: the nightly training on request (also when the model is off in Settings, so
+    /// the result can be seen). Throws <see cref="NilmBusyException"/> while a re-clustering or another training runs.
+    /// </summary>
+    public async Task<NilmTrainResult> TrainNowAsync(CancellationToken ct)
+    {
+        if (!await _nightlyGate.WaitAsync(TimeSpan.Zero, ct)) throw new NilmBusyException();
+        _busy = true;
+        try { return await TrainAsync(_clock(), ct); }
+        finally
+        {
+            _busy = false;
+            _nightlyGate.Release();
+        }
+    }
+
+    private async Task<NilmTrainResult> TrainAsync(DateTimeOffset nowUtc, CancellationToken ct)
+    {
+        var watch = System.Diagnostics.Stopwatch.StartNew();
         IReadOnlyList<MeterEvent> labeled;
         await _gate.WaitAsync(ct);
         try
@@ -746,21 +979,23 @@ public sealed class NilmService : BackgroundService
             labeled = await scope.ServiceProvider.GetRequiredService<INilmRepository>().ListLabeledEventsAsync(ExcludedPlugs, SignatureClusterer.MaxEvents, ct);
         }
         finally { _gate.Release(); }
+        var classes = labeled.Where(e => !string.IsNullOrWhiteSpace(e.Label)).Select(e => e.Label).Distinct(StringComparer.Ordinal).Count();
         if (!NilmClassifier.CanTrain(labeled))
         {
             _log.LogInformation("NILM classifier: {Labeled} labelled events, not enough to train ({Min} in ≥ {Classes} classes)",
                 labeled.Count, NilmClassifier.MinExamples, NilmClassifier.MinClasses);
-            return;
+            return new NilmTrainResult(false, labeled.Count, classes, null, watch.Elapsed);
         }
         var info = await LowPriority.Run(() => Classifier.Train(labeled, nowUtc), "nilm-train");
-        if (info is null) return;
+        if (info is null) return new NilmTrainResult(false, labeled.Count, classes, null, watch.Elapsed);
         try { Classifier.Save(_modelPath); }
         catch (Exception ex) { _log.LogWarning("NILM classifier: saving {Path} failed: {Reason}", _modelPath, ex.Message); }
         ModelInfo = info;
         using (var scope = _scopes.CreateScope())
             await scope.ServiceProvider.GetRequiredService<ISettingsRepository>().SetAsync(SettingKeys.NilmModelInfo, JsonSerializer.Serialize(info), ct);
-        _log.LogInformation("NILM classifier trained: {Examples} events, {Classes} classes, accuracy {Accuracy:P1} ({Folds}-fold)",
-            info.Examples, info.Classes.Count, info.Accuracy, info.Folds);
+        _log.LogInformation("NILM classifier trained: {Examples} events, {Classes} classes, accuracy {Accuracy:P1} ({Folds}-fold) in {Seconds:0.0} s",
+            info.Examples, info.Classes.Count, info.Accuracy, info.Folds, watch.Elapsed.TotalSeconds);
+        return new NilmTrainResult(true, labeled.Count, classes, info, watch.Elapsed);
     }
 
     /// <summary>
@@ -992,26 +1227,87 @@ public sealed class NilmService : BackgroundService
     }, ct);
 
     /// <summary>
-    /// Moves every event of <paramref name="fromId"/> into <paramref name="intoId"/> and deletes <paramref name="fromId"/>;
-    /// the result is measured by the plug of either (target first).
+    /// Moves every event (and run) of <paramref name="fromId"/> into <paramref name="intoId"/> and deletes <paramref name="fromId"/>
+    /// (the selector above the table); the result is measured by the plug of either (target first).
     /// </summary>
     public Task<bool> MergeAsync(long fromId, long intoId, CancellationToken ct) => UnderGateAsync(async (sp, repo) =>
     {
-        if (fromId == intoId || await repo.GetSignatureAsync(fromId, ct) is not { } source || await repo.GetSignatureAsync(intoId, ct) is not { } into)
-            return false;
-        var moved = await repo.ListEventsBySignaturesAsync(new[] { fromId }, DateTimeOffset.UnixEpoch, ct);
-        await repo.SetSignaturesAsync(moved.ToDictionary(e => e.Id, _ => (long?)intoId), ct);
-        await repo.DeleteSignatureAsync(fromId, ct);
-        await repo.UpdateSignatureAsync(into with
-        {
-            LabelSource = into.LabelSource == SignatureLabelSource.Cluster ? SignatureLabelSource.User : into.LabelSource,
-            PlugId = into.PlugId ?? source.PlugId,
-        }, ct);
-        _signatures.RemoveAll(s => s.Id == fromId);
+        if (!await MergeCoreAsync(repo, intoId, fromId, byUser: true, ct)) return false;
         await RefreshSignaturesAsync(repo, new[] { intoId }, ct);
         await RebuildRunsAsync(sp, new[] { intoId }, WindowStart(_clock()), _clock(), ct);
         return true;
     }, ct);
+
+    /// <summary>
+    /// Whether „Adaugă la aparatul…” merges <paramref name="source"/> into <paramref name="target"/>: only when their
+    /// centres are within the anchor radius (<see cref="SignatureClusterer.AnchorScale"/>); a distant component (a washing
+    /// machine's motor added to its heater) only takes the name, a signature is one component.
+    /// </summary>
+    public static bool AddToMerges(ApplianceSignature source, ApplianceSignature target) =>
+        SignatureClusterer.Distance(SignatureCentre.Of(source), SignatureCentre.Of(target), SignatureClusterer.AnchorScale) <= 1;
+
+    /// <summary>
+    /// „Adaugă la aparatul…”: when the centres are close (<see cref="AddToMerges"/>) the events of <paramref name="id"/>
+    /// move into <paramref name="intoId"/> (the same routine as every merge); otherwise <paramref name="id"/> keeps its
+    /// events and takes the name and category of <paramref name="intoId"/> (labelled by the user: two rows with one name,
+    /// never merged automatically).
+    /// </summary>
+    public Task<AddToOutcome> AddToAsync(long id, long intoId, CancellationToken ct) => UnderGateAsync(async (sp, repo) =>
+    {
+        if (id == intoId || await repo.GetSignatureAsync(id, ct) is not { } source || await repo.GetSignatureAsync(intoId, ct) is not { } target)
+            return AddToOutcome.Failed;
+        if (!AddToMerges(source, target))
+        {
+            await repo.UpdateSignatureAsync(source with
+            {
+                Name = target.Name,
+                Category = target.Category,
+                Icon = target.Icon,
+                LabelSource = SignatureLabelSource.User,
+            }, ct);
+            return AddToOutcome.Named;
+        }
+        if (!await MergeCoreAsync(repo, intoId, id, byUser: true, ct)) return AddToOutcome.Failed;
+        await RefreshSignaturesAsync(repo, new[] { intoId }, ct);
+        await RebuildRunsAsync(sp, new[] { intoId }, WindowStart(_clock()), _clock(), ct);
+        return AddToOutcome.Merged;
+    }, ct);
+
+    /// <summary>
+    /// „Unește cu…”: merges two signatures with the rule of the automatic merge for the survivor (user label, then linked
+    /// to a plug, then more events). Returns the survivor's id, or null when one of them no longer exists.
+    /// </summary>
+    public Task<long?> MergeWithAsync(long id, long otherId, CancellationToken ct) => UnderGateAsync<long?>(async (sp, repo) =>
+    {
+        if (id == otherId || await repo.GetSignatureAsync(id, ct) is not { } a || await repo.GetSignatureAsync(otherId, ct) is not { } b) return null;
+        var survivor = SignatureMerger.Survivor(a, b);
+        var absorbed = survivor.Id == a.Id ? b : a;
+        if (!await MergeCoreAsync(repo, survivor.Id, absorbed.Id, byUser: true, ct)) return null;
+        await RefreshSignaturesAsync(repo, new[] { survivor.Id }, ct);
+        await RebuildRunsAsync(sp, new[] { survivor.Id }, WindowStart(_clock()), _clock(), ct);
+        return survivor.Id;
+    }, ct);
+
+    /// <summary>
+    /// The „fișa” of a signature (read without the processing lock): its profile over the window (<see cref="SignatureProfiles"/>,
+    /// the same calculation as the automatic merge) and the alias of the plug it matches.
+    /// </summary>
+    public async Task<SignatureProfileView?> GetProfileAsync(long id, CancellationToken ct)
+    {
+        var now = _clock();
+        using var scope = _scopes.CreateScope();
+        var repo = scope.ServiceProvider.GetRequiredService<INilmRepository>();
+        if (await repo.GetSignatureAsync(id, ct) is not { } sig) return null;
+        var from = WindowStart(now);
+        var events = await repo.ListEventsBySignaturesAsync(new[] { id }, from, ct);
+        var runs = await repo.ListRunsBySignatureAsync(id, from, ct);
+        var plugs = _plugs.Count > 0 ? _plugs : await scope.ServiceProvider.GetRequiredService<IPlugRepository>().ListAllAsync(ct);
+        var excluded = plugs.Where(p => PlugNilmStates.IsIgnored(p.NilmState)).Select(p => p.Id).ToList();
+        var profile = SignatureProfiles.Of(id, events, runs, excluded, now, _tz);
+        var plugId = profile.TopPlugId ?? sig.PlugId;
+        var alias = plugId is { } pid ? plugs.FirstOrDefault(p => p.Id == pid)?.Alias ?? profile.TopPlugLabel : null;
+        return new SignatureProfileView(sig, profile, alias, sig.PlugId is not null && sig.PlugId == plugId);
+    }
 
     /// <summary>
     /// Splits a signature by clustering its events of the window again with half the eps; the largest part keeps the

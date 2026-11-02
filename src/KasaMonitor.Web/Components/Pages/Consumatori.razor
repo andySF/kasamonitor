@@ -15,9 +15,25 @@
         {
             <span class="small text-secondary">din contorul general: @main</span>
         }
+        <button class="btn btn-sm btn-outline-primary" @onclick="() => _confirmRegroup = true" disabled="@(Blocked || _overview?.MainMeterAlias is null)"
+                title="Rulează acum regruparea de noapte: ancorele (semnăturile cu nume sau priză) întâi, apoi gruparea automată a restului, unirea automată și antrenarea modelului">
+            <i class="bi bi-diagram-3 me-1"></i>Regrupează acum</button>
         <button class="btn btn-sm btn-outline-secondary" @onclick="LoadAsync" disabled="@Blocked"><i class="bi bi-arrow-clockwise me-1"></i>Reîmprospătează</button>
     </div>
 </div>
+
+@if (_confirmRegroup)
+{
+    <div class="alert alert-warning small">
+        <i class="bi bi-exclamation-triangle-fill me-2"></i>Regruparea rulează acum jobul de noapte: evenimentele din ultimele @(_overview?.Settings.ClusterWindowDays ?? 30) zile se regrupează
+        (cele din semnăturile cu nume dat de tine rămân unde sunt), semnăturile care sunt aceeași componentă se unesc, rulările se refac și modelul se reantrenează.
+        Poate dura câteva secunde. Confirmi?
+        <div class="mt-2">
+            <button class="btn btn-primary btn-sm me-2" @onclick="RegroupAsync" disabled="@Blocked"><i class="bi bi-diagram-3 me-1"></i>Da, regrupează</button>
+            <button class="btn btn-outline-secondary btn-sm" @onclick="() => _confirmRegroup = false"><i class="bi bi-x-lg me-1"></i>Renunță</button>
+        </div>
+    </div>
+}
 
 @if (_error is not null)
 {
@@ -46,9 +62,13 @@ else
     }
     <p class="small text-secondary mb-2">
         Fiecare schimbare stabilă a puterii casei de cel puțin @_overview.Settings.MinEventDeltaW W e un <b>eveniment</b> (pornire +ΔP, oprire −ΔP);
-        evenimentele asemănătoare (ΔP, putere reactivă ΔQ, vârful de pornire) formează o <b>semnătură</b> = un consumator. Când o singură priză face
-        în ±15 s o treaptă curată cu același ΔP, evenimentul primește numele prizei; dacă cel puțin @SignatureNaming.MinPlugEvents evenimente și ≥ 60 % din evenimentele unei semnături vin de la aceeași priză,
+        evenimentele asemănătoare (ΔP, putere reactivă ΔQ, vârful de pornire) formează o <b>semnătură</b> = o componentă a unui aparat (o rezistență, un motor),
+        nu neapărat tot aparatul. Când nivelul unei singure prize (mediana citirilor din cele 20 s dinainte și de după, fără cele ±3 s din jurul saltului) se schimbă cu același ΔP,
+        evenimentul primește numele prizei; dacă cel puțin @SignatureNaming.MinPlugEvents evenimente și ≥ 60 % din evenimentele unei semnături vin de la aceeași priză,
         semnătura e <b>măsurată de priză</b> (consumul exact e al prizei) și nu mai apare printre consumatorii detectați.
+        Semnăturile cu nume dat de tine sau legate de o priză au <b>prioritate</b>: un eveniment nou merge întâi la ele, cu toleranță de 1,5 ori mai mare.
+        Noaptea (și la „Regrupează acum”) semnăturile care sunt aceeași componentă se <b>unesc automat</b>: centre apropiate, aceeași priză cu ΔP la mai puțin de 15 %, același nume dat de tine (cu centre apropiate), sau pulsuri ale aceluiași
+        motor (sarcini inductive de cel puțin 150 W, ΔQ/ΔP asemănător, ΔP la cel mult 25 %, în aceleași minute mult mai des decât întâmplător).
     </p>
 
     <NilmSummaryCard CssClass="mb-3" />
@@ -166,12 +186,130 @@ else
                                 <td class="text-end text-nowrap">@EnergyFormat.Kwh((long)Math.Round(r.Last30DaysWh)) kWh</td>
                                 <td><span class="badge @(s.LabelSource == SignatureLabelSource.User ? "text-bg-primary" : "text-bg-light border")">@NilmSources.Name(s.LabelSource)</span></td>
                                 <td class="text-nowrap">
+                                    <button class="btn btn-sm @(_expanded == s.Id ? "btn-secondary" : "btn-outline-secondary")" @onclick="() => ToggleProfileAsync(s.Id)"
+                                            title="Fișa semnăturii: datele după care se recunoaște și se unește"><i class="bi @(_expanded == s.Id ? "bi-chevron-up" : "bi-card-list")"></i></button>
                                     <button class="btn btn-sm btn-outline-secondary" @onclick="() => SplitAsync(s.Id)" disabled="@Blocked" title="Regrupează doar evenimentele acestei semnături, cu toleranță pe jumătate"><i class="bi bi-scissors"></i></button>
                                     <button class="btn btn-sm btn-outline-secondary" @onclick="() => SetHiddenAsync(s.Id, !s.Hidden)" disabled="@Blocked" title="@(s.Hidden ? "Arată" : "Ascunde (nu mai apare în carduri și metrici; energia rămâne neidentificată)")">
                                         <i class="bi @(s.Hidden ? "bi-eye" : "bi-eye-slash")"></i>
                                     </button>
                                 </td>
                             </tr>
+                            @if (_expanded == s.Id)
+                            {
+                                <tr class="table-light">
+                                    <td colspan="12">
+                                        @if (_profile is not { } pv || pv.Signature.Id != s.Id)
+                                        {
+                                            <span class="text-secondary"><span class="spinner-border spinner-border-sm me-2"></span>Se calculează fișa…</span>
+                                        }
+                                        else
+                                        {
+                                            var p = pv.Profile;
+                                            <div class="row g-3">
+                                                <div class="col-lg-7">
+                                                    <dl class="row mb-0">
+                                                        <dt class="col-sm-5 fw-normal text-secondary">ΔP</dt>
+                                                        <dd class="col-sm-7 mb-1"><b>@p.MeanDeltaP.ToString("0") ± @p.StdDeltaP.ToString("0") W</b></dd>
+                                                        <dt class="col-sm-5 fw-normal text-secondary">ΔQ (din partea pornirii)</dt>
+                                                        <dd class="col-sm-7 mb-1">@p.MeanDeltaQ.ToString("0") VAR</dd>
+                                                        <dt class="col-sm-5 fw-normal text-secondary" title="|ΔP| / √(ΔP² + ΔQ²): 1 = rezistiv">Factor de putere al saltului</dt>
+                                                        <dd class="col-sm-7 mb-1">@p.StepPowerFactor.ToString("0.00")</dd>
+                                                        <dt class="col-sm-5 fw-normal text-secondary" title="Vârful din primele 2 s / ΔP; necunoscut când saltul a durat ≥ 1 s (a căzut între două probe) și raportul e cel mult 1,5">Tranzient</dt>
+                                                        <dd class="col-sm-7 mb-1">
+                                                            @if (p.MeanTransient is { } t)
+                                                            {
+                                                                <span>@t.ToString("0.00") <span class="text-secondary">(cunoscut la @p.TransientKnown din @p.OnEvents porniri)</span></span>
+                                                            }
+                                                            else
+                                                            {
+                                                                <span>necunoscut, @p.TransientKnown din @p.OnEvents porniri</span>
+                                                            }
+                                                        </dd>
+                                                        <dt class="col-sm-5 fw-normal text-secondary">Porniri / opriri</dt>
+                                                        <dd class="col-sm-7 mb-1">@p.OnEvents / @p.OffEvents</dd>
+                                                        <dt class="col-sm-5 fw-normal text-secondary">Durata unei rulări</dt>
+                                                        <dd class="col-sm-7 mb-1">
+                                                            @if (p.Runs > 0)
+                                                            {
+                                                                <span>mediană @UiFormat.DurationRo(p.MedianRunSeconds) <span class="text-secondary">(p10–p90: @UiFormat.DurationRo(p.P10RunSeconds) – @UiFormat.DurationRo(p.P90RunSeconds); @p.Runs rulări)</span></span>
+                                                            }
+                                                            else
+                                                            {
+                                                                <span class="text-secondary">nicio rulare încheiată</span>
+                                                            }
+                                                        </dd>
+                                                        <dt class="col-sm-5 fw-normal text-secondary">Priza</dt>
+                                                        <dd class="col-sm-7 mb-1">
+                                                            @if (pv.PlugAlias is { } plugAlias)
+                                                            {
+                                                                <span>@plugAlias: @((p.TopPlugShare * 100).ToString("0")) % <span class="text-secondary">(@p.TopPlugEvents din @p.Events evenimente; @(pv.PlugLinked ? "legată" : "posibilă"))</span></span>
+                                                            }
+                                                            else
+                                                            {
+                                                                <span class="text-secondary">niciuna</span>
+                                                            }
+                                                        </dd>
+                                                        <dt class="col-sm-5 fw-normal text-secondary">Prima / ultima apariție</dt>
+                                                        <dd class="col-sm-7 mb-1">@(p.FirstSeenUtc is { } first ? UiFormat.FullLocal(first) : "—") / @(p.LastSeenUtc is { } lastSeen ? UiFormat.FullLocal(lastSeen) : "—")</dd>
+                                                        <dt class="col-sm-5 fw-normal text-secondary">Energie, ultimele 7 zile</dt>
+                                                        <dd class="col-sm-7 mb-1">@EnergyFormat.Kwh((long)Math.Round(p.Last7DaysWh)) kWh</dd>
+                                                    </dl>
+                                                    <div class="text-secondary mt-1">Evenimente din fereastra de @_overview.Settings.ClusterWindowDays zile. Aceleași date decid unirea automată.</div>
+                                                </div>
+                                                <div class="col-lg-5">
+                                                    <div class="text-secondary mb-1">Ore din zi (evenimente)</div>
+                                                    <div class="d-flex align-items-end border-bottom" style="height: 48px; gap: 2px">
+                                                        @for (var h = 0; h < 24; h++)
+                                                        {
+                                                            var n = p.Hours[h];
+                                                            var max = Math.Max(1, p.Hours.Max());
+                                                            <div class="flex-fill bg-primary" style="height: @((n * 100.0 / max).ToString("0", System.Globalization.CultureInfo.InvariantCulture))%; min-height: @(n > 0 ? "2px" : "0")" title="ora @h: @n evenimente"></div>
+                                                        }
+                                                    </div>
+                                                    <div class="d-flex justify-content-between text-secondary" style="font-size: .7rem"><span>0</span><span>6</span><span>12</span><span>18</span><span>23</span></div>
+
+                                                    <div class="mt-3">
+                                                        <div class="input-group input-group-sm mb-2">
+                                                            <span class="input-group-text">Unește cu…</span>
+                                                            <select class="form-select" @bind="_mergeWith" disabled="@Blocked">
+                                                                <option value="0">…</option>
+                                                                @foreach (var o in _overview.AllSignatures.Where(o => o.Id != s.Id).OrderBy(o => o.Name))
+                                                                {
+                                                                    <option value="@o.Id">@o.Name (@o.MeanDeltaP.ToString("0") W)</option>
+                                                                }
+                                                            </select>
+                                                            <button class="btn btn-warning" @onclick="() => AskMergeWith(s)" disabled="@(Blocked || _mergeWith == 0)"
+                                                                    title="Rămâne semnătura cu nume dat de tine, altfel cea legată de o priză, altfel cea cu mai multe evenimente">Unește…</button>
+                                                        </div>
+                                                        <div class="input-group input-group-sm">
+                                                            <span class="input-group-text">Adaugă la aparatul…</span>
+                                                            <select class="form-select" @bind="_addTo" disabled="@Blocked">
+                                                                <option value="0">…</option>
+                                                                @foreach (var o in _overview.AllSignatures.Where(o => o.Id != s.Id && o.IsAnchor).OrderBy(o => o.Name))
+                                                                {
+                                                                    <option value="@o.Id">@o.Name</option>
+                                                                }
+                                                            </select>
+                                                            <button class="btn btn-outline-primary" @onclick="() => AskAddTo(s)" disabled="@(Blocked || _addTo == 0)"
+                                                                    title="Dacă e aceeași componentă (centre apropiate), evenimentele trec la aparatul ales; altfel semnătura primește doar numele și categoria lui">Adaugă…</button>
+                                                        </div>
+                                                        @if (_confirmText is not null)
+                                                        {
+                                                            <div class="alert alert-warning small mt-2 mb-0">
+                                                                <i class="bi bi-exclamation-triangle-fill me-2"></i>@_confirmText
+                                                                <div class="mt-2">
+                                                                    <button class="btn btn-warning btn-sm me-2" @onclick="ConfirmAsync" disabled="@Blocked">Da</button>
+                                                                    <button class="btn btn-outline-secondary btn-sm" @onclick="CancelConfirm">Renunță</button>
+                                                                </div>
+                                                            </div>
+                                                        }
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        }
+                                    </td>
+                                </tr>
+                            }
                         }
                     </tbody>
                 </table>
@@ -302,7 +440,11 @@ else
     </div>
 
     <div class="card mb-3">
-        <div class="card-header fw-semibold"><i class="bi bi-cpu me-2"></i>Model ML (clasificator antrenat noaptea)</div>
+        <div class="card-header fw-semibold d-flex flex-wrap justify-content-between align-items-center gap-2">
+            <span><i class="bi bi-cpu me-2"></i>Model ML (clasificator antrenat noaptea)</span>
+            <button class="btn btn-sm btn-outline-primary fw-normal" @onclick="TrainAsync" disabled="@Blocked"
+                    title="Rulează acum antrenarea de noapte pe evenimentele etichetate (din prize sau de tine)"><i class="bi bi-mortarboard me-1"></i>Antrenează acum</button>
+        </div>
         <div class="card-body small">
             @if (!_overview.Settings.MlEnabled)
             {
@@ -310,10 +452,20 @@ else
             }
             else if (_overview.Model is not { } m)
             {
-                <span class="text-secondary">
-                    Încă neantrenat: are nevoie de cel puțin @NilmClassifier.MinExamples evenimente etichetate (din prize sau de tine) în cel puțin
-                    @NilmClassifier.MinClasses clase; acum: @_overview.LabeledEvents evenimente în @_overview.LabeledClasses clase. Se antrenează în fiecare noapte la 03:30.
-                </span>
+                @if (_overview.LabeledEvents >= NilmClassifier.MinExamples && _overview.LabeledClasses >= NilmClassifier.MinClasses)
+                {
+                    <span>
+                        Încă neantrenat. <b>Condiția e îndeplinită</b> (@_overview.LabeledEvents evenimente etichetate în @_overview.LabeledClasses clase);
+                        se antrenează la 03:30 sau apasă „Antrenează acum”.
+                    </span>
+                }
+                else
+                {
+                    <span class="text-secondary">
+                        Încă neantrenat: are nevoie de cel puțin @NilmClassifier.MinExamples evenimente etichetate (din prize sau de tine) în cel puțin
+                        @NilmClassifier.MinClasses clase; acum: @_overview.LabeledEvents evenimente în @_overview.LabeledClasses clase. Se antrenează în fiecare noapte la 03:30.
+                    </span>
+                }
             }
             else
             {
@@ -324,6 +476,10 @@ else
                     Un eveniment nou primește predicția doar dacă probabilitatea e ≥ @((NilmClassifier.MinProbability * 100).ToString("0")) % și e aproape de
                     centrul clasei prezise; altfel rămâne în gruparea automată.
                 </div>
+                @if (_overview.LabeledEvents > m.Examples)
+                {
+                    <div class="text-secondary mb-2">De la antrenare: @_overview.LabeledEvents evenimente etichetate în @_overview.LabeledClasses clase; „Antrenează acum” le folosește pe toate.</div>
+                }
                 <div class="text-secondary mb-1">Matricea de confuzie (rând = clasa reală, coloane = predicția):</div>
                 <pre class="small border rounded p-2 bg-body-tertiary mb-0">@ConfusionText(m)</pre>
             }
@@ -337,6 +493,12 @@ else
     private bool _showHidden;
     private bool _showRare;
     private bool _confirmClean;
+    private bool _confirmRegroup;
+    private long? _expanded;
+    private SignatureProfileView? _profile;
+    private long _mergeWith, _addTo;
+    private string? _confirmText;
+    private Func<Task>? _confirmAction;
     private string? _error;
     private string? _message;
     private int _page, _eventsPage;
@@ -409,6 +571,108 @@ else
         _confirmClean = false;
         var deleted = await Nilm.CleanRareSignaturesAsync(CancellationToken.None);
         return deleted > 0 ? $"Au fost șterse {deleted} semnături rare; evenimentele lor au rămas, fără semnătură." : "Nicio semnătură rară de șters.";
+    });
+
+    private Task RegroupAsync() => RunAsync(async () =>
+    {
+        _confirmRegroup = false;
+        var r = await Nilm.RegroupNowAsync(CancellationToken.None);
+        await ReloadProfileAsync();
+        var text = $"Regrupare făcută: {r.Events} evenimente ({r.Anchored} la semnături cu nume sau priză), {r.Moved} mutate, {r.Merged} semnături unite automat; acum {r.Signatures} semnături.";
+        return r.Training is { } t ? text + " " + TrainText(t) : text;
+    });
+
+    private Task TrainAsync() => RunAsync(async () => TrainText(await Nilm.TrainNowAsync(CancellationToken.None)));
+
+    private static string TrainText(NilmTrainResult t) => t.Info is { } i
+        ? $"Model antrenat în {t.Duration.TotalSeconds:0.0} s pe {i.Examples} evenimente, {i.Classes.Count} clase ({string.Join(", ", i.Classes)}); acuratețe la validarea încrucișată {i.Folds}-fold: {i.Accuracy * 100:0.0} %."
+        : $"Modelul nu s-a antrenat: {t.LabeledEvents} evenimente etichetate în {t.LabeledClasses} clase (trebuie cel puțin {NilmClassifier.MinExamples} în {NilmClassifier.MinClasses} clase).";
+
+    private async Task ToggleProfileAsync(long id)
+    {
+        _mergeWith = _addTo = 0;
+        CancelConfirm();
+        if (_expanded == id)
+        {
+            _expanded = null;
+            _profile = null;
+            return;
+        }
+        _expanded = id;
+        _profile = null;
+        await ReloadProfileAsync();
+    }
+
+    private async Task ReloadProfileAsync()
+    {
+        try
+        {
+            _profile = _expanded is { } id ? await Nilm.GetProfileAsync(id, CancellationToken.None) : null;
+            if (_profile is null) _expanded = null;
+        }
+        catch (Exception ex)
+        {
+            _error = ex.Message;
+        }
+    }
+
+    private ApplianceSignature? Find(long id) => _overview?.AllSignatures.FirstOrDefault(x => x.Id == id);
+
+    private void CancelConfirm()
+    {
+        _confirmText = null;
+        _confirmAction = null;
+    }
+
+    private async Task ConfirmAsync()
+    {
+        var action = _confirmAction;
+        CancelConfirm();
+        if (action is not null) await action();
+    }
+
+    /// <summary>„Unește cu…”: says which one stays (the rule of the automatic merge) before merging.</summary>
+    private void AskMergeWith(ApplianceSignature s)
+    {
+        if (Find(_mergeWith) is not { } other) return;
+        var survivor = SignatureMerger.Survivor(s, other);
+        var gone = survivor.Id == s.Id ? other : s;
+        _confirmText = $"Rămâne „{survivor.Name}”, „{gone.Name}” dispare: evenimentele și rulările lui trec la „{survivor.Name}”. Confirmi?";
+        var otherId = other.Id;
+        _confirmAction = () => MergeWithAsync(s.Id, otherId);
+    }
+
+    /// <summary>„Adaugă la aparatul…”: says whether the events move (same component) or only the name is given.</summary>
+    private void AskAddTo(ApplianceSignature s)
+    {
+        if (Find(_addTo) is not { } target) return;
+        _confirmText = NilmService.AddToMerges(s, target)
+            ? $"Aceeași componentă (centre apropiate): evenimentele lui „{s.Name}” trec la „{target.Name}”, iar „{s.Name}” dispare. Confirmi?"
+            : $"Componente diferite ({s.MeanDeltaP:0} W față de {target.MeanDeltaP:0} W): „{s.Name}” primește numele și categoria lui „{target.Name}”, dar rămân două rânduri (evenimentele nu se mută). Confirmi?";
+        var targetId = target.Id;
+        _confirmAction = () => AddToAsync(s.Id, targetId);
+    }
+
+    private Task MergeWithAsync(long id, long other) => RunAsync(async () =>
+    {
+        _mergeWith = 0;
+        var survivor = await Nilm.MergeWithAsync(id, other, CancellationToken.None);
+        if (survivor is null) return "Nu s-au putut uni (semnătura nu mai există).";
+        _expanded = survivor;
+        await ReloadProfileAsync();
+        return "Semnăturile au fost unite.";
+    });
+
+    private Task AddToAsync(long id, long into) => RunAsync(async () =>
+    {
+        _addTo = 0;
+        var outcome = await Nilm.AddToAsync(id, into, CancellationToken.None);
+        if (outcome == AddToOutcome.Failed) return "Nu s-a putut adăuga (semnătura nu mai există).";
+        if (outcome == AddToOutcome.Merged) _expanded = into;
+        await ReloadProfileAsync();
+        return outcome == AddToOutcome.Merged
+            ? "Semnătura a fost unită cu aparatul ales."
+            : "Semnătura a primit numele și categoria aparatului ales; rămâne un rând separat (altă componentă).";
     });
 
     private Task RenameAsync(long id, string? name) => string.IsNullOrWhiteSpace(name)

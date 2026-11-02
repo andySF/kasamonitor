@@ -56,6 +56,8 @@ public static class SettingKeys
     public const string NilmLastProcessedTs = "NilmLastProcessedTs";
     /// <summary>Internal: JSON with the last training of the classifier (time, examples, accuracy, confusion matrix).</summary>
     public const string NilmModelInfo = "NilmModelInfo";
+    /// <summary>Internal: unix second of the last re-clustering (nightly, at startup after a missed night, or „Regrupează acum”).</summary>
+    public const string NilmLastReclusterTs = "NilmLastReclusterTs";
 }
 
 /// <summary>Basic-auth credentials of the remote write endpoint (decrypted, never shown).</summary>

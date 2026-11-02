@@ -245,6 +245,17 @@ public sealed class NilmRepository : INilmRepository
         await tx.CommitAsync(ct);
     }
 
+    public async Task<int> MoveSignatureAsync(long fromId, long intoId, CancellationToken ct)
+    {
+        if (fromId == intoId) return 0;
+        await using var tx = await _db.Database.BeginTransactionAsync(ct);
+        var moved = await _db.MeterEvents.Where(e => e.SignatureId == fromId).ExecuteUpdateAsync(u => u.SetProperty(e => e.SignatureId, (long?)intoId), ct);
+        await _db.ApplianceRuns.Where(r => r.SignatureId == fromId).ExecuteUpdateAsync(u => u.SetProperty(r => r.SignatureId, intoId), ct);
+        await _db.ApplianceSignatures.Where(s => s.Id == fromId).ExecuteDeleteAsync(ct);
+        await tx.CommitAsync(ct);
+        return moved;
+    }
+
     public async Task<IReadOnlyList<ApplianceSignature>> RecomputeSignaturesAsync(IReadOnlyCollection<long> ids, DateTimeOffset windowFromUtc, CancellationToken ct)
     {
         if (ids.Count == 0) return Array.Empty<ApplianceSignature>();
@@ -259,8 +270,9 @@ public sealed class NilmRepository : INilmRepository
                 Count = g.Count(),
                 P = g.Average(e => e.DeltaP >= 0 ? e.DeltaP : -e.DeltaP),
                 Q = g.Average(e => e.DeltaP >= 0 ? e.DeltaQ : -e.DeltaQ),
-                OnT = g.Sum(e => e.DeltaP > 0 ? e.TransientRatio : 0),
-                On = g.Sum(e => e.DeltaP > 0 ? 1 : 0),
+                // Only switch-ons whose transient is known (TransientRule): rise 0 s or ratio > 1.5.
+                OnT = g.Sum(e => e.DeltaP > 0 && (e.RiseSeconds < TransientRule.MaxRiseSeconds || e.TransientRatio > TransientRule.MinInrushRatio) ? e.TransientRatio : 0),
+                On = g.Sum(e => e.DeltaP > 0 && (e.RiseSeconds < TransientRule.MaxRiseSeconds || e.TransientRatio > TransientRule.MinInrushRatio) ? 1 : 0),
                 Last = g.Max(e => e.Ts),
             })
             .ToDictionaryAsync(x => x.Id, ct);
@@ -336,6 +348,14 @@ public sealed class NilmRepository : INilmRepository
     public async Task<IReadOnlyList<ApplianceRun>> ListOpenRunsAsync(CancellationToken ct)
     {
         var rows = await _db.ApplianceRuns.AsNoTracking().Where(r => r.EndTs == null).OrderBy(r => r.StartTs).ToListAsync(ct);
+        return rows.Select(ToModel).ToList();
+    }
+
+    public async Task<IReadOnlyList<ApplianceRun>> ListRunsBySignatureAsync(long signatureId, DateTimeOffset fromUtc, CancellationToken ct)
+    {
+        var from = fromUtc.ToUnixTimeSeconds();
+        var rows = await _db.ApplianceRuns.AsNoTracking()
+            .Where(r => r.SignatureId == signatureId && (r.EndTs == null || r.EndTs >= from)).OrderBy(r => r.StartTs).ToListAsync(ct);
         return rows.Select(ToModel).ToList();
     }
 

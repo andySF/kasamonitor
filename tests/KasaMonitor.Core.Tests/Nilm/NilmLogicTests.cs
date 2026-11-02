@@ -123,46 +123,125 @@ public class PlugEventMatcherTests
         new(id, alias, Enumerable.Range(-6, 13).Select(k => k * 10 + phase)
             .Select(s => new PlugPowerPoint(T.AddSeconds(s), s >= stepAt ? before + delta : before)).ToList());
 
+    /// <summary>Readings at the given seconds from T (a real plug's stream: "second:watts").</summary>
+    private static PlugSeries Readings(string alias, string series) =>
+        new(Fridge, alias, series.Split(' ').Select(x => x.Split(':'))
+            .Select(x => new PlugPowerPoint(T.AddSeconds(int.Parse(x[0])), double.Parse(x[1], System.Globalization.CultureInfo.InvariantCulture))).ToList());
+
     [Fact]
-    public void PlugThatMadeACleanStepOfDeltaP_InsideTheWindow_LabelsTheEvent()
+    public void PlugWhoseLevelChangedByDeltaP_LabelsTheEvent()
     {
-        var m = PlugEventMatcher.Match(T, 120, new[] { Plug(Fridge, "Frigider", 2, 118, 8), Plug(Tv, "TV", 60, 0, 0) });
+        var m = PlugEventMatcher.Match(T, 120, new[] { Plug(Fridge, "Frigider", 2, 118, 2), Plug(Tv, "TV", 60, 0, 0) });
         m.Should().NotBeNull();
         m!.Alias.Should().Be("Frigider");
         m.DeltaW.Should().Be(118);
+        m.FromUtc.Should().Be(T.AddSeconds(-7), "the last reading of the window before");
+        m.ToUtc.Should().Be(T.AddSeconds(3), "the first reading of the window after");
     }
 
     [Fact]
-    public void ChangeOutsideTheWindow_OrOfAnotherSize_OrDirection_NoMatch()
+    public void ChangeOutsideTheWindows_OrOfAnotherSize_OrDirection_NoMatch()
     {
         PlugEventMatcher.Match(T, 120, new[] { Plug(Fridge, "Frigider", 2, 118, 40) }).Should().BeNull();      // 40 s later
-        PlugEventMatcher.Match(T, 120, new[] { Plug(Fridge, "Frigider", 2, 160, 5) }).Should().BeNull();       // ±max(10 W, 15 %) = ±18 W
-        PlugEventMatcher.Match(T, -120, new[] { Plug(Fridge, "Frigider", 2, 118, 5) }).Should().BeNull();      // wrong direction
-        PlugEventMatcher.Match(T, -120, new[] { Plug(Fridge, "Frigider", 120, -118, -12) }).Should().NotBeNull();
+        PlugEventMatcher.Match(T, 120, new[] { Plug(Fridge, "Frigider", 2, 160, 2) }).Should().BeNull();       // ±max(10 W, 15 %) = ±18 W
+        PlugEventMatcher.Match(T, -120, new[] { Plug(Fridge, "Frigider", 2, 118, 2) }).Should().BeNull();      // wrong direction
+        PlugEventMatcher.Match(T, -120, new[] { Plug(Fridge, "Frigider", 120, -118, -2) }).Should().NotBeNull();
     }
 
     [Fact]
-    public void AReadingDuringTheInrushIsSkipped()
+    public void LevelsAreMediansOfTheWindows_ReadingsWithin3sAreIgnored()
     {
-        var withInrush = Plug(Fridge, "Frigider", 2, 120, 5);
-        var points = withInrush.Points.Select(p => p.TsUtc == T.AddSeconds(13) ? p with { PowerW = 700 } : p).ToList();
-        var m = PlugEventMatcher.Match(T, 121, new[] { withInrush with { Points = points } });
-        m!.Alias.Should().Be("Frigider");
-        m.ErrorW.Should().Be(1);
+        PlugEventMatcher.Median(new[] { 5.0, 1, 3 }).Should().Be(3);
+        PlugEventMatcher.Median(new[] { 4.0, 1, 3, 2 }).Should().Be(2.5);
+        // A reading in the middle of the step (±3 s) does not count; one stray reading per window is outvoted.
+        var plug = Readings("Frigider", "-18:2 -15:2 -12:90 -9:2 -6:2 -1:60 1:300 3:122 6:122 9:2 12:122 15:122");
+        var step = PlugEventMatcher.Step(T, plug.Points);
+        step!.Value.DeltaW.Should().Be(120);
+        PlugEventMatcher.Match(T, 121, new[] { plug })!.ErrorW.Should().Be(1);
+    }
+
+    [Fact]
+    public void ALongGapBetweenTheLastReadingBeforeAndTheFirstAfter_IsNotAStep()
+    {
+        var plug = Readings("Frigider", "-20:2 18:120");
+        PlugEventMatcher.Step(T, plug.Points).Should().BeNull("38 s without readings (more than 25 s): a plug outage, not a step");
+        PlugEventMatcher.Step(T, Readings("Frigider", "-12:2 12:120").Points)!.Value.DeltaW.Should().Be(118);
+        PlugEventMatcher.Step(T, Readings("Frigider", "-12:2 2:120").Points).Should().BeNull("no reading in the window after");
+    }
+
+    /// <summary>
+    /// The washing machine on „Hol mic”, 2 Nov: the plug was read in the middle of the heater's ramp (171 W, 827 W at the
+    /// event second; the 10-second poll also caught 29 W right after a switch-on and the switch-off 18 s later), so the
+    /// nearest pair of readings missed the step. The stabilised levels find it.
+    /// </summary>
+    [Theory]
+    [InlineData("-25:45 -22:39 -18:12 -15:55 -12:44 -9:35 -3:39 0:171 3:2025 12:1993 15:2021", 1978)]   // stream, 08:15:22
+    [InlineData("-25:30 -22:31 -18:4 -15:39 -12:44 -9:35 -3:37 0:827 3:2028 12:1984 15:2031", 1990)]   // stream, 08:18:28
+    [InlineData("-18:5 -8:38 2:29 12:2018 22:4", 2008)]                                                // 10 s poll, 08:10:35
+    public void WashingMachine_RampReadings_StillMatchTheStep(string series, double eventDeltaP)
+    {
+        var m = PlugEventMatcher.Match(T, eventDeltaP, new[] { Readings("Hol mic", series) });
+        m.Should().NotBeNull();
+        m!.Alias.Should().Be("Hol mic");
+        m.ErrorW.Should().BeLessThan(PlugEventMatcher.Tolerance(eventDeltaP));
+    }
+
+    [Fact]
+    public void Readings_TheStreamHeldOnA1SecondGrid_WhenItCoversBothWindows_ElseThePolls()
+    {
+        var polled = Plug(Fridge, "Frigider", 2, 118, 2).Points;
+        var stream = Readings("Frigider", "-18:2 -15:2 -12:3 -9:2 -3:2 0:300 3:121 6:122 9:122").Points;
+        var r = PlugEventMatcher.Readings(T, stream, polled);
+        r.Should().HaveCount(34, "one value per second from the first row (−18) to −3, and in [3, 20]");
+        r.Should().Contain(new PlugPowerPoint(T.AddSeconds(-16), 2)).And.Contain(new PlugPowerPoint(T.AddSeconds(20), 122));
+        PlugEventMatcher.Step(T, r)!.Value.DeltaW.Should().Be(120);
+        PlugEventMatcher.Readings(T, Array.Empty<PlugPowerPoint>(), polled).Should().BeSameAs(polled);
+        // Stored on change: a stable level holds (at most 60 s after its row).
+        var quiet = Readings("Frigider", "-50:2 2:122").Points;
+        PlugEventMatcher.Step(T, PlugEventMatcher.Readings(T, quiet, polled))!.Value.DeltaW.Should().Be(120);
+        PlugEventMatcher.Readings(T, Readings("Frigider", "-100:2 2:122").Points, polled).Should().BeSameAs(polled, "a row 80 s old does not hold");
+        PlugEventMatcher.Readings(T, Readings("Frigider", "-95:2 -90:2").Points, polled).Should().BeSameAs(polled);
+    }
+
+    [Fact]
+    public void Hold_AStableLevelCountsEverySecond_ARampOnlyForTheSecondsItLasted()
+    {
+        // Stored on change: ramp rows 698, 614, 392, 1140, then the 1408 W level once (Bucatarie, 2 Nov).
+        var rows = Readings("Bucatarie", "0:698 1:614 2:392 3:1140 4:1408").Points;
+        var held = PlugEventMatcher.Hold(rows, T, T.AddSeconds(20));
+        held.Should().HaveCount(21);
+        PlugEventMatcher.Median(held.Select(p => p.PowerW).ToList()).Should().Be(1408, "the level, not a ramp value");
+        PlugEventMatcher.Median(rows.Select(p => p.PowerW).ToList()).Should().Be(698, "the rows alone: the median is a ramp value");
+        PlugEventMatcher.Hold(rows, T.AddSeconds(70), T.AddSeconds(80)).Should().BeEmpty("more than 60 s after the last row");
+    }
+
+    [Fact]
+    public void Windows_StopBeforeTheNeighbouringEventsOfTheMainMeter()
+    {
+        // On at 0 s, off again at +12 s (the next event): the window after must not reach the switch-off.
+        var plug = Readings("Hol mic", "-18:40 -9:40 -1:900 1:2000 11:2000 12:40 20:40");
+        var held = PlugEventMatcher.Readings(T, plug.Points, Array.Empty<PlugPowerPoint>());
+        PlugEventMatcher.Step(T, held)!.Value.DeltaW.Should().BeApproximately(980, 1, "uncut: 2000 for 9 s and 40 for 9 s after, median 1020");
+        PlugEventMatcher.Step(T, held, new Neighbours(null, T.AddSeconds(12)))!.Value.DeltaW.Should().Be(1960);
+        PlugEventMatcher.Match(T, 1960, new[] { plug with { Points = held } }, neighbours: new Neighbours(null, T.AddSeconds(12))).Should().NotBeNull();
+        PlugEventMatcher.Match(T, 1960, new[] { plug with { Points = held } }).Should().BeNull();
+        var w = PlugEventMatcher.Windows(T, new Neighbours(T.AddSeconds(-10), T.AddSeconds(12)));
+        w.BeforeFrom.Should().Be(T.AddSeconds(-7));
+        w.AfterTo.Should().Be(T.AddSeconds(9));
     }
 
     [Fact]
     public void TwoPlugsThatMovedInTheWindow_NoLabel()
     {
-        PlugEventMatcher.Match(T, 121, new[] { Plug(Fridge, "Frigider", 2, 120, 5), Plug(Tv, "TV", 10, 90, 5) })
+        PlugEventMatcher.Match(T, 121, new[] { Plug(Fridge, "Frigider", 2, 120, 2), Plug(Tv, "TV", 10, 90, 2) })
             .Should().BeNull("TV moved by at least 60 % of the step too: ambiguous");
     }
 
     [Fact]
     public void APlugExcludedFromLearningThatMovedToo_MakesTheEventAmbiguous_ButCannotLabelItself()
     {
-        var lamp = Plug(Fridge, "Hol mic", 2, 35, 5);
-        var ups = Plug(Tv, "Ups Birou", 60, 34, 5) with { CanLabel = false };
+        var lamp = Plug(Fridge, "Hol mic", 2, 35, 2);
+        var ups = Plug(Tv, "Ups Birou", 60, 34, 2) with { CanLabel = false };
         PlugEventMatcher.Match(T, 35, new[] { lamp, ups }).Should().BeNull("the excluded UPS moved in the same window");
         PlugEventMatcher.Match(T, 35, new[] { lamp }).Should().NotBeNull();
         PlugEventMatcher.Match(T, 34, new[] { ups }).Should().BeNull("an excluded plug never labels");
@@ -171,19 +250,20 @@ public class PlugEventMatcherTests
     [Fact]
     public void VariableLoadIsNotAStep_AndOnePlugChangeLabelsOneEvent()
     {
-        // A UPS jumping around: the readings before and after the "step" do not agree with it.
+        // A UPS jumping around: the medians of the two windows barely differ.
         var watts = new[] { 60.0, 95, 70, 100, 62, 98 };
         var ups = new PlugSeries(Fridge, "Ups", new[] { -17, -7, 3, 13, 23, 33 }
             .Select((s, i) => new PlugPowerPoint(T.AddSeconds(s), watts[i])).ToList());
         PlugEventMatcher.Match(T, 30, new[] { ups }).Should().BeNull();
 
-        var used = new HashSet<(Guid, DateTimeOffset)>();
-        var fridge = Plug(Fridge, "Frigider", 2, 118, 8);
+        var used = new HashSet<UsedPlugStep>();
+        var fridge = Plug(Fridge, "Frigider", 2, 118, 2);
         PlugEventMatcher.Match(T, 120, new[] { fridge }, used).Should().NotBeNull();
         PlugEventMatcher.Match(T.AddSeconds(2), 120, new[] { fridge }, used).Should().BeNull("that plug change already labelled an event");
+        PlugEventMatcher.Match(T.AddSeconds(2), -120, new[] { Plug(Fridge, "Frigider", 120, -118, 4) }, used)
+            .Should().NotBeNull("a step in the other direction is another change");
     }
 }
-
 public class ApplianceRunTests
 {
     private static readonly DateTimeOffset T = new(2026, 11, 1, 10, 0, 0, TimeSpan.Zero);

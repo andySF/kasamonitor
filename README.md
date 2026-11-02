@@ -7,7 +7,7 @@ plugs and energy meters (e.g. Shelly EM Gen3, local JSON-RPC; the only write is 
 with SQLite, a web UI on port 8910 and a Prometheus `/metrics` endpoint. An optional Prometheus + Grafana stack
 with a ready-made dashboard and alert rules is included.
 
-Version: **0.8.1** (`Directory.Build.props`). Docker image: `duobit/kasamonitor`.
+Version: **0.8.2** (`Directory.Build.props`). Docker image: `duobit/kasamonitor`.
 
 ## Quick start
 
@@ -59,7 +59,7 @@ TP-Link (Tapo app) account in `/settings` and press **Scanează acum** on `/plug
   the house) and „Rapoarte” on `/centrala` (gas, boiler electricity, heat produced), per day (hours), week, month
   (days) or year (months), with ◀ ▶ navigation, the change against the previous period and the cost. See
   [Reports](#reports-history-casă-and-centrala-rapoarte).
-- **Version in the menu**: „v0.8.1” at the right of the navigation bar; the tooltip shows the commit and the build time.
+- **Version in the menu**: „v0.8.2” at the right of the navigation bar; the tooltip shows the commit and the build time.
 - **Browser errors in the server log**: JavaScript errors and the Blazor error banner are reported to
   `POST /api/client-error` and logged at Warning (category `KasaMonitor.ClientErrors`), so `docker logs` shows them.
 
@@ -244,7 +244,11 @@ measured by a plug have their own `kasa_*` series; hidden ones are left out). `a
 Prometheus (diacritics removed, only letters, digits, space, `_` and `-`, at most 40 characters: „Necunoscut #12” →
 `Necunoscut 12`), `category` one of `fridge`, `boiler`, `cooking`, `washer`, `hvac`, `lighting`, `electronics`, `other`,
 `source` = `user` (named by you) or `cluster` („Necunoscut #n”). Series of an appliance that is renamed, hidden, merged
-or no longer exported are removed. These counters restart at 0 with the application: use `increase()`.
+or no longer exported are removed. These counters restart at 0 with the application: use `increase()`. The labels of
+`kasa_appliance_energy_wh_total` are the name and the category: when a signature is renamed, takes another category or
+absorbs another one in a merge (since 0.8.2 it can take the absorbed one's category, or the plug rule can rename it),
+its old series disappears and a new one appears under the new labels **with the cumulative value** — in Grafana a new
+series, not a continuation (sum by `appliance` over time, or use `increase()` per series).
 
 ### Live samples via remote write (`kasa_live_*`)
 
@@ -630,18 +634,29 @@ meter** (`/plugs`) with the live stream on (1 s). Page `/consumatori`, menu „C
    event with a high transient ratio. Slow drift moves the level without an event. Missing seconds (the raw table
    keeps a row only on change, or every 60 s) are filled with the previous value for up to 65 s. An event within
    ±2 s of a stored one, in the same direction and of the same size, is a duplicate (a second re-processed after a
-   restart) and is not stored again.
+   restart) and is not stored again. **Unknown transient** (since 0.8.2): the transient is known when the step reached
+   its new level within one sample (rise 0 s) or the ratio is above 1.5, and unknown only when the step took 1 s or
+   more **and** the ratio is ≤ 1.5 (see „How it learns”); the stored ratio stays as measured, but an unknown one is never
+   compared (clustering, matching, merging) and never enters a signature's mean transient.
 2. **Backfill**: at start, the stored `LiveSamples` of the main meter after the marker `NilmLastProcessedTs` (Settings
    table; the first time: all of them, i.e. `LiveRawRetentionDays`) go through the detector in 6-hour batches (the
    plugs' readings of a batch are loaded once); a backfill of more than 6 hours is re-clustered right away. The page
    stays usable meanwhile (it reads its own snapshot and shows „Procesare în curs”).
-3. **Plug labels**: 45 s after an event (the ±15 s window plus two polls), the plugs' 10-second readings around it (kept in memory for the last
-   3 minutes; loaded per batch during a backfill) are compared. A plug labels the event (source `auto-plug`) when it
-   made a **clean step**: the middle of the interval between its two readings is within ±15 s of the event, the
-   readings before and after the step agree with it (a variable load is not a step), the step is ΔP ± max(10 W, 15 %),
-   it is the **only** plug that moved in the same direction by ≥ 60 % of |ΔP| in that window (counting every plug,
-   also those excluded from learning: a UPS that moved at the same time makes the event ambiguous), and that plug step
-   has not labelled another event. Events detected late (after a long backfill or nightly job) read the plugs'
+3. **Plug labels**: 45 s after an event, the plugs' 10-second readings around it (kept in memory for the last
+   3 minutes; loaded per batch during a backfill) are compared on **stabilised levels** (since 0.8.2). A plug's readings
+   are those of its live stream (≈ 3 s, `LiveSamples`) **held on a 1-second grid** — at every second the value of the
+   last row, at most 60 s old; the stream stores a row only on a change, so a stable level counts every second and a
+   ramp only for the seconds it lasted, the same live and in a backfill — when that covers both windows, otherwise its
+   10-second polls. The plug's level before = the median of its readings in [t − 20 s, t − 3 s], after = the median in
+   [t + 3 s, t + 20 s] (at least one reading in each; the last one before and the first one after at most 25 s apart);
+   both windows stop 3 s before the previous / next event of the main meter that is large enough to move the plug beyond
+   the tolerance (|ΔP| ≥ max(10 W, 15 % of this event's |ΔP|): a washing machine's switch-off 16 s after its switch-on;
+   a UPS's 30 W does not shorten the windows of a 2 kW step). Readings within ±3 s of the event
+   are ignored, so a reading taken in the middle of a ramp or an inrush (a washing machine read at 171 W or 827 W on its
+   way to 2 kW) no longer hides the step. A plug labels the event (source `auto-plug`) when its step is ΔP ± max(10 W,
+   15 %), it is the **only** plug whose level moved in the same direction by ≥ 60 % of |ΔP| (counting every plug, also
+   those excluded from learning: a UPS that moved at the same time makes the event ambiguous), and that plug step has
+   not labelled another event. Events detected late (after a long backfill or nightly job) read the plugs'
    readings from `Samples`. A plug that matches **more than 20 events in an hour** (a UPS, a PC: a variable load) is
    excluded from learning automatically (`Plugs.NilmIgnored`; badge on `/plugs` and `/consumatori`, with a button to
    undo it — an undone plug is never excluded automatically again; a plug can also be excluded by hand). Excluding
@@ -651,11 +666,19 @@ meter** (`/plugs`) with the live stream on (1 s). Page `/consumatori`, menu „C
    from the switch-on side and the transient ratio of switch-ons; eps(|ΔP|) = 8 % of |ΔP| + 3 W, eps(ΔQ) = 8 % of |ΔP|
    + 15 VAR, minPts 3; a cluster wider than (1 + 2 × 8 %) × its smallest |ΔP| + 6 W is cut into narrower bands (a dense
    band of small loads would otherwise chain into one cluster). Each point enters the expansion queue once (memory
-   O(n)). Switch-ons and switch-offs of the same magnitude join the same signature. A new event joins the nearest
-   signature within eps, otherwise a new „Necunoscut #n”. Every night at 03:30 the **newest 20,000 events** of the last
-   `ClusterWindowDays` (30) are clustered again on a low-priority thread, outside the processing lock (clusters keep the
-   signature, name and category most of their events had; model labels are re-evaluated; empty automatic signatures
-   are deleted). Counts and means are SQL aggregates over the window.
+   O(n)). Switch-ons and switch-offs of the same magnitude join the same signature. A new event goes first to the
+   nearest **anchor** (a signature named by you or linked to a plug, not hidden) within **1.5 × eps** (≈ 12 % of |ΔP|)
+   — an event labelled by a plug first to an anchor linked to that plug, never to one linked to another plug —,
+   otherwise to the nearest other signature within eps, otherwise to a new „Necunoscut #n”. Every night at 03:30 (and at startup
+   when the last run is older than 24 hours or never ran, and on „Regrupează acum”) the **newest 20,000 events** of the
+   last `ClusterWindowDays` (30) are clustered again on a low-priority thread, outside the processing lock: events you
+   labelled yourself, and events labelled by the plug their signature is linked to, never move; every other event goes
+   through the **anchors** again (it stays in a labelled signature only while within 1.5 × eps of it, so a signature
+   cannot ratchet away by keeping everything it once caught);
+   DBSCAN groups the rest (clusters keep the anonymous signature most of their events had; model labels are
+   re-evaluated; empty automatic signatures are deleted); then signatures that are the same component are **merged
+   automatically** (see „How it learns” below). The time of the last run is the setting `NilmLastReclusterTs`. Counts
+   and means are SQL aggregates over the window.
 5. **Measured by a plug**: when at least 3 events and ≥ 60 % of a signature's events were labelled by the same (not
    excluded) plug, the signature is linked to that plug (below 3 it stays „Necunoscut #n”, marked „posibil <plug>” on
    the page; `ApplianceSignatures.PlugId`; it takes the plug's name unless you named it).
@@ -665,7 +688,16 @@ meter** (`/plugs`) with the live stream on (1 s). Page `/consumatori`, menu „C
    of the house.
 6. **Your labels** (`/consumatori`): rename a signature, choose its category (fridge, boiler, hob/oven, washing
    machine, AC/heat pump, lighting, electronics, other), hide it, merge one into another (one selector above the
-   table), split it (re-clustered alone with half the eps), and label any event of the last 24 h („a fost boilerul”;
+   table), split it (re-clustered alone with half the eps), open its **„fișa”** (the card button: ΔP mean ± standard
+   deviation, ΔQ, the step's power factor, the transient or „necunoscut, n din m”, switch-ons/offs, the typical run
+   length — median and p10–p90 —, a 24-bar histogram of the hours of the day, the plug it matches and in what share,
+   first/last seen, energy over 7 days; the same data points drive the automatic merge), and from the „fișa” „Unește
+   cu…” (the survivor is chosen as in the automatic merge; a confirmation says which one stays and which one goes) or
+   „Adaugă la aparatul…” (to a signature you named or one linked to a plug, not hidden; with a confirmation): when the
+   two centres are within 1.5 × eps (the same component) the events move into the chosen one; otherwise (a washing
+   machine's motor added to its heater) the signature only takes the chosen one's name and category and stays a separate
+   row — a signature is one component, mixing two would match neither. „Regrupează acum” (with a confirmation) runs the
+   nightly job on request and reports how many signatures were merged. You can also label any event of the last 24 h („a fost boilerul”;
    Enter or the button): the event moves to the signature with that name if there is one; otherwise its own signature
    takes the name when it is an automatic one, else a new signature is created. Names are trimmed to 64 characters.
    Signatures you named or merged are kept as they are by the nightly re-clustering. A hidden signature is left out of
@@ -678,7 +710,10 @@ meter** (`/plugs`) with the live stream on (1 s). Page `/consumatori`, menu „C
    runs go with them, their events stay, without a signature, and the nightly re-clustering may group them again.
 7. **ML model** (`MlEnabled`): with ≥ 20 events labelled by plugs or by you in ≥ 2 classes, a multiclass ML.NET
    classifier (`SdcaMaximumEntropy`; features ΔP, log |ΔP|, ΔQ, transient, rise, hour of day as sin/cos, day of week)
-   is trained every night on the newest 20,000 labelled events (low-priority thread); its accuracy is measured by
+   is trained every night on the newest 20,000 labelled events (low-priority thread), also at startup when no model is
+   saved yet, after every re-clustering („Regrupează acum” included: the labels may have moved), and on „Antrenează
+   acum” on `/consumatori` (the result shows the classes, the cross-validated accuracy and the duration; while the
+   condition is met but no model exists the page says so); its accuracy is measured by
    5-fold cross-validation and shown on the page with a confusion matrix — **measured only on the appliances that have
    a plug or that you labelled**, not on the whole house. A new event without a plug label gets the prediction only
    when the probability is ≥ 0.7 **and** the event is within 2 × eps of that class's centre (an open-set check: an
@@ -702,6 +737,33 @@ meter** (`/plugs`) with the live stream on (1 s). Page `/consumatori`, menu „C
    Dashboard and `/contor`; metrics `kasa_appliance_*`, `kasa_nilm_*` (see Metrics).
 10. **Retention**: events and finished runs older than 365 days are deleted every night (signatures stay).
 
+**How it learns.** A signature is a **component**, not necessarily a whole appliance: a washing machine is a heater
+(≈ 2 kW), a drum motor (≈ 250–300 W pulses) and a pump; a kettle is one heater. Your labels come first: a signature
+you named or that a plug confirms is an **anchor**, tried before the anonymous groups with a wider tolerance (1.5 ×
+eps), so a kettle running at −6 % (lower voltage while the washer heats) still lands on „Fierbător” instead of a nearer
+anonymous group, and the nightly re-clustering never takes a name away. The transient ratio (peak in the first 2 s /
+ΔP) is used only when it was really measured: **known when the step took no time (rise 0 s) or the ratio is above 1.5,
+unknown only when the step took ≥ 1 s and the ratio is ≤ 1.5**. A step that falls between two samples, or a transition
+started by a small wobble before the real step, can only make the measured peak smaller (≈ 0–1); a peak above 1.5 can
+only be real (a motor's inrush, whose settling also makes the rise last 2 s or more). Several signatures that turn out to be the
+same component are **merged automatically** (nightly, at startup after a missed night, „Regrupează acum”). Never
+merged: two linked to different plugs (checked first), two you named differently, hidden ones. Otherwise when (c) you
+gave them the same name and their centres are within 1.5 × eps (the same name on distant components stays two rows),
+(a) their centres are within eps (|ΔP|, ΔQ, and the transient only when both know it), (b) both are linked to the same
+plug, or clearly „posibil” it (≥ 2 events and ≥ 30 % of them from that plug), and their |ΔP| differ by less than 15 %,
+or (d) they are the same **inductive** component with a variable load (a drum motor's pulses): neither is an anchor,
+both have |ΔQ/ΔP| ≥ 0.5 and |ΔP| ≥ 150 W, their ΔQ/ΔP differ by at most 0.15 with the same sign, their |ΔP| by at most
+25 %, they are not „posibil” two different plugs, and at least 60 % of the smaller one's events have an event of the
+other within ±10 minutes, at least twice as often as with those times shifted by ±1 hour (a dense small load is
+„together” with everything by chance). A merge with a signature linked to a plug is made only when that plug would
+still have labelled ≥ 60 % of the merged events (the merge never unlinks it). The survivor is the one you named,
+else the one linked to a plug, else the one with more events (then the older id); the absorbed signature's events and
+runs move to it (also the runs older than the window), it takes the absorbed one's plug and category when it has none,
+the absorbed signature is deleted (its `kasa_appliance_*` series disappears, the survivor's continues). Each merge is
+logged at Information. Measured on the real house of 2 Nov 2026: the drum motor's pulses (≈ 210–310 W, cut by DBSCAN
+into 215 / 267 / 304 W) end in 2 signatures (284 W with 56 of the 60 events, and 215 W); the small loads (59–117 W)
+stay separate.
+
 **Limits.** Appliances with a variable power (induction hobs, inverter compressors and heat pumps, dimmers, PCs)
 have no steady state: their changes either do not settle within 30 s (no event) or appear as many small events.
 Appliances switched within 2 s of each other in opposite directions give one event (the net step). Steps below the
@@ -712,8 +774,10 @@ are cut into narrow |ΔP| bands, but each band holds events of several appliance
 whole-house difference**: |Q| is computed for the house, so a capacitive load (a switched-mode supply) switched on in
 an inductive house lowers |Q| while the same load in a house with Q ≈ 0 raises it — its sign depends on what else is
 running; that is why its eps is wider. The run pairing assumes one switch-off per switch-on (multi-stage appliances
-such as a washing machine appear as several signatures). The plug labels need the plug's clean step and the house step
-in the same ±15 s, so a plug offline, or two plugs moving together, give no label.
+such as a washing machine appear as several signatures). The plug labels need the plug's level to change around the
+house step (medians of the 20 s before and after, ±3 s ignored, cut at large neighbouring events), so a plug offline,
+two plugs moving together, or two large steps less than ~7 s apart give no label. Measured on the washing machine of
+2 Nov 2026: 12 of its 13 heater steps labelled with the plug's stream, 10 with the 10-second polls only (7 in 0.8.1).
 
 ## Data retention
 
@@ -754,15 +818,15 @@ dotnet test KasaMonitor.sln
 From the repository root, with Docker running and `docker login` done once:
 
 ```powershell
-.\deploy\build-and-push.ps1 -Version 0.8.1          # build :0.8.1 + :latest and push both
-.\deploy\build-and-push.ps1 -Version 0.8.1 -NoPush  # local build only
+.\deploy\build-and-push.ps1 -Version 0.8.2          # build :0.8.2 + :latest and push both
+.\deploy\build-and-push.ps1 -Version 0.8.2 -NoPush  # local build only
 ```
 
 or manually:
 
 ```bash
-docker build -t duobit/kasamonitor:0.8.1 -t duobit/kasamonitor:latest -f deploy/Dockerfile .
-docker push duobit/kasamonitor:0.8.1
+docker build -t duobit/kasamonitor:0.8.2 -t duobit/kasamonitor:latest -f deploy/Dockerfile .
+docker push duobit/kasamonitor:0.8.2
 docker push duobit/kasamonitor:latest
 ```
 
@@ -790,7 +854,9 @@ To publish under your own Docker Hub account, change the image name (`-Repo` par
    bars start with the first reading after the upgrade). Upgrading to 0.8.1 needs no migration: the new setting
    `BoilerTimeZone` (default `Europe/Berlin`) moves the boiler's days to its own midnight (01:00 Romanian time), and at
    the first start the current boiler day is repaired if 0.8.0 left yesterday's total in its highest value (logged at
-   Information). Rows of earlier days are not rewritten.
+   Information). Rows of earlier days are not rewritten. Upgrading to 0.8.2 needs no migration: at the first start the
+   appliance detection re-clusters right away (the marker `NilmLastReclusterTs` does not exist yet), with the anchors,
+   the unknown transients and the automatic merge; the merges are logged at Information.
 2. `docker compose -f deploy/docker-compose.yml pull && docker compose -f deploy/docker-compose.yml up -d`
    (Portainer: *Update the stack* with *Re-pull image and redeploy*).
 3. Check `http://<host>:8910/health`, `/plugs` (Scan now) and `curl -s http://<host>:8910/metrics | grep kasa_online`.

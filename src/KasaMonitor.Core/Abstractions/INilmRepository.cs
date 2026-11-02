@@ -60,6 +60,12 @@ public interface INilmRepository
     Task DeleteSignatureAsync(long id, CancellationToken ct);
 
     /// <summary>
+    /// Merge: in one transaction, every event and every run of <paramref name="fromId"/> moves to <paramref name="intoId"/>
+    /// and <paramref name="fromId"/> is deleted. Returns the number of events moved.
+    /// </summary>
+    Task<int> MoveSignatureAsync(long fromId, long intoId, CancellationToken ct);
+
+    /// <summary>
     /// Recomputes, with SQL aggregates over the events since <paramref name="windowFromUtc"/>, the count, means and
     /// LastSeen (the newer of the stored one and the window's newest event) of the given signatures and returns them.
     /// </summary>
@@ -73,6 +79,9 @@ public interface INilmRepository
     Task<IReadOnlyList<ApplianceRun>> SaveRunsAsync(IReadOnlyList<ApplianceRun> runs, CancellationToken ct);
 
     Task<IReadOnlyList<ApplianceRun>> ListOpenRunsAsync(CancellationToken ct);
+
+    /// <summary>The runs of one signature not ended before <paramref name="fromUtc"/> (open ones included), oldest first.</summary>
+    Task<IReadOnlyList<ApplianceRun>> ListRunsBySignatureAsync(long signatureId, DateTimeOffset fromUtc, CancellationToken ct);
 
     /// <summary>Runs overlapping [fromUtc, toUtc): started before the end and not ended before the start.</summary>
     Task<IReadOnlyList<ApplianceRun>> ListRunsAsync(DateTimeOffset fromUtc, DateTimeOffset toUtc, CancellationToken ct);

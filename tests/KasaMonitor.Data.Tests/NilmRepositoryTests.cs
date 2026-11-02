@@ -51,7 +51,7 @@ public class NilmRepositoryTests
         sig.Name.Should().Be($"Necunoscut #{sig.Id}");
 
         var plug = Guid.NewGuid();
-        var on = await AddOne(repo, E(0, 120, sig.Id) with { Label = "Frigider", Source = EventLabelSource.AutoPlug, LabelPlugId = plug });
+        var on = await AddOne(repo, E(0, 120, sig.Id) with { RiseSeconds = 0, Label = "Frigider", Source = EventLabelSource.AutoPlug, LabelPlugId = plug });
         var off = await AddOne(repo, E(600, -110, sig.Id) with { DeltaQ = -20 });
         var updated = (await repo.RecomputeSignaturesAsync(new[] { sig.Id }, T.AddDays(-30), CancellationToken.None)).Single();
         updated.Count.Should().Be(2);
@@ -79,6 +79,49 @@ public class NilmRepositoryTests
         (await repo.ListSignaturesAsync(CancellationToken.None)).Should().BeEmpty();
         (await repo.ListRunsAsync(T.AddDays(-1), T.AddDays(1), CancellationToken.None)).Should().BeEmpty();
         (await repo.ListEventsAsync(T.AddDays(-1), T.AddDays(1), CancellationToken.None)).Should().OnlyContain(e => e.SignatureId == null);
+    }
+
+    [Fact]
+    public async Task Recompute_MeanTransientOnlyFromSwitchOnsWithAKnownTransient()
+    {
+        using var db = new TestDbFactory();
+        var repo = new NilmRepository(db.CreateContext());
+        var sig = await repo.AddSignatureAsync(new ApplianceSignature(0, "", "", "other", 0, 0, 0, 0, null, SignatureLabelSource.Cluster, null, false),
+            CancellationToken.None);
+        await repo.AddEventsAsync(new[]
+        {
+            E(0, 2000, sig.Id) with { TransientRatio = 1.0, RiseSeconds = 0 },
+            E(60, 1990, sig.Id) with { TransientRatio = 0.02, RiseSeconds = 1 },    // rise ≥ 1 s, ratio ≤ 1.5: unknown
+            E(120, 1980, sig.Id) with { TransientRatio = 0.34, RiseSeconds = 2 },   // spread over samples: unknown
+            E(180, -1990, sig.Id) with { TransientRatio = 1.0, RiseSeconds = 0 },   // switch-off
+        }, CancellationToken.None);
+        var s = (await repo.RecomputeSignaturesAsync(new[] { sig.Id }, T.AddDays(-1), CancellationToken.None)).Single();
+        s.Count.Should().Be(4);
+        s.MeanTransient.Should().Be(1.0);
+        await repo.AddEventsAsync(new[] { E(240, 1995, sig.Id) with { TransientRatio = 4.0, RiseSeconds = 2 } }, CancellationToken.None);   // inrush: known
+        (await repo.RecomputeSignaturesAsync(new[] { sig.Id }, T.AddDays(-1), CancellationToken.None)).Single().MeanTransient.Should().Be(2.5);
+        (await repo.ListEventsAsync(T, T.AddHours(1), CancellationToken.None)).Select(e => e.TransientRatio).Should().Equal(1.0, 0.02, 0.34, 1.0, 4.0);
+    }
+
+    [Fact]
+    public async Task MoveSignature_EventsAndRunsGoToTheSurvivor_TheAbsorbedOneIsDeleted()
+    {
+        using var db = new TestDbFactory();
+        var repo = new NilmRepository(db.CreateContext());
+        ApplianceSignature New() => new(0, "", "", "other", 0, 0, 0, 0, null, SignatureLabelSource.Cluster, null, false);
+        var a = await repo.AddSignatureAsync(New(), CancellationToken.None);
+        var b = await repo.AddSignatureAsync(New(), CancellationToken.None);
+        var e1 = await AddOne(repo, E(0, 120, a.Id));
+        var e2 = await AddOne(repo, E(60, -120, a.Id));
+        var e3 = await AddOne(repo, E(120, 121, b.Id));
+        await repo.SaveRunsAsync(new[] { new ApplianceRun(0, a.Id, T, T.AddSeconds(60), 120, 2, e1.Id, e2.Id) }, CancellationToken.None);
+
+        (await repo.MoveSignatureAsync(a.Id, b.Id, CancellationToken.None)).Should().Be(2);
+
+        (await repo.GetSignatureAsync(a.Id, CancellationToken.None)).Should().BeNull();
+        (await repo.ListEventsBySignaturesAsync(new[] { b.Id }, T.AddDays(-1), CancellationToken.None)).Select(e => e.Id).Should().Equal(e1.Id, e2.Id, e3.Id);
+        (await repo.ListRunsAsync(T.AddDays(-1), T.AddDays(1), CancellationToken.None)).Should().ContainSingle().Which.SignatureId.Should().Be(b.Id);
+        (await repo.MoveSignatureAsync(b.Id, b.Id, CancellationToken.None)).Should().Be(0);
     }
 
     [Fact]

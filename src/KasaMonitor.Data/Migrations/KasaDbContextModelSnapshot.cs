@@ -467,6 +467,186 @@ namespace KasaMonitor.Data.Migrations
                     b.ToTable("MeterEvents", (string)null);
                 });
 
+            modelBuilder.Entity("KasaMonitor.Data.Entities.MieleCycleEntity", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("DeviceId")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("EndReason")
+                        .HasColumnType("TEXT");
+
+                    b.Property<long?>("EndTs")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<double?>("EnergyKwh")
+                        .HasColumnType("REAL");
+
+                    b.Property<long>("LastRunningTs")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("PhasesJson")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<double?>("PlugEnergyWh")
+                        .HasColumnType("REAL");
+
+                    b.Property<string>("Program")
+                        .HasColumnType("TEXT");
+
+                    b.Property<int?>("ProgramRaw")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<long>("StartTs")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<double?>("WaterL")
+                        .HasColumnType("REAL");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("EndTs");
+
+                    b.HasIndex("DeviceId", "StartTs");
+
+                    b.ToTable("MieleCycles", (string)null);
+                });
+
+            modelBuilder.Entity("KasaMonitor.Data.Entities.MieleDeviceEntity", b =>
+                {
+                    b.Property<string>("Id")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("Alias")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("DeviceName")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<bool>("IsArchived")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<long?>("LastSeenUtc")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<Guid?>("PlugId")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("TechType")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<int?>("TypeRaw")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("TypeText")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.HasKey("Id");
+
+                    b.ToTable("MieleDevices", (string)null);
+                });
+
+            modelBuilder.Entity("KasaMonitor.Data.Entities.MieleStateSnapshotEntity", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("DeviceId")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<bool?>("DoorOpen")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int?>("DryingStepRaw")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<double?>("EcoEnergyForecast")
+                        .HasColumnType("REAL");
+
+                    b.Property<double?>("EcoEnergyKwh")
+                        .HasColumnType("REAL");
+
+                    b.Property<double?>("EcoWaterForecast")
+                        .HasColumnType("REAL");
+
+                    b.Property<double?>("EcoWaterL")
+                        .HasColumnType("REAL");
+
+                    b.Property<int?>("ElapsedSec")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int?>("PhaseRaw")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("PhaseText")
+                        .HasColumnType("TEXT");
+
+                    b.Property<int?>("ProgramIdRaw")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("ProgramIdText")
+                        .HasColumnType("TEXT");
+
+                    b.Property<int?>("ProgramTypeRaw")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("ProgramTypeText")
+                        .HasColumnType("TEXT");
+
+                    b.Property<int?>("RemainingSec")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<bool?>("RemoteFullControl")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<bool?>("RemoteMobileStart")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<bool?>("RemoteSmartGrid")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<bool?>("SignalFailure")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<bool?>("SignalInfo")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int?>("SpinRpm")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int?>("StartTimeSec")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int?>("StatusRaw")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("StatusText")
+                        .HasColumnType("TEXT");
+
+                    b.Property<double?>("TargetTempC")
+                        .HasColumnType("REAL");
+
+                    b.Property<long>("Ts")
+                        .HasColumnType("INTEGER");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("DeviceId", "Ts");
+
+                    b.ToTable("MieleStateSnapshots", (string)null);
+                });
+
             modelBuilder.Entity("KasaMonitor.Data.Entities.MonthlyEnergyEntity", b =>
                 {
                     b.Property<Guid>("PlugId")

@@ -208,6 +208,11 @@ else
                                             <div class="row g-3">
                                                 <div class="col-lg-7">
                                                     <dl class="row mb-0">
+                                                        @if (KasaMonitor.Core.Miele.MieleGroundTruthRule.PhaseOf(pv.Signature.Name) is { } miPhase)
+                                                        {
+                                                            <dt class="col-sm-5 fw-normal text-secondary" title="Din adevărul de teren Miele (faza raportată de aparat cât priza a confirmat evenimentul); sarcina e doar orientativă">Fază aparat</dt>
+                                                            <dd class="col-sm-7 mb-1">@miPhase@(KasaMonitor.Core.Miele.MieleTexts.ExpectedLoad(miPhase) is { } miLoad ? " · se așteaptă " + miLoad : "")</dd>
+                                                        }
                                                         <dt class="col-sm-5 fw-normal text-secondary">ΔP</dt>
                                                         <dd class="col-sm-7 mb-1"><b>@p.MeanDeltaP.ToString("0") ± @p.StdDeltaP.ToString("0") W</b></dd>
                                                         <dt class="col-sm-5 fw-normal text-secondary">ΔQ (din partea pornirii)</dt>

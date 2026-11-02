@@ -140,6 +140,26 @@
             <li>randament aparent luna trecută: <code>sum(heating_heat_production_kwh{period="lastmonth"}) / (sum(heating_gas_consumption_m3{period="lastmonth"}) * 10.55)</code></li>
             <li>modul apei calde: <code>heating_dhw_mode_info</code> (=1, eticheta <code>mode</code>); programul: <code>heating_program_info</code></li>
         </ul>
+        <h3>Aparate Miele: metrici <code>miele_*</code></h3>
+        <p class="note">
+            Apar după conectarea contului Miele (pagina <a href="/aparate">Aparate</a>). Etichete: <code>device</code> (aliasul aparatului) și
+            <code>type</code> (<code>washing_machine</code>, <code>tumble_dryer</code>, <code>washer_dryer</code>, <code>dishwasher</code>);
+            <code>miele_status_info</code> are și <code>status</code>, <code>miele_program_phase_info</code> are <code>phase</code> (o singură serie pe aparat).
+            Valorile vin prin fluxul SSE (la fiecare schimbare); ce nu raportează aparatul nu are serie. Prognozele <code>ecoFeedback</code> sunt relative (0–1), nu kWh/litri.
+        </p>
+        <table class="table table-sm align-middle int-table">
+            <thead><tr><th>Metrică</th><th>Tip</th><th>Unitate</th><th>Descriere</th></tr></thead>
+            <tbody>
+                @foreach (var m in MieleMetrics.Catalog)
+                {
+                    <tr><td><code>@m.Name</code></td><td>@m.Type</td><td>@m.Unit</td><td>@m.Help</td></tr>
+                }
+            </tbody>
+        </table>
+        <ul class="note">
+            <li>mașina rulează: <code>miele_status_info{status="running"} == 1</code>; faza curentă: <code>miele_program_phase_info</code></li>
+            <li>cicluri pe zi: <code>increase(miele_cycles_total[1d])</code>; energia ultimului ciclu după aparat: <code>miele_last_cycle_energy_kwh</code></li>
+        </ul>
         <h3>Consumatori detectați (NILM)</h3>
         <p class="note">
             Din fluxul la 1 s al contorului general, KasaMonitor detectează pornirile și opririle aparatelor (pagina <a href="/consumatori">Consumatori</a>)

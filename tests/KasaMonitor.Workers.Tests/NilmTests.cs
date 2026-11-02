@@ -115,7 +115,8 @@ public class NilmServiceTests
             Settings = TestSettings.Create(Scopes, new KasaSettingsDefaults(BroadcastNetworks: "192.168.254.255", MlEnabled: ml));
         }
 
-        public NilmService Service() => new(Scopes, Settings, Live, States, NullLogger<NilmService>.Instance, ModelPath, () => Now, TimeZoneInfo.Utc);
+        public NilmService Service(INilmGroundTruth? groundTruth = null) =>
+            new(Scopes, Settings, Live, States, NullLogger<NilmService>.Instance, ModelPath, () => Now, TimeZoneInfo.Utc, groundTruth);
 
         public async Task<Guid> AddAsync(string mac, string alias, PlugRole role, string protocol)
         {
@@ -174,11 +175,75 @@ public class NilmServiceTests
         await new SampleRepository(ctx).InsertManyAsync(FridgePlug(fridge, cycles: cycles), CancellationToken.None);
     }
 
+    /// <summary>A ground truth that answers for one plug (or every plug) with a fixed label, and records the questions.</summary>
+    private sealed class FixedGroundTruth : INilmGroundTruth
+    {
+        private readonly Guid? _plug;
+        private readonly string _label;
+        public List<Guid> Asked { get; } = new();
+        public FixedGroundTruth(Guid? plug, string label) { _plug = plug; _label = label; }
+        public string? LabelFor(Guid plugId, DateTimeOffset tsUtc)
+        {
+            Asked.Add(plugId);
+            return _plug is null || _plug == plugId ? _label : null;
+        }
+    }
+
+    [Fact]
+    public async Task GroundTruth_PlugConfirmedEvents_TakeThePhaseLabel_SignatureNamedAndKeptWhenLinkedToThePlug()
+    {
+        using var rig = new Rig();
+        var main = await rig.AddAsync("aabbccddee00", "Casa", PlugRole.MainMeter, PlugProtocols.ShellyRpc);
+        var washer = await rig.AddAsync("aabbccddee01", "Priza masina", PlugRole.Plug, PlugProtocols.Legacy);
+        await SeedAsync(rig, main, washer);
+        rig.Now = T0.AddMinutes(31);
+        var truth = new FixedGroundTruth(washer, "Mașina · Spălare principală");
+
+        await rig.Service(truth).RunOnceAsync(CancellationToken.None);
+
+        var events = await rig.Repo(r => r.ListEventsAsync(T0, rig.Now, CancellationToken.None));
+        events.Should().HaveCount(4).And.OnlyContain(e => e.Source == EventLabelSource.AutoPlug && e.LabelPlugId == washer && e.Label == "Mașina · Spălare principală");
+        var sig = (await rig.Repo(r => r.ListSignaturesAsync(CancellationToken.None))).Should().ContainSingle().Subject;
+        sig.Name.Should().Be("Mașina · Spălare principală", "the ground truth name wins over the plug's alias");
+        sig.LabelSource.Should().Be(SignatureLabelSource.Plug);
+        sig.PlugId.Should().Be(washer, "4 events from the plug: linked by the plug rule, name kept");
+        truth.Asked.Should().OnlyContain(p => p == washer);
+    }
+
+    [Fact]
+    public async Task GroundTruth_NeverForEventsWithoutThePlugsConfirmation_NorForAnotherPlug()
+    {
+        using var rig = new Rig();
+        var main = await rig.AddAsync("aabbccddee00", "Casa", PlugRole.MainMeter, PlugProtocols.ShellyRpc);
+        var fridge = await rig.AddAsync("aabbccddee01", "Frigider", PlugRole.Plug, PlugProtocols.Legacy);
+        using (var ctx = rig.Db.CreateContext())
+            await new LiveRepository(ctx).SaveBatchAsync(House(main), Array.Empty<LiveMinuteAggregate>(), CancellationToken.None);
+        rig.Now = T0.AddMinutes(31);
+        var always = new FixedGroundTruth(null, "Mașina · Centrifugare");
+
+        await rig.Service(always).RunOnceAsync(CancellationToken.None);
+
+        var events = await rig.Repo(r => r.ListEventsAsync(T0, rig.Now, CancellationToken.None));
+        events.Should().NotBeEmpty().And.OnlyContain(e => e.Source == EventLabelSource.None && e.Label == null, "no plug matched: no ground truth");
+        always.Asked.Should().BeEmpty("only events confirmed by a plug are asked about");
+        (await rig.Repo(r => r.ListSignaturesAsync(CancellationToken.None))).Should().OnlyContain(s => s.Name.StartsWith("Necunoscut #"));
+
+        using var rig2 = new Rig();
+        var main2 = await rig2.AddAsync("aabbccddee00", "Casa", PlugRole.MainMeter, PlugProtocols.ShellyRpc);
+        var fridge2 = await rig2.AddAsync("aabbccddee01", "Frigider", PlugRole.Plug, PlugProtocols.Legacy);
+        await SeedAsync(rig2, main2, fridge2);
+        rig2.Now = T0.AddMinutes(31);
+        await rig2.Service(new FixedGroundTruth(Guid.NewGuid(), "Mașina · Centrifugare")).RunOnceAsync(CancellationToken.None);
+        (await rig2.Repo(r => r.ListEventsAsync(T0, rig2.Now, CancellationToken.None))).Should().OnlyContain(e => e.Label == "Frigider");
+        (await rig2.Repo(r => r.ListSignaturesAsync(CancellationToken.None))).Should().ContainSingle().Which.Name.Should().Be("Frigider");
+        _ = fridge;
+    }
+
     [Fact]
     public async Task FewerThanThreeEventsFromAPlug_SignatureStaysUnknown_MarkedPossiblePlug()
     {
         using var rig = new Rig();
-        var main = await rig.AddAsync("d885ac0b743c", "Casa", PlugRole.MainMeter, PlugProtocols.ShellyRpc);
+        var main = await rig.AddAsync("aabbccddee00", "Casa", PlugRole.MainMeter, PlugProtocols.ShellyRpc);
         var fridge = await rig.AddAsync("aabbccddee01", "Frigider", PlugRole.Plug, PlugProtocols.Legacy);
         await SeedAsync(rig, main, fridge, cycles: 1);
         rig.Now = T0.AddMinutes(31);
@@ -199,7 +264,7 @@ public class NilmServiceTests
     public async Task Backfill_StoredSamples_EventsLabelledFromThePlug_SignatureTakesItsName_RunClosedWithEnergy_NoDuplicatesAfterRestart()
     {
         using var rig = new Rig();
-        var main = await rig.AddAsync("d885ac0b743c", "Casa", PlugRole.MainMeter, PlugProtocols.ShellyRpc);
+        var main = await rig.AddAsync("aabbccddee00", "Casa", PlugRole.MainMeter, PlugProtocols.ShellyRpc);
         var fridge = await rig.AddAsync("aabbccddee01", "Frigider", PlugRole.Plug, PlugProtocols.Legacy);
         await SeedAsync(rig, main, fridge);
         rig.Now = T0.AddMinutes(31);
@@ -261,7 +326,7 @@ public class NilmServiceTests
     public async Task Live_SamplesOfTheMainMeter_EventWaitsForThePlugReadings_ThenIsStored_SummaryShowsTheRunningAppliance()
     {
         using var rig = new Rig();
-        var main = await rig.AddAsync("d885ac0b743c", "Casa", PlugRole.MainMeter, PlugProtocols.ShellyRpc);
+        var main = await rig.AddAsync("aabbccddee00", "Casa", PlugRole.MainMeter, PlugProtocols.ShellyRpc);
         var svc = rig.Service();
         await svc.RunOnceAsync(CancellationToken.None);   // resolves the main meter, nothing stored to backfill
         svc.MainMeterId.Should().Be(main);
@@ -384,7 +449,7 @@ public class NilmServiceTests
     public async Task NoisyPlug_MoreThanTwentyMatchesInAnHour_IsExcludedFromLearning()
     {
         using var rig = new Rig();
-        var main = await rig.AddAsync("d885ac0b743c", "Casa", PlugRole.MainMeter, PlugProtocols.ShellyRpc);
+        var main = await rig.AddAsync("aabbccddee00", "Casa", PlugRole.MainMeter, PlugProtocols.ShellyRpc);
         var ups = await rig.AddAsync("aabbccddee02", "Ups Birou", PlugRole.Plug, PlugProtocols.Legacy);
         bool On(int t) => t / 60 % 2 == 1;   // +40 W every other minute, for 50 minutes
         using (var ctx = rig.Db.CreateContext())
@@ -418,7 +483,7 @@ public class NilmServiceTests
     public async Task RunWithoutSwitchOff_ClosedAfterSixHoursAsUncertain_NoEnergyAnywhere()
     {
         using var rig = new Rig();
-        var main = await rig.AddAsync("d885ac0b743c", "Casa", PlugRole.MainMeter, PlugProtocols.ShellyRpc);
+        var main = await rig.AddAsync("aabbccddee00", "Casa", PlugRole.MainMeter, PlugProtocols.ShellyRpc);
         var svc = rig.Service();
         await svc.RunOnceAsync(CancellationToken.None);
         for (var t = 0; t < 40; t++)
@@ -444,7 +509,7 @@ public class NilmServiceTests
     public async Task ExcludingAPlug_KeepsTheSignaturesAlreadyLinkedToIt()
     {
         using var rig = new Rig();
-        var main = await rig.AddAsync("d885ac0b743c", "Casa", PlugRole.MainMeter, PlugProtocols.ShellyRpc);
+        var main = await rig.AddAsync("aabbccddee00", "Casa", PlugRole.MainMeter, PlugProtocols.ShellyRpc);
         var fridge = await rig.AddAsync("aabbccddee01", "Frigider", PlugRole.Plug, PlugProtocols.Legacy);
         await SeedAsync(rig, main, fridge);
         rig.Now = T0.AddMinutes(31);
@@ -484,7 +549,7 @@ public class NilmServiceTests
     public async Task Nightly_Reclusters_ThreeAppliancesThreeSignatures_RunsRebuilt_ClassifierTrained()
     {
         using var rig = new Rig(ml: true);
-        var main = await rig.AddAsync("d885ac0b743c", "Casa", PlugRole.MainMeter, PlugProtocols.ShellyRpc);
+        var main = await rig.AddAsync("aabbccddee00", "Casa", PlugRole.MainMeter, PlugProtocols.ShellyRpc);
         await SeedEventsAsync(rig, main);
         var svc = rig.Service();
         await svc.RunOnceAsync(CancellationToken.None);   // load state
@@ -562,7 +627,7 @@ public class NilmServiceTests
     public async Task UserActions_LabelEvent_Rename_Category_Hide_Merge_Split()
     {
         using var rig = new Rig();
-        var main = await rig.AddAsync("d885ac0b743c", "Casa", PlugRole.MainMeter, PlugProtocols.ShellyRpc);
+        var main = await rig.AddAsync("aabbccddee00", "Casa", PlugRole.MainMeter, PlugProtocols.ShellyRpc);
         await SeedEventsAsync(rig, main);
         var svc = rig.Service();
         await svc.RunOnceAsync(CancellationToken.None);
@@ -652,7 +717,7 @@ public class NilmServiceTests
     public async Task Overview_ByDefault_ListsFrequentNamedOrPossibleSignatures_LargestSevenDayEnergyFirst()
     {
         using var rig = new Rig();
-        var main = await rig.AddAsync("d885ac0b743c", "Casa", PlugRole.MainMeter, PlugProtocols.ShellyRpc);
+        var main = await rig.AddAsync("aabbccddee00", "Casa", PlugRole.MainMeter, PlugProtocols.ShellyRpc);
         var fridge = await rig.AddAsync("aabbccddee01", "Frigider", PlugRole.Plug, PlugProtocols.Legacy);
         var ids = await SeedSignaturesAsync(rig, main, fridge);
         var svc = rig.Service();
@@ -679,7 +744,7 @@ public class NilmServiceTests
     public async Task CleanRare_DeletesOnlyOldRareSignatures_TheirEventsStayUnlinked()
     {
         using var rig = new Rig();
-        var main = await rig.AddAsync("d885ac0b743c", "Casa", PlugRole.MainMeter, PlugProtocols.ShellyRpc);
+        var main = await rig.AddAsync("aabbccddee00", "Casa", PlugRole.MainMeter, PlugProtocols.ShellyRpc);
         var fridge = await rig.AddAsync("aabbccddee01", "Frigider", PlugRole.Plug, PlugProtocols.Legacy);
         var ids = await SeedSignaturesAsync(rig, main, fridge);
         var svc = rig.Service();
@@ -701,7 +766,7 @@ public class NilmServiceTests
     public async Task Disabled_NothingIsProcessed()
     {
         using var rig = new Rig();
-        var main = await rig.AddAsync("d885ac0b743c", "Casa", PlugRole.MainMeter, PlugProtocols.ShellyRpc);
+        var main = await rig.AddAsync("aabbccddee00", "Casa", PlugRole.MainMeter, PlugProtocols.ShellyRpc);
         var fridge = await rig.AddAsync("aabbccddee01", "Frigider", PlugRole.Plug, PlugProtocols.Legacy);
         await SeedAsync(rig, main, fridge);
         await rig.Settings.SaveAsync(new KasaSettingsUpdate(true, 5, "", true, "", null, false, NilmEnabled: false), CancellationToken.None);

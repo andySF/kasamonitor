@@ -7,7 +7,7 @@ plugs and energy meters (e.g. Shelly EM Gen3, local JSON-RPC; the only write is 
 with SQLite, a web UI on port 8910 and a Prometheus `/metrics` endpoint. An optional Prometheus + Grafana stack
 with a ready-made dashboard and alert rules is included.
 
-Version: **0.8.4** (`Directory.Build.props`). Docker image: `duobit/kasamonitor`.
+Version: **0.8.5** (`Directory.Build.props`). Docker image: `duobit/kasamonitor`.
 
 ## Quick start
 
@@ -51,6 +51,10 @@ TP-Link (Tapo app) account in `/settings` and press **Scanează acum** on `/plug
 - **Gas boiler** (`/centrala`, menu „Centrală”): a Viessmann boiler through the ViCare cloud API: burner, modulation,
   temperatures, hot water, a burner timeline (heating vs hot water, inferred), messages, gas per day for hot water vs heating with cost, raw features. See
   [Gas boiler (Viessmann ViCare)](#gas-boiler-viessmann-vicare).
+- **Miele appliances** (`/aparate`, menu „Aparate”): washing machine and tumble dryer through the Miele 3rd Party API
+  (OAuth, one SSE stream): status, program, phase, remaining time, temperature/spin, door, the appliance's own energy
+  and water, program cycles with their phases, the linked plug's energy per cycle and cost, `miele_*` metrics, and
+  ground truth for the appliance detection. Read-only. See [Miele appliances](#miele-appliances).
 - **Appliance detection (NILM)** (`/consumatori`, menu „Consumatori”): switch-on/off events of the appliances found in
   the main meter's 1-second power, grouped into signatures (one per appliance), labelled automatically from the plugs,
   by you, or by a nightly ML.NET classifier; runs, energy per day, „unidentified” energy; cards „Acum pornite” and
@@ -59,7 +63,7 @@ TP-Link (Tapo app) account in `/settings` and press **Scanează acum** on `/plug
   the house) and „Rapoarte” on `/centrala` (gas, boiler electricity, heat produced), per day (hours), week, month
   (days) or year (months), with ◀ ▶ navigation, the change against the previous period and the cost. See
   [Reports](#reports-history-casă-and-centrala-rapoarte).
-- **Version in the menu**: „v0.8.4” at the right of the navigation bar; the tooltip shows the commit and the build time.
+- **Version in the menu**: „v0.8.5” at the right of the navigation bar; the tooltip shows the commit and the build time.
 - **Browser errors in the server log**: JavaScript errors and the Blazor error banner are reported to
   `POST /api/client-error` and logged at Warning (category `KasaMonitor.ClientErrors`), so `docker logs` shows them.
 - **HTTP API for the appliance detection** (`/api/nilm/*`, LAN only): list, sheet, label, merge, add to, hide, regroup,
@@ -106,6 +110,9 @@ not been saved from `/settings`.
 | Gas calorific factor (kWh / m³) | `KasaMonitor__GasKwhPerM3` | `10.55` | converts the boiler's m³ to kWh |
 | Gas unit fallback | `KasaMonitor__GasUnit` | `m3` | `m3` or `kWh`; only used when the API sends a gas value without `unit` |
 | Keep boiler readings (days) | `KasaMonitor__HeatingReadingsRetentionDays` | `0` = unlimited | `HeatingReadings` older than this are deleted once a day; daily gas history is never deleted |
+| Miele Client ID | `KasaMonitor__MieleClientId` | — | client of developer.miele.com; the OAuth tokens come from „Conectează Miele” (`/aparate`) and are stored encrypted |
+| — (Miele client secret file) | `KasaMonitor__MieleClientSecretFile` | `/run/secrets/miele-client.secret` | file with the client secret, read once at startup; never stored in the database, shown or logged ([Miele appliances](#miele-appliances)) |
+| — (Miele client secret) | `KasaMonitor__MieleClientSecret` | — | alternative to the file (wins when set); prefer the file |
 | Boiler time zone | `KasaMonitor__BoilerTimeZone` | `Europe/Berlin` | IANA zone of the boiler's day: its „today” counters reset at midnight there (Viessmann: Central European Time, 00:00 CET/CEST = 01:00 Romanian time); every daily attribution of the boiler's gas, electricity and heat uses it |
 | — | `KasaMonitor__DbPath` | `/data/kasa.db` (image) | |
 | — | `KasaMonitor__NilmApiToken` | — | optional; when set, every `/api/nilm/*` route needs the header `X-Api-Key` with this value. Set it before exposing KasaMonitor outside the LAN ([HTTP API (LAN)](#http-api-lan)); read per request |
@@ -593,6 +600,108 @@ sum(heating_heat_production_kwh{period="lastmonth"}) / (sum(heating_gas_consumpt
 The Grafana dashboard `kasamonitor` has a row **Centrală**: burner, modulation, gas today (hot water vs heating),
 online/API calls, temperatures, modulation over time and gas per day for 30 days (stacked bars).
 
+## Miele appliances
+
+KasaMonitor reads Miele appliances (washing machine, tumble dryer, washer-dryer; any appliance of the account is
+listed) through the **Miele 3rd Party API** (developer.miele.com). Read-only in 0.8.5: no program is started or
+stopped (scope `openid mcs_thirdparty_read`; writing needs `mcs_thirdparty_write`, a later version).
+
+**One-time setup**
+
+1. Register at <https://developer.miele.com/get-involved> (application name + e-mail): you get a Client ID and a
+   Client Secret. One credential pair per e-mail address; registering again invalidates the old pair. Personal,
+   non-commercial use only.
+2. Put the Client Secret alone in a file and mount it read-only into the container at
+   `/run/secrets/miele-client.secret` (another path: `KasaMonitor__MieleClientSecretFile`; or, less safe,
+   `KasaMonitor__MieleClientSecret`). It is read once at startup, never stored in the database, shown or logged. The
+   compose lines are in `deploy/README.md` (*Miele client secret*).
+3. `/settings` → *Miele*: paste the Client ID, save. The card shows whether the secret was loaded and from where.
+4. Open KasaMonitor at the address you use (the redirect URI is built from it: `{scheme}://{host}/miele/callback`,
+   e.g. `http://192.168.254.2:8910/miele/callback`) → `/aparate` → **Conectează Miele**. KasaMonitor redirects to the
+   new Miele OAuth provider (`auth.domestic.miele-iot.com`, authorization code with the client secret, no PKCE, random
+   `state` valid 10 minutes, single use, tied to the browser by the HttpOnly cookie `miele_oauth`). Log in with the
+   Miele account (country: the Miele subsidiary of the account, e.g. Romania) and **tick the appliances** on the consent
+   page: only those are visible. The developer portal has no redirect-URI field; Miele only requires the exchange to
+   use the same URI as the authorization.
+
+**Tokens.** Access and refresh token are stored encrypted (DataProtection, like the TP-Link password). The access
+token is refreshed when 10 % of its lifetime (`expires_in` of the answer; the spec's example is 30 days) is left;
+every refresh returns a new refresh token, which replaces the old one. Miele limits the tokens per client and
+customer (too many can deactivate the client), so KasaMonitor never re-authorizes on its own: a refused refresh
+(`invalid_grant` …) marks the account disconnected („Reconectează”, with the reason) and is retried at most once an
+hour; a temporary failure (5xx, 503 limit, network) keeps using the access token while it is valid.
+**Deconectează** calls `POST https://api.mcs3.miele.com/thirdparty/logout` and clears the tokens. Changing the Client
+ID clears them too.
+
+**Reading.** One SSE subscription for all appliances, `GET https://api.mcs3.miele.com/v1/devices/all/events`
+(`Accept: text/event-stream`), preceded at every (re)connection by one full `GET /v1/devices`. The event names are not
+documented consistently (docs: PING / IDENT / ACTION; the wire, as read by pymiele: `ping` / `devices` / `actions`):
+both are accepted, any case, and a nameless event is classified by its data. No line for 60 s (PING comes after
+20 s of silence) = dead connection. Reconnection waits 5 s, 10 s, 20 s … at most 5 minutes; after 3 failed streams
+in a row KasaMonitor polls `GET /v1/devices` every 60 s until a stream works again. The stream is reopened when the
+token is due for refresh. An API 401 triggers one forced refresh and one retry. No other periodic call. The labels
+`value_localized` come in English (Romanian is not among the API languages).
+
+**What is stored**
+
+- `MieleDevices`: one row per appliance (Id = Miele deviceId, type, technical type/model, the app's name, an alias you
+  can edit, the plug that feeds it, archived, last seen).
+- `MieleStateSnapshots`: the state (status, program type and program, phase raw + text, remaining / elapsed / start
+  time, target temperature, spin, drying step, door, failure/info signals, ecoFeedback energy/water and forecasts,
+  remote-control flags) on every change, and at most every 5 minutes otherwise.
+- `MieleCycles`: one row per program run: it starts when the status turns *Running* (5) and ends at *End programmed*
+  (7), *Idle* (10) or *Off* (1), or 30 minutes after the last *Running* (pause, failure, interrupted, not connected).
+  It keeps the program, the phases as `[{phaseRaw, phaseText, fromTs, toTs}]`, the highest `ecoFeedback` energy and
+  water seen during the run (the appliance's estimate; the counters reset when the program ends), the energy the linked
+  plug measured over the run (live minute aggregates, else the 10 s polls) and the end reason. An open cycle survives a
+  restart.
+
+**Texts.** Status and appliance type follow the official enums. **Program phases are not documented by Miele**: the
+numbers → names come from the community (Home Assistant's `miele` integration, e.g. washing machine 260/11004 main
+wash, 261/11005 rinse, 265 drain, 266/11010 spin; tumble dryer 514/11018 drying …) and differ between appliance
+generations (the spec's own example shows phase 1795 „Main wash”, in no list). An unknown phase is shown with the
+API's `value_localized`, else „faza <raw>”. Program names are the API's `value_localized`.
+
+**Page `/aparate`** (menu „Aparate”): the connection (stream / polling, last event, last error, Conectează /
+Deconectează); per appliance a card with alias, model, status (coloured), program, phase (with the load it usually
+switches on: heating element in pre-wash / main wash, motor in the spin, pump in the drain — informative), remaining
+time with a progress bar, target temperature / spin, door, the appliance's energy and water so far and the forecasts
+(relative 0–100 %), the current cycle as a coloured phase band, and the plug that feeds it (selector) with its power
+now; then „Istoric cicluri” per appliance: start, duration, program, phases band, energy by the appliance vs by the
+plug, water, cost (the plug's energy when linked, else the appliance's, at the tariff of `/settings`) and end reason.
+
+**Ground truth for the appliance detection.** For an appliance with a linked plug, a main-meter event that the plug
+already confirmed (the plug's level changed by the same ΔP, `LabelPlugId`) while the appliance was *Running* is
+labelled `„<alias> · <phase>”` (source „din priză”, not the user); its signature, if still anonymous
+(„Necunoscut #n”), takes that name (source *plug*) and keeps it when the plug rule later links it. Never for an event
+without the plug's confirmation: an appliance running does not prove that a step of the house meter is it.
+
+**Metrics** (`/metrics`, labels `device` = alias, `type` = `washing_machine` | `tumble_dryer` | `washer_dryer` | …;
+the serial is never a label):
+
+| Metric | Type | Notes |
+|---|---|---|
+| `miele_online` | gauge | 1 = connected to Miele (status ≠ 255) and read recently |
+| `miele_status_info{status}` | gauge | 1 for the current status (`running`, `end_programmed`, `off`, …) |
+| `miele_program_phase_info{phase}` | gauge | 1 for the current phase (text) |
+| `miele_remaining_seconds`, `miele_elapsed_seconds` | gauge | program times |
+| `miele_target_temperature_c`, `miele_spin_rpm` | gauge | program settings |
+| `miele_eco_energy_kwh`, `miele_eco_water_l` | gauge | the running program so far (ecoFeedback; reset at the end) |
+| `miele_eco_energy_forecast_ratio`, `miele_eco_water_forecast_ratio` | gauge | forecast of the selected program, relative 0..1 (not kWh / litres) |
+| `miele_cycles_total` | counter | completed cycles |
+| `miele_last_cycle_energy_kwh`, `miele_last_cycle_water_l` | gauge | last completed cycle (appliance's values) |
+| `miele_door_open` | gauge | 0/1 |
+| `miele_connected` | gauge | no labels; 1 = SSE stream open |
+
+The two forecast metrics are **fractions from 0 to 1** (`ecoFeedback.energyForecast` / `waterForecast`: the selected
+program's expected use relative to the appliance's range, as the spec defines them), not kWh or litres; `/aparate`
+shows them as percentages. The consumption so far (`miele_eco_energy_kwh`, `miele_eco_water_l`) is in kWh and litres.
+
+```promql
+miele_status_info{status="running"} == 1          # what runs now
+increase(miele_cycles_total[7d])                   # cycles per week
+```
+
 ## Reports (`/history` „Casă” and `/centrala` „Rapoarte”)
 
 Both use one period selector, as in the ViCare app: **Zi** (bars per hour), **Săptămână** (Monday–Sunday, per day),
@@ -863,6 +972,7 @@ curl -s "$K/api/nilm/events?from=2026-11-02T08:00:00Z&to=2026-11-02T09:00:00Z&mi
 | Live minute aggregates | `LiveMinuteAggregates` | 1,440 rows per streamed channel per day | never |
 | Relay commands | `RelayCommands` | one row per command | never |
 | Appliance events, signatures, runs | `MeterEvents`, `ApplianceSignatures`, `ApplianceRuns` | one row per event (≥ 30 W step of the house) / appliance / run | events and finished runs after 365 days (nightly); signatures never |
+| Miele appliances, state snapshots, cycles | `MieleDevices`, `MieleStateSnapshots`, `MieleCycles` | a snapshot on every change of the state (≈ one per minute while a program runs, as the remaining time changes) and at most every 5 minutes otherwise; one row per program cycle | never |
 | Minute aggregates | `OneMinuteAggregates` | ≈ 120 bytes per plug-minute ≈ 65 MB per plug per year | never |
 | Daily / monthly energy | `DailyEnergy`, `MonthlyEnergy` | one row per plug per day / month | never |
 
@@ -885,6 +995,10 @@ a retention. SQLite does not shrink the file after deletions (the space is reuse
   `POST /api/nilm/*` (`NILM API: mark <name> (category <c>) at <time> from <ip>: Matched|Pending|NotFound…`); `NILM: pending
   mark <name> labelled the event <id> …` and `NILM: mark <name> of <time> expired without an event …` — Information;
   `NILM API: POST <path> refused from <ip> (not a LAN address)` — Warning.
+- `Miele account connected …`, `Miele access token refreshed (… refresh token rotated)`, `Miele: SSE stream open`,
+  `Miele <alias>: cycle started (<program>)` / `cycle ended (<reason>, <min> min, API <kWh> kWh, plug <Wh> Wh)` —
+  Information; `Miele: SSE failed 3 times in a row …; polling GET /devices every 00:01:00` and `Miele refresh refused,
+  account marked disconnected` — Warning. Tokens, codes and the client secret are never logged.
 
 ## Build and test
 
@@ -898,15 +1012,15 @@ dotnet test KasaMonitor.sln
 From the repository root, with Docker running and `docker login` done once:
 
 ```powershell
-.\deploy\build-and-push.ps1 -Version 0.8.4          # build :0.8.4 + :latest and push both
-.\deploy\build-and-push.ps1 -Version 0.8.4 -NoPush  # local build only
+.\deploy\build-and-push.ps1 -Version 0.8.5          # build :0.8.5 + :latest and push both
+.\deploy\build-and-push.ps1 -Version 0.8.5 -NoPush  # local build only
 ```
 
 or manually:
 
 ```bash
-docker build -t duobit/kasamonitor:0.8.2 -t duobit/kasamonitor:latest -f deploy/Dockerfile .
-docker push duobit/kasamonitor:0.8.2
+docker build -t duobit/kasamonitor:0.8.5 -t duobit/kasamonitor:latest -f deploy/Dockerfile .
+docker push duobit/kasamonitor:0.8.5
 docker push duobit/kasamonitor:latest
 ```
 

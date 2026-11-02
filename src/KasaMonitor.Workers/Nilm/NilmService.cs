@@ -183,6 +183,7 @@ public sealed class NilmService : BackgroundService
     private readonly string _modelPath;
     private readonly Func<DateTimeOffset> _clock;
     private readonly TimeZoneInfo _tz;
+    private readonly INilmGroundTruth? _groundTruth;
 
     private readonly MeterEventDetector _detector = new();
     private readonly ConcurrentQueue<LiveSample> _queue = new();
@@ -216,8 +217,10 @@ public sealed class NilmService : BackgroundService
     private int _queued;
 
     public NilmService(IServiceScopeFactory scopes, IKasaSettingsService settings, ILiveStreamBroadcaster live, IPlugStateBroadcaster states,
-        ILogger<NilmService> log, string modelPath, Func<DateTimeOffset>? clock = null, TimeZoneInfo? tz = null)
+        ILogger<NilmService> log, string modelPath, Func<DateTimeOffset>? clock = null, TimeZoneInfo? tz = null,
+        INilmGroundTruth? groundTruth = null)
     {
+        _groundTruth = groundTruth;
         _scopes = scopes;
         _settings = settings;
         _live = live;
@@ -626,12 +629,21 @@ public sealed class NilmService : BackgroundService
         var repo = sp.GetRequiredService<INilmRepository>();
         var prepared = new List<MeterEvent>(batch.Count);
         var created = new List<long>();
+        var truths = new Dictionary<(Guid PlugId, DateTimeOffset Ts), string>();
         for (var i = 0; i < batch.Count; i++)
         {
             var e = batch[i];
             var neighbours = NeighboursOf(e, batch, later);
             if (PlugEventMatcher.Match(e.TsUtc, e.DeltaP, plugsFor(e), _usedChanges, neighbours) is { } m && await RegisterMatchAsync(m.PlugId, e.TsUtc, ct))
+            {
                 e = e with { Label = m.Alias, Source = EventLabelSource.AutoPlug, LabelPlugId = m.PlugId };
+                // Ground truth (e.g. a Miele appliance in its main wash): only for an event the plug already confirmed.
+                if (GroundTruthLabel(m.PlugId, e.TsUtc) is { } truth)
+                {
+                    e = e with { Label = truth };
+                    truths[(e.PlugId, e.TsUtc)] = truth;
+                }
+            }
             if (e.Source == EventLabelSource.None && _current.MlEnabled && Classifier.Predict(e) is { } p
                 && p.Probability >= NilmClassifier.MinProbability && ModelInfo?.NearClass(e, p.Label) == true)
                 e = e with { Label = p.Label, Source = EventLabelSource.Model };
@@ -677,6 +689,8 @@ public sealed class NilmService : BackgroundService
             foreach (var c in change.Closed) runs[c.StartEventId] = c;
         }
         await SaveRunsAsync(runs.Values.ToList(), ct, sp);
+        // Before the plug rule: an anonymous signature named by the ground truth keeps that name when it gets linked.
+        await NameFromGroundTruthAsync(repo, stored, truths, ct);
         await RefreshSignaturesAsync(repo, stored.Select(e => e.SignatureId!.Value).Distinct().ToList(), ct);
         await ConsumeMarksAsync(sp, repo, stored, ct);
     }
@@ -768,6 +782,46 @@ public sealed class NilmService : BackgroundService
         return run with { EstimatedWh = ApplianceEnergy.Corrected(nominal, mean, start.PowerBeforeW, end - run.StartUtc) };
     }
 
+    private string? GroundTruthLabel(Guid plugId, DateTimeOffset tsUtc)
+    {
+        if (_groundTruth is null) return null;
+        try
+        {
+            var label = _groundTruth.LabelFor(plugId, tsUtc);
+            return string.IsNullOrWhiteSpace(label) ? null : SignatureNaming.CleanName(label);
+        }
+        catch (Exception ex)
+        {
+            _log.LogDebug(ex, "NILM: ground truth failed");
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// An anonymous signature (found by clustering, never named) of an event labelled by the ground truth takes that
+    /// label as its name, with <see cref="SignatureLabelSource.Plug"/> (the plug confirmed the event); the plug link
+    /// itself still follows the plug rule.
+    /// </summary>
+    private async Task NameFromGroundTruthAsync(INilmRepository repo, IReadOnlyList<MeterEvent> stored,
+        IReadOnlyDictionary<(Guid PlugId, DateTimeOffset Ts), string> truths, CancellationToken ct)
+    {
+        if (truths.Count == 0) return;
+        foreach (var e in stored)
+        {
+            if (e.SignatureId is not { } sid || !truths.TryGetValue((e.PlugId, e.TsUtc), out var name)) continue;
+            var i = _signatures.FindIndex(s => s.Id == sid);
+            if (i < 0) continue;
+            var sig = _signatures[i];
+            if (sig.LabelSource != SignatureLabelSource.Cluster
+                || sig.Name.Length > 0 && !string.Equals(sig.Name, SignatureNaming.Unknown(sig.Id), StringComparison.Ordinal))
+                continue;
+            var named = sig with { Name = name, LabelSource = SignatureLabelSource.Plug };
+            await repo.UpdateSignatureAsync(named, ct);
+            _signatures[i] = named;
+            _log.LogInformation("NILM: signature #{Id} named from the ground truth: {Name}", sig.Id, name);
+        }
+    }
+
     /// <summary>
     /// Recomputes the means of the given signatures (SQL aggregates over the window) and applies the plug rule: when
     /// ≥ 60 % of a signature's events were labelled by the same (not excluded) plug, the signature is measured by that
@@ -787,7 +841,9 @@ public sealed class NilmService : BackgroundService
                 && SignatureNaming.LinksToPlug(share.TopPlugEvents, share.Events))
             {
                 var alias = _plugs.FirstOrDefault(p => p.Id == plugId)?.Alias ?? share.TopLabel ?? sig.Name;
+                // A name from the ground truth („<appliance> · <phase>”) is more precise than the plug's alias: kept.
                 named = sig.LabelSource == SignatureLabelSource.User
+                        || sig.LabelSource == SignatureLabelSource.Plug && KasaMonitor.Core.Miele.MieleGroundTruthRule.IsGroundTruthName(sig.Name)
                     ? sig with { PlugId = plugId }
                     : sig with { PlugId = plugId, Name = alias, LabelSource = SignatureLabelSource.Plug };
             }

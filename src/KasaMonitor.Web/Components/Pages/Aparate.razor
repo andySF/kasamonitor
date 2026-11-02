@@ -1,0 +1,423 @@
+@page "/aparate"
+@rendermode InteractiveServer
+@using KasaMonitor.Workers
+@using KasaMonitor.Core.Miele
+@using KasaMonitor.Web.Ui
+@inject IServiceScopeFactory ScopeFactory
+@inject IMieleSettingsService MieleSettings
+@inject MieleAuthService MieleAuth
+@inject MieleState State
+@inject MieleRecorder Recorder
+@inject IKasaSettingsService KasaSettings
+@inject ILiveStreamBroadcaster Live
+@inject IPlugStateBroadcaster PlugStates
+@inject NavigationManager Nav
+@implements IDisposable
+
+<PageTitle>KasaMonitor — Aparate</PageTitle>
+
+<div class="d-flex flex-wrap align-items-center justify-content-between gap-2 mb-3">
+    <h1 class="h3 mb-0"><i class="bi bi-water me-2"></i>Aparate Miele</h1>
+    <div class="d-flex flex-wrap align-items-center gap-2 small text-secondary">
+        <span class="badge @(State.StreamConnected ? "text-bg-success" : State.Mode == MieleStreamMode.Polling ? "text-bg-warning" : "text-bg-secondary")">
+            @(State.StreamConnected ? "flux SSE conectat" : State.Mode == MieleStreamMode.Polling ? "citire la 60 s (SSE căzut)" : "neconectat")
+        </span>
+        @if (State.LastEventUtc is { } le)
+        {
+            <span title="@UiFormat.FullLocal(le)">ultimul eveniment: @State.LastEventName, @UiFormat.RelativeRo(le, DateTimeOffset.UtcNow)</span>
+        }
+    </div>
+</div>
+
+@if (_loadError is { } loadErr)
+{
+    <div class="alert alert-warning">Datele aparatelor nu au putut fi încărcate: @loadErr</div>
+}
+
+@if (_authMessage is { } am)
+{
+    <div class="alert @(am.Ok ? "alert-success" : "alert-warning")">@am.Text</div>
+}
+
+@if (_settings is null)
+{
+    <p class="text-secondary"><span class="spinner-border spinner-border-sm me-2"></span>Se încarcă…</p>
+}
+else
+{
+    <div class="card mb-3">
+        <div class="card-body small">
+            <div class="d-flex flex-wrap align-items-center gap-3">
+                <div>
+                    <b>Cont Miele:</b>
+                    @if (_settings.IsConnected) { <span class="badge text-bg-success">conectat</span> }
+                    else { <span class="badge text-bg-secondary">deconectat</span> }
+                </div>
+                @if (State.ConnectedSinceUtc is { } since)
+                {
+                    <div class="text-secondary" title="@UiFormat.FullLocal(since)">flux deschis @UiFormat.RelativeRo(since, DateTimeOffset.UtcNow)</div>
+                }
+                @if (State.LastReadUtc is { } lr)
+                {
+                    <div class="text-secondary" title="@UiFormat.FullLocal(lr)">ultima citire a aparatelor: @UiFormat.RelativeRo(lr, DateTimeOffset.UtcNow)</div>
+                }
+                <div class="ms-auto">
+                    @if (_settings.CanConnect)
+                    {
+                        <a class="btn btn-primary btn-sm" href="@MieleApi.ConnectPath"><i class="bi bi-box-arrow-in-right me-1"></i>@(_settings.Token is null ? "Conectează Miele" : "Reconectează")</a>
+                    }
+                    else
+                    {
+                        <a class="btn btn-outline-primary btn-sm" href="/settings"><i class="bi bi-gear me-1"></i>Setări → Miele</a>
+                    }
+                    @if (_settings.Token is not null)
+                    {
+                        <button class="btn btn-outline-secondary btn-sm ms-1" @onclick="DisconnectAsync"><i class="bi bi-x-circle me-1"></i>Deconectează</button>
+                    }
+                </div>
+            </div>
+            @if ((_settings.AuthError ?? State.Status) is { } why)
+            {
+                <div class="mt-2 text-danger">@why</div>
+            }
+            @if (State.LastError is { } err && State.LastErrorUtc is { } errAt)
+            {
+                <div class="mt-1 text-warning-emphasis" title="@UiFormat.FullLocal(errAt)">Ultima eroare (@UiFormat.RelativeRo(errAt, DateTimeOffset.UtcNow)): @err</div>
+            }
+            @if (!_settings.CanConnect || _settings.Token is null)
+            {
+                <ol class="mt-2 mb-0">
+                    <li>Pe <a href="https://developer.miele.com/get-involved" target="_blank" rel="noopener">developer.miele.com</a> obții Client ID și Client Secret (un set per e-mail).</li>
+                    <li>Secretul se montează în container ca fișier (<code>@MieleApi.DefaultClientSecretFile</code>), Client ID-ul se pune în <a href="/settings">Setări → Miele</a>.</li>
+                    <li>Deschide KasaMonitor la adresa folosită de obicei (redirect URI = <code>@CallbackExample</code>), apasă „Conectează Miele”, autentifică-te cu contul Miele
+                        (țara: România) și bifează aparatele la consimțământ.</li>
+                </ol>
+            }
+        </div>
+    </div>
+
+    @if (_appliances.Count == 0 && _settings.Token is not null)
+    {
+        <div class="alert alert-secondary">Niciun aparat încă. Aparatele apar după prima citire (aparatele trebuie bifate la consimțământul Miele).</div>
+    }
+
+    <div class="row g-3">
+        @foreach (var a in _appliances)
+        {
+            var v = a.Values;
+            var online = State.IsOnline(a, DateTimeOffset.UtcNow);
+            var edit = Edit(a.Device);
+            <div class="col-xl-6">
+                <div class="card h-100 border-start border-4 @StatusBorder(v)">
+                    <div class="card-body">
+                        <div class="d-flex flex-wrap align-items-start justify-content-between gap-2 mb-2">
+                            <div>
+                                <h2 class="h5 mb-0">@a.Device.Alias</h2>
+                                <div class="small text-secondary">@a.Device.TypeText@(a.Device.TechType.Length > 0 ? " · " + a.Device.TechType : "")</div>
+                            </div>
+                            <div class="text-end">
+                                <span class="badge @StatusBadge(v) fs-6">@(v?.StatusText ?? "—")</span>
+                                <div class="small mt-1"><span class="badge @(online ? "text-bg-success" : "text-bg-danger")">@(online ? "online" : "offline")</span></div>
+                            </div>
+                        </div>
+
+                        <div class="row g-2 small mb-2">
+                            <div class="col-sm-6"><span class="text-secondary">Program:</span> @(v?.ProgramIdText ?? "—")@(v?.ProgramTypeText is { } pt ? " (" + pt + ")" : "")</div>
+                            <div class="col-sm-6">
+                                <span class="text-secondary">Fază:</span> @(v?.PhaseText ?? "—")
+                                @if (MieleTexts.ExpectedLoad(v?.PhaseText) is { } load) { <span class="text-secondary"> · @load</span> }
+                            </div>
+                            <div class="col-sm-6"><span class="text-secondary">Temperatură țintă:</span> @(v?.TargetTempC is { } tt ? tt.ToString("0") + " °C" : "—")</div>
+                            <div class="col-sm-6"><span class="text-secondary">Turație:</span> @(v?.SpinRpm is { } rpm ? rpm + " rpm" : "—")</div>
+                            <div class="col-sm-6"><span class="text-secondary">Ușă:</span> @(v?.DoorOpen is { } door ? (door ? "deschisă" : "închisă") : "—")</div>
+                            <div class="col-sm-6">
+                                <span class="text-secondary">Semnale:</span>
+                                @(v?.SignalFailure == true ? "defecțiune" : v?.SignalInfo == true ? "informare" : "—")
+                                @if (v?.RemoteMobileStart == true) { <span class="badge text-bg-light ms-1">MobileStart</span> }
+                            </div>
+                        </div>
+
+                        @if (v?.RemainingSec is { } rem && (v.IsRunning || rem > 0))
+                        {
+                            var pct = Progress(v);
+                            <div class="small mb-1">
+                                Rămas: <b>@UiFormat.DurationRo(rem)</b>
+                                @if (v.ElapsedSec is { } el) { <span class="text-secondary"> · trecut @UiFormat.DurationRo(el)</span> }
+                                @if (rem > 0) { <span class="text-secondary"> · gata pe la @DateTime.Now.AddSeconds(rem).ToString("HH:mm")</span> }
+                            </div>
+                            <div class="progress mb-2" style="height: .6rem" role="progressbar" aria-valuenow="@pct" aria-valuemin="0" aria-valuemax="100">
+                                <div class="progress-bar @(v.IsRunning ? "progress-bar-striped progress-bar-animated" : "")" style="width: @(pct)%"></div>
+                            </div>
+                        }
+
+                        <div class="small mb-2">
+                            <span class="text-secondary">Consum program (aparat):</span>
+                            @(v?.EcoEnergyKwh is { } ek ? ek.ToString("0.00") + " kWh" : "—"), @(v?.EcoWaterL is { } ew ? ew.ToString("0") + " l" : "—")
+                            <span class="text-secondary"> · prognoză</span>
+                            energie @(v?.EcoEnergyForecast is { } ef ? (ef * 100).ToString("0") + " %" : "—"), apă @(v?.EcoWaterForecast is { } wf ? (wf * 100).ToString("0") + " %" : "—")
+                        </div>
+
+                        @if (a.OpenCycle is { } oc && oc.Phases.Count > 0)
+                        {
+                            <div class="small text-secondary mb-1">Ciclul curent (din @oc.StartUtc.ToLocalTime().ToString("HH:mm")):</div>
+                            @PhaseBand(oc, DateTimeOffset.UtcNow)
+                        }
+
+                        <div class="row g-2 align-items-end small mt-2">
+                            <div class="col-sm-5">
+                                <label class="form-label mb-0" for="alias-@a.Device.Id.GetHashCode()">Alias</label>
+                                <input class="form-control form-control-sm" id="alias-@a.Device.Id.GetHashCode()" @bind="edit.Alias" />
+                            </div>
+                            <div class="col-sm-5">
+                                <label class="form-label mb-0" for="plug-@a.Device.Id.GetHashCode()">Priza care îl alimentează</label>
+                                <select class="form-select form-select-sm" id="plug-@a.Device.Id.GetHashCode()" @bind="edit.PlugId">
+                                    <option value="">— niciuna —</option>
+                                    @foreach (var p in _plugs)
+                                    {
+                                        <option value="@p.Id">@p.Alias</option>
+                                    }
+                                </select>
+                            </div>
+                            <div class="col-sm-2">
+                                <button class="btn btn-outline-primary btn-sm w-100" @onclick="() => SaveDeviceAsync(a.Device.Id)">Salvează</button>
+                            </div>
+                        </div>
+                        <div class="small mt-1 text-secondary">
+                            @if (a.Device.PlugId is { } plug)
+                            {
+                                <span>Priza @PlugAlias(plug) acum: <b>@(PlugPowerW(plug) is { } w ? w.ToString("0") + " W" : "—")</b>. Evenimentele contorului confirmate de priză primesc numele fazei (adevăr de teren NILM).</span>
+                            }
+                            else
+                            {
+                                <span>Fără priză legată: energia măsurată pe ciclu și adevărul de teren NILM lipsesc.</span>
+                            }
+                        </div>
+                        @if (_saveMessage.TryGetValue(a.Device.Id, out var msg)) { <div class="small text-success">@msg</div> }
+                        <div class="small text-secondary mt-1">Cicluri încheiate: @a.CyclesTotal@(a.Device.LastSeenUtc is { } seen ? " · văzut " + UiFormat.RelativeRo(seen, DateTimeOffset.UtcNow) : "")</div>
+                    </div>
+                </div>
+            </div>
+        }
+    </div>
+
+    @foreach (var a in _appliances)
+    {
+        <div class="card mt-3">
+            <div class="card-header fw-semibold">Istoric cicluri — @a.Device.Alias</div>
+            <div class="card-body p-0">
+                @if (!_cycles.TryGetValue(a.Device.Id, out var cycles) || cycles.Count == 0)
+                {
+                    <p class="text-secondary small p-3 mb-0">Niciun ciclu înregistrat încă.</p>
+                }
+                else
+                {
+                    <div class="table-responsive">
+                        <table class="table table-sm align-middle mb-0 small">
+                            <thead>
+                                <tr><th>Început</th><th>Durată</th><th>Program</th><th style="min-width: 14rem">Faze</th><th class="text-end">Energie aparat</th><th class="text-end">Energie priză</th><th class="text-end">Apă</th><th class="text-end">Cost</th><th>Sfârșit</th></tr>
+                            </thead>
+                            <tbody>
+                                @foreach (var c in cycles)
+                                {
+                                    <tr>
+                                        <td class="text-nowrap">@c.StartUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm")</td>
+                                        <td class="text-nowrap">@(c.EndUtc is { } end ? UiFormat.DurationRo((end - c.StartUtc).TotalSeconds) : "în curs")</td>
+                                        <td>@(c.Program ?? "—")</td>
+                                        <td>@PhaseBand(c, DateTimeOffset.UtcNow)</td>
+                                        <td class="text-end text-nowrap">@(c.EnergyKwh is { } e ? e.ToString("0.00") + " kWh" : "—")</td>
+                                        <td class="text-end text-nowrap">@(c.PlugEnergyWh is { } pw ? (pw / 1000).ToString("0.00") + " kWh" : "—")</td>
+                                        <td class="text-end text-nowrap">@(c.WaterL is { } wl ? wl.ToString("0") + " l" : "—")</td>
+                                        <td class="text-end text-nowrap" title="@(c.PlugEnergyWh is not null ? "după priză" : "după aparat")">@Cost(c)</td>
+                                        <td class="text-secondary">@(c.IsOpen ? "—" : MieleEndReasons.Name(c.EndReason))</td>
+                                    </tr>
+                                }
+                            </tbody>
+                        </table>
+                    </div>
+                }
+            </div>
+        </div>
+    }
+    <p class="small text-secondary mt-3">
+        Fazele și numele lor vin dintr-o listă a comunității (Home Assistant), nu din documentația Miele; o fază necunoscută apare cu numele dat de API
+        (în engleză) sau ca „faza &lt;cod&gt;”. Energia „aparat” e calculată de mașină (ecoFeedback), „priză” e măsurată de priza legată pe durata ciclului;
+        costul folosește energia prizei când există și tariful din Setări.
+    </p>
+}
+
+@code {
+    private sealed class DeviceEdit
+    {
+        public string Alias { get; set; } = "";
+        public string PlugId { get; set; } = "";
+    }
+
+    [SupplyParameterFromQuery(Name = "auth")] public string? Auth { get; set; }
+
+    private MieleRuntimeSettings? _settings;
+    private IReadOnlyList<MieleApplianceLive> _appliances = Array.Empty<MieleApplianceLive>();
+    private Dictionary<string, IReadOnlyList<MieleCycle>> _cycles = new();
+    private IReadOnlyList<Plug> _plugs = Array.Empty<Plug>();
+    private readonly Dictionary<string, DeviceEdit> _edits = new();
+    private readonly Dictionary<string, string> _saveMessage = new();
+    private (bool Ok, string Text)? _authMessage;
+    private decimal _tariff;
+    private string? _loadError;
+    private System.Threading.Timer? _timer;
+
+    private string CallbackExample => Nav.BaseUri.TrimEnd('/') + MieleApi.CallbackPath;
+
+    protected override async Task OnInitializedAsync()
+    {
+        _authMessage = Auth switch
+        {
+            "connected" => (true, "Contul Miele e conectat. Prima citire pornește acum."),
+            "denied" => (false, "Autorizarea a fost refuzată sau anulată în pagina Miele."),
+            "exchangefailed" => (false, "Codul de autorizare nu a putut fi schimbat pe token (vezi logul; reia conectarea)."),
+            "notconfigured" => (false, "Setează întâi Client ID-ul Miele și montează secretul clientului (Setări → Miele)."),
+            _ => null,
+        };
+        await LoadAsync();
+        State.Changed += OnStateChanged;
+        _timer = new System.Threading.Timer(_ => InvokeAsync(StateHasChanged), null, 30_000, 30_000);
+    }
+
+    private void OnStateChanged() => InvokeAsync(async () => { await LoadAsync(); StateHasChanged(); });
+
+    private async Task LoadAsync()
+    {
+        try
+        {
+            _settings = await MieleSettings.GetAsync(CancellationToken.None);
+            _appliances = State.Appliances;
+            using var scope = ScopeFactory.CreateScope();
+            var repo = scope.ServiceProvider.GetRequiredService<IMieleRepository>();
+            var cycles = new Dictionary<string, IReadOnlyList<MieleCycle>>();
+            foreach (var a in _appliances) cycles[a.Device.Id] = await repo.ListCyclesAsync(a.Device.Id, 30, CancellationToken.None);
+            _cycles = cycles;
+            if (_plugs.Count == 0)
+                _plugs = (await scope.ServiceProvider.GetRequiredService<IPlugRepository>().ListAllAsync(CancellationToken.None))
+                    .Where(p => !p.IsArchived && p.Role != PlugRole.MainMeter).OrderBy(p => p.Alias, StringComparer.CurrentCultureIgnoreCase).ToList();
+            _tariff = (await KasaSettings.GetAsync(CancellationToken.None)).TariffRonPerKwh;
+            _loadError = null;
+        }
+        catch (Exception ex)
+        {
+            _loadError = ex.Message;
+        }
+    }
+
+    private DeviceEdit Edit(MieleDevice d)
+    {
+        if (!_edits.TryGetValue(d.Id, out var e))
+            _edits[d.Id] = e = new DeviceEdit { Alias = d.Alias, PlugId = d.PlugId?.ToString() ?? "" };
+        return e;
+    }
+
+    private async Task SaveDeviceAsync(string deviceId)
+    {
+        if (!_edits.TryGetValue(deviceId, out var e)) return;
+        try
+        {
+            using (var scope = ScopeFactory.CreateScope())
+            {
+                var repo = scope.ServiceProvider.GetRequiredService<IMieleRepository>();
+                var alias = e.Alias.Trim();
+                if (alias.Length > 0) await repo.SetAliasAsync(deviceId, alias.Length > 64 ? alias[..64] : alias, CancellationToken.None);
+                await repo.SetPlugAsync(deviceId, Guid.TryParse(e.PlugId, out var plug) ? plug : null, CancellationToken.None);
+            }
+            await Recorder.ReloadDeviceAsync(deviceId, CancellationToken.None);
+            _edits.Remove(deviceId);
+            _saveMessage[deviceId] = "Salvat.";
+            await LoadAsync();
+        }
+        catch (Exception ex)
+        {
+            _saveMessage[deviceId] = "Eroare: " + ex.Message;
+        }
+    }
+
+    private async Task DisconnectAsync()
+    {
+        await MieleAuth.LogoutAsync(CancellationToken.None);
+        await LoadAsync();
+    }
+
+    private string PlugAlias(Guid id) => _plugs.FirstOrDefault(p => p.Id == id)?.Alias ?? "(arhivată)";
+
+    private double? PlugPowerW(Guid id) =>
+        Live.Latest(id) is { } s && DateTimeOffset.UtcNow - s.TsUtc < TimeSpan.FromMinutes(2) ? s.PowerW
+        : PlugStates.Snapshot().TryGetValue(id, out var st) && st.LastReading is { } r ? r.PowerMw / 1000.0 : null;
+
+    private string Cost(MieleCycle c)
+    {
+        var kwh = c.PlugEnergyWh is { } wh ? wh / 1000 : c.EnergyKwh;
+        return kwh is { } k ? EnergyFormat.Lei((decimal)k * _tariff) : "—";
+    }
+
+    private static int Progress(MieleStateValues v)
+    {
+        var total = (v.ElapsedSec ?? 0) + (v.RemainingSec ?? 0);
+        return total <= 0 ? 0 : (int)Math.Round(100.0 * (v.ElapsedSec ?? 0) / total);
+    }
+
+    private static string StatusBadge(MieleStateValues? v) => v?.StatusRaw switch
+    {
+        5 => "text-bg-primary",
+        6 or 3 or 4 => "text-bg-info",
+        7 => "text-bg-success",
+        8 or 9 => "text-bg-danger",
+        255 => "text-bg-dark",
+        _ => "text-bg-secondary",
+    };
+
+    private static string StatusBorder(MieleStateValues? v) => v?.StatusRaw switch
+    {
+        5 => "border-primary",
+        7 => "border-success",
+        8 or 9 => "border-danger",
+        _ => "border-secondary",
+    };
+
+    /// <summary>Colour of a phase in the band (heating red, rinse blue, spin purple, drain teal, idle grey, others by hash).</summary>
+    private static string PhaseColor(string text) => text switch
+    {
+        "Prespălare" or "Spălare principală" or "Igienizare" or "Dezinfectare" or "Înmuiere" => "#dc3545",
+        "Clătire" or "Clătiri" or "Oprire la clătire" => "#0d6efd",
+        "Centrifugare" or "Termo-centrifugare" => "#6f42c1",
+        "Evacuare" => "#20c997",
+        "Uscare" or "Uscat normal" or "Uscat extra" or "Uscat normal plus" or "Uscare igienică" => "#fd7e14",
+        "Răcire" or "Răcire confort" or "Răcire de siguranță" => "#0dcaf0",
+        "Anti-șifonare" or "Terminat" or "nu rulează" => "#adb5bd",
+        _ => Palette[(int)((uint)StringComparer.Ordinal.GetHashCode(text) % (uint)Palette.Length)],
+    };
+
+    private static readonly string[] Palette = { "#198754", "#ffc107", "#d63384", "#6610f2", "#795548", "#607d8b" };
+
+    private static RenderFragment PhaseBand(MieleCycle c, DateTimeOffset now) => builder =>
+    {
+        var end = c.EndUtc ?? now;
+        var total = Math.Max(1, (end - c.StartUtc).TotalSeconds);
+        var seq = 0;
+        builder.OpenElement(seq++, "div");
+        builder.AddAttribute(seq++, "class", "d-flex rounded overflow-hidden");
+        builder.AddAttribute(seq++, "style", "height: .9rem; min-width: 10rem");
+        foreach (var p in c.Phases)
+        {
+            var to = p.ToUtc ?? end;
+            var share = Math.Max(0.5, 100.0 * (to - p.FromUtc).TotalSeconds / total);
+            builder.OpenElement(seq++, "div");
+            builder.AddAttribute(seq++, "style", $"width: {share.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture)}%; background: {PhaseColor(p.PhaseText)}");
+            builder.AddAttribute(seq++, "title", $"{p.PhaseText}: {p.FromUtc.ToLocalTime():HH:mm}–{to.ToLocalTime():HH:mm} ({UiFormat.DurationRo((to - p.FromUtc).TotalSeconds)})"
+                + (MieleTexts.ExpectedLoad(p.PhaseText) is { } load ? " · " + load : ""));
+            builder.CloseElement();
+        }
+        builder.CloseElement();
+    };
+
+    public void Dispose()
+    {
+        State.Changed -= OnStateChanged;
+        _timer?.Dispose();
+    }
+}

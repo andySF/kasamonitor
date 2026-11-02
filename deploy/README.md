@@ -33,10 +33,10 @@ stack has no repository directory. Keep `network_mode: host`.
 ## Local build & push to Docker Hub
 
 ```powershell
-docker build -t duobit/kasamonitor:latest -t duobit/kasamonitor:0.8.4 -f deploy/Dockerfile .
+docker build -t duobit/kasamonitor:latest -t duobit/kasamonitor:0.8.5 -f deploy/Dockerfile .
 docker login
 docker push duobit/kasamonitor:latest
-docker push duobit/kasamonitor:0.8.4
+docker push duobit/kasamonitor:0.8.5
 ```
 
 ## Configuration
@@ -55,6 +55,27 @@ the environment variables are only initial values (full list in `../README.md`).
 | `KasaMonitor__ShellyDiscoveryEnabled` | `true` | Shelly Gen2/Gen3 discovery (mDNS `_shelly._tcp`) |
 | `KasaMonitor__ShellyPassword` | — | admin password of Shelly devices with authentication (better: `/settings`) |
 | `KasaMonitor__ShellyProbeHosts` | — | IPs / ranges / CIDR probed with `Shelly.GetDeviceInfo` (mDNS fallback) |
+| `KasaMonitor__MieleClientId` | — | Miele developer client (better: `/settings` → Miele) |
+| `KasaMonitor__MieleClientSecretFile` | `/run/secrets/miele-client.secret` | file with the Miele client secret, read at startup (see below) |
+| `KasaMonitor__MieleClientSecret` | — | alternative to the file; avoid (visible in `docker inspect`) |
+
+### Miele client secret
+
+The Miele client secret is never stored in the database or shown in the UI: mount it read-only as a file. On the QNAP
+stack (Portainer), put the secret alone in `/share/Container/kasamonitor/secrets/miele-client.secret` (owner-only
+permissions, e.g. `chmod 600`) and add to the `kasamonitor` service:
+
+```yaml
+    volumes:
+      - /share/Container/kasamonitor/data:/data
+      - /share/Container/kasamonitor/secrets/miele-client.secret:/run/secrets/miele-client.secret:ro
+```
+
+The default path needs no environment variable; another path goes into `KasaMonitor__MieleClientSecretFile`. The
+file is read once at startup (restart the container after changing it); `/settings` → Miele shows „încărcat” (with
+the source, never the value) or why it is missing. Then set the Client ID there and connect from `/aparate`
+(„Conectează Miele”), with KasaMonitor opened at the address the redirect URI is built from, e.g.
+`http://192.168.254.2:8910` → `http://192.168.254.2:8910/miele/callback`.
 
 ## Troubleshooting
 

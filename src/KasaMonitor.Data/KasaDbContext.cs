@@ -24,6 +24,9 @@ public sealed class KasaDbContext : DbContext
     public DbSet<MeterEventEntity> MeterEvents => Set<MeterEventEntity>();
     public DbSet<ApplianceSignatureEntity> ApplianceSignatures => Set<ApplianceSignatureEntity>();
     public DbSet<ApplianceRunEntity> ApplianceRuns => Set<ApplianceRunEntity>();
+    public DbSet<MieleDeviceEntity> MieleDevices => Set<MieleDeviceEntity>();
+    public DbSet<MieleStateSnapshotEntity> MieleStateSnapshots => Set<MieleStateSnapshotEntity>();
+    public DbSet<MieleCycleEntity> MieleCycles => Set<MieleCycleEntity>();
 
     public KasaDbContext(DbContextOptions<KasaDbContext> options) : base(options) { }
 
@@ -168,6 +171,30 @@ public sealed class KasaDbContext : DbContext
             e.Property(x => x.Id).ValueGeneratedOnAdd();
             e.HasIndex(x => x.SignatureId);
             e.HasIndex(x => x.StartTs);
+            e.HasIndex(x => x.EndTs);
+        });
+
+        // Miele appliances (3rd Party API): devices, state snapshots (on change) and program cycles.
+        mb.Entity<MieleDeviceEntity>(e =>
+        {
+            e.ToTable("MieleDevices");
+            e.HasKey(x => x.Id);
+        });
+
+        mb.Entity<MieleStateSnapshotEntity>(e =>
+        {
+            e.ToTable("MieleStateSnapshots");
+            e.HasKey(x => x.Id);
+            e.Property(x => x.Id).ValueGeneratedOnAdd();
+            e.HasIndex(x => new { x.DeviceId, x.Ts });
+        });
+
+        mb.Entity<MieleCycleEntity>(e =>
+        {
+            e.ToTable("MieleCycles");
+            e.HasKey(x => x.Id);
+            e.Property(x => x.Id).ValueGeneratedOnAdd();
+            e.HasIndex(x => new { x.DeviceId, x.StartTs });
             e.HasIndex(x => x.EndTs);
         });
     }

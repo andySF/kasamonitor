@@ -26,7 +26,8 @@ public class MigrationTests
         {
             "DailyEnergy", "MonthlyEnergy", "OneHourAggregates", "OneMinuteAggregates",
             "Plugs", "Samples", "Settings", "LiveSamples", "LiveMinuteAggregates", "RelayCommands",
-            "MeterEvents", "ApplianceSignatures", "ApplianceRuns"
+            "MeterEvents", "ApplianceSignatures", "ApplianceRuns",
+            "MieleDevices", "MieleStateSnapshots", "MieleCycles"
         });
     }
 
@@ -101,8 +102,8 @@ public class MigrationTests
                 void Insert(string id, string mac, string model, string hw, string protocol, int channel) => ctx.Database.ExecuteSql(
                     $"INSERT INTO Plugs (Id, Mac, IpAddress, Alias, AliasIsCustom, Model, HwVer, SwVer, OemId, FirstSeenUtc, LastSeenUtc, IsArchived, Protocol, Channel) VALUES ({id}, {mac}, '192.168.254.1', 'x', 0, {model}, {hw}, '1', 'X', '2026-11-01 10:00:00+00:00', '2026-11-01 10:00:00+00:00', 0, {protocol}, {channel})");
                 Insert("6f1c3c1e-0000-0000-0000-000000000001", "c006c3702bfc", "KP115(EU)", "1.0", "legacy", 0);
-                Insert("6f1c3c1e-0000-0000-0000-000000000002", "d885ac0b743c", "S3EM-002CXCEU", "EMG3", "shelly-rpc", 0);
-                Insert("6f1c3c1e-0000-0000-0000-000000000003", "d885ac0b743c", "S3EM-002CXCEU", "EMG3", "shelly-rpc", 1);
+                Insert("6f1c3c1e-0000-0000-0000-000000000002", "aabbccddee00", "S3EM-002CXCEU", "EMG3", "shelly-rpc", 0);
+                Insert("6f1c3c1e-0000-0000-0000-000000000003", "aabbccddee00", "S3EM-002CXCEU", "EMG3", "shelly-rpc", 1);
                 Insert("6f1c3c1e-0000-0000-0000-000000000004", "aabbccddeeff", "SNPL-00112EU", "PlusPlugS", "shelly-rpc", 0);
                 Insert("6f1c3c1e-0000-0000-0000-000000000005", "112233445566", "SPEM-003CEBEU", "Pro3EM", "shelly-rpc", 0);
                 ctx.Database.ExecuteSqlRaw("INSERT INTO Samples (PlugId, TimestampUtc, Online, PowerMw) VALUES ('6f1c3c1e-0000-0000-0000-000000000002', 1, 1, 5000)");

@@ -173,6 +173,34 @@ builder.Services.AddSingleton(sp => new HeatingPollWorker(
     sp.GetRequiredService<HeatingState>(),
     sp.GetRequiredService<ILogger<HeatingPollWorker>>()));
 builder.Services.AddHostedService(sp => sp.GetRequiredService<HeatingPollWorker>());
+
+// Miele appliances (Miele 3rd Party API): OAuth from /aparate, SSE stream of all appliances, read-only. The client
+// secret comes from KasaMonitor__MieleClientSecret or the file KasaMonitor__MieleClientSecretFile (read once here).
+builder.Services.AddSingleton(new MieleSettingsDefaults(
+    MieleClientId: builder.Configuration["KasaMonitor:MieleClientId"] ?? "",
+    MieleClientSecretFile: builder.Configuration["KasaMonitor:MieleClientSecretFile"] ?? KasaMonitor.Core.Miele.MieleApi.DefaultClientSecretFile,
+    MieleClientSecret: builder.Configuration["KasaMonitor:MieleClientSecret"]));
+builder.Services.AddSingleton<IMieleSettingsService, MieleSettingsService>();
+builder.Services.AddSingleton<KasaMonitor.Core.Miele.IMieleClient>(_ => new KasaMonitor.Core.Miele.MieleClient(TimeSpan.FromSeconds(20)));
+builder.Services.AddSingleton<MieleState>();
+builder.Services.AddSingleton(sp => new MieleAuthService(
+    sp.GetRequiredService<IMieleSettingsService>(),
+    sp.GetRequiredService<KasaMonitor.Core.Miele.IMieleClient>(),
+    sp.GetRequiredService<ILogger<MieleAuthService>>()));
+builder.Services.AddSingleton(sp => new MieleRecorder(
+    sp.GetRequiredService<IServiceScopeFactory>(),
+    sp.GetRequiredService<MieleState>(),
+    sp.GetRequiredService<ILogger<MieleRecorder>>()));
+builder.Services.AddSingleton(sp => new MieleStreamWorker(
+    sp.GetRequiredService<IMieleSettingsService>(),
+    sp.GetRequiredService<MieleAuthService>(),
+    sp.GetRequiredService<KasaMonitor.Core.Miele.IMieleClient>(),
+    sp.GetRequiredService<MieleRecorder>(),
+    sp.GetRequiredService<MieleState>(),
+    sp.GetRequiredService<ILogger<MieleStreamWorker>>()));
+builder.Services.AddHostedService(sp => sp.GetRequiredService<MieleStreamWorker>());
+builder.Services.AddSingleton(sp => new MieleGroundTruth(sp.GetRequiredService<MieleState>()));
+
 // Appliance detection (NILM) from the main meter's 1 s stream; the classifier is saved next to the database.
 builder.Services.AddSingleton(sp => new KasaMonitor.Workers.Nilm.NilmService(
     sp.GetRequiredService<IServiceScopeFactory>(),
@@ -180,7 +208,8 @@ builder.Services.AddSingleton(sp => new KasaMonitor.Workers.Nilm.NilmService(
     sp.GetRequiredService<ILiveStreamBroadcaster>(),
     sp.GetRequiredService<IPlugStateBroadcaster>(),
     sp.GetRequiredService<ILogger<KasaMonitor.Workers.Nilm.NilmService>>(),
-    Path.Combine(dataDir, "nilm-model.zip")));
+    Path.Combine(dataDir, "nilm-model.zip"),
+    groundTruth: sp.GetRequiredService<MieleGroundTruth>()));
 builder.Services.AddHostedService(sp => sp.GetRequiredService<KasaMonitor.Workers.Nilm.NilmService>());
 
 // The only write to a device: Shelly Switch.Set, after a confirmation in the UI (setting AllowRelayControl).
@@ -205,6 +234,7 @@ var app = builder.Build();
 RemoteWriteMetrics.Register(app.Services.GetRequiredService<PrometheusRemoteWriter>());
 HeatingMetrics.Register(app.Services.GetRequiredService<HeatingState>());
 NilmMetrics.Register(app.Services.GetRequiredService<KasaMonitor.Workers.Nilm.NilmService>());
+MieleMetrics.Register(app.Services.GetRequiredService<MieleState>());
 
 using (var scope = app.Services.CreateScope())
 {
@@ -268,6 +298,38 @@ app.MapGet(KasaMonitor.Core.Heating.ViessmannApi.CallbackPath, async (HttpContex
         : Results.Redirect("/centrala?auth=" + result.ToString().ToLowerInvariant());
 });
 
+// Miele OAuth: /miele/connect redirects to Miele (state + cookie with its hash); Miele redirects back to /miele/callback.
+// The redirect URI is this app's own address + /miele/callback (open KasaMonitor at the address used for it).
+app.MapGet(KasaMonitor.Core.Miele.MieleApi.ConnectPath, async (HttpContext ctx, MieleAuthService auth) =>
+{
+    if (await auth.BeginAuthorizeAsync(MieleCallbackUri(ctx.Request), ctx.RequestAborted) is not { } start)
+        return Results.Redirect("/aparate?auth=notconfigured");
+    ctx.Response.Cookies.Append(MieleAuthService.StateCookieName, ViessmannAuthService.StateCookieValue(start.State), new CookieOptions
+    {
+        HttpOnly = true,
+        SameSite = SameSiteMode.Lax,
+        Path = "/miele",
+        MaxAge = MieleAuthService.PendingLifetime,
+        Secure = ctx.Request.IsHttps,
+    });
+    return Results.Redirect(start.Url);
+});
+app.MapGet(KasaMonitor.Core.Miele.MieleApi.CallbackPath, async (HttpContext ctx, MieleAuthService auth, MieleState miele) =>
+{
+    var q = ctx.Request.Query;
+    var state = q["state"].FirstOrDefault();
+    var cookie = ctx.Request.Cookies[MieleAuthService.StateCookieName];
+    ctx.Response.Cookies.Delete(MieleAuthService.StateCookieName, new CookieOptions { Path = "/miele" });
+    if (!ViessmannAuthService.CookieMatches(state, cookie))
+        return Results.Text("Cererea de autorizare nu vine din acest browser (cookie lipsă sau diferit). Reia conectarea din /aparate.", "text/plain; charset=utf-8", statusCode: 400);
+    var (result, detail) = await auth.CompleteAsync(state, q["code"].FirstOrDefault(), q["error"].FirstOrDefault(), ctx.RequestAborted);
+    if (result is MieleCallbackResult.ExchangeFailed or MieleCallbackResult.Denied && detail is not null)
+        miele.SetError("Conectarea Miele a eșuat: " + detail, DateTimeOffset.UtcNow);
+    return result == MieleCallbackResult.InvalidState
+        ? Results.Text("Cerere de autorizare necunoscută sau expirată (state invalid). Reia conectarea din /aparate.", "text/plain; charset=utf-8", statusCode: 400)
+        : Results.Redirect("/aparate?auth=" + result.ToString().ToLowerInvariant());
+});
+
 // Downloads for /integration (generated from the embedded deploy/ files; no secrets involved).
 var integration = app.MapGroup("/integration/files");
 integration.MapGet("/prometheus.yml", (string? target) =>
@@ -280,6 +342,8 @@ integration.MapGet("/kasamonitor-monitoring.zip", (string? target) =>
     WithTarget(target, t => Results.File(IntegrationConfigGenerator.MonitoringBundle(t), "application/zip", "kasamonitor-monitoring.zip")));
 
 app.Run();
+
+static string MieleCallbackUri(HttpRequest r) => $"{r.Scheme}://{r.Host}{KasaMonitor.Core.Miele.MieleApi.CallbackPath}";
 
 static string CallbackUri(HttpRequest r) => $"{r.Scheme}://{r.Host}{KasaMonitor.Core.Heating.ViessmannApi.CallbackPath}";
 

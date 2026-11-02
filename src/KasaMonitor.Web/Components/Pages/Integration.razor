@@ -160,6 +160,26 @@
             <li>mașina rulează: <code>miele_status_info{status="running"} == 1</code>; faza curentă: <code>miele_program_phase_info</code></li>
             <li>cicluri pe zi: <code>increase(miele_cycles_total[1d])</code>; energia ultimului ciclu după aparat: <code>miele_last_cycle_energy_kwh</code></li>
         </ul>
+        <h3>Climă: metrici <code>climate_*</code></h3>
+        <p class="note">
+            Temperatura și umiditatea pe camere (pagina <a href="/clima">Climă</a>). Etichete: <code>sensor</code> (numele senzorului),
+            <code>room</code> (camera) și <code>source</code> (<code>viessmann</code>, <code>govee</code>, <code>shelly</code>, <code>openmeteo</code>);
+            un senzor = o serie (redenumirea înlocuiește seria, un senzor ascuns dispare). Ce nu raportează senzorul (umiditatea centralei,
+            bateria Open-Meteo) nu are serie. <code>climate_api_requests_today</code> are doar <code>source</code>.
+        </p>
+        <table class="table table-sm align-middle int-table">
+            <thead><tr><th>Metrică</th><th>Tip</th><th>Unitate</th><th>Descriere</th></tr></thead>
+            <tbody>
+                @foreach (var m in ClimateMetrics.Catalog)
+                {
+                    <tr><td><code>@m.Name</code></td><td>@m.Type</td><td>@m.Unit</td><td>@m.Help</td></tr>
+                }
+            </tbody>
+        </table>
+        <ul class="note">
+            <li>temperatura pe camere: <code>avg by (room) (climate_temperature_celsius{source!="viessmann"})</code></li>
+            <li>senzori fără date: <code>climate_online == 0</code>; baterie slabă: <code>climate_battery_percent &lt; 20</code></li>
+        </ul>
         <h3>Consumatori detectați (NILM)</h3>
         <p class="note">
             Din fluxul la 1 s al contorului general, KasaMonitor detectează pornirile și opririle aparatelor (pagina <a href="/consumatori">Consumatori</a>)

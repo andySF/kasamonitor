@@ -7,7 +7,7 @@ plugs and energy meters (e.g. Shelly EM Gen3, local JSON-RPC; the only write is 
 with SQLite, a web UI on port 8910 and a Prometheus `/metrics` endpoint. An optional Prometheus + Grafana stack
 with a ready-made dashboard and alert rules is included.
 
-Version: **0.8.6** (`Directory.Build.props`). Docker image: `duobit/kasamonitor`.
+Version: **0.8.7** (`Directory.Build.props`). Docker image: `duobit/kasamonitor`.
 
 ## Quick start
 
@@ -55,6 +55,10 @@ TP-Link (Tapo app) account in `/settings` and press **Scanează acum** on `/plug
   (OAuth, one SSE stream): status, program, phase, remaining time, temperature/spin, door, the appliance's own energy
   and water, program cycles with their phases, the linked plug's energy per cycle and cost, `miele_*` metrics, and
   ground truth for the appliance detection. Read-only. See [Miele appliances](#miele-appliances).
+- **Climate** (`/clima`, menu „Climă”): temperature and humidity per room from the boiler's thermostat and
+  temperatures (no extra API calls), Govee Wi-Fi thermometers (cloud, only those ticked „acasă”), Shelly H&T Gen3 /
+  Plus Add-on (local) and the outdoor temperature of Open-Meteo; cards with the age of each value, 24 h / 7 / 30 days
+  charts, min / mean / max, `climate_*` metrics. See [Climate](#climate).
 - **Appliance detection (NILM)** (`/consumatori`, menu „Consumatori”): switch-on/off events of the appliances found in
   the main meter's 1-second power, grouped into signatures (one per appliance), labelled automatically from the plugs,
   by you, or by a nightly ML.NET classifier; runs, energy per day, „unidentified” energy; cards „Acum pornite” and
@@ -63,7 +67,7 @@ TP-Link (Tapo app) account in `/settings` and press **Scanează acum** on `/plug
   the house) and „Rapoarte” on `/centrala` (gas, boiler electricity, heat produced), per day (hours), week, month
   (days) or year (months), with ◀ ▶ navigation, the change against the previous period and the cost. See
   [Reports](#reports-history-casă-and-centrala-rapoarte).
-- **Version in the menu**: „v0.8.6” at the right of the navigation bar; the tooltip shows the commit and the build time.
+- **Version in the menu**: „v0.8.7” at the right of the navigation bar; the tooltip shows the commit and the build time.
 - **Browser errors in the server log**: JavaScript errors and the Blazor error banner are reported to
   `POST /api/client-error` and logged at Warning (category `KasaMonitor.ClientErrors`), so `docker logs` shows them.
 - **HTTP API for the appliance detection** (`/api/nilm/*`, LAN only): list, sheet, label, merge, add to, hide, regroup,
@@ -113,6 +117,9 @@ not been saved from `/settings`.
 | Miele Client ID | `KasaMonitor__MieleClientId` | — | client of developer.miele.com; the OAuth tokens come from „Conectează Miele” (`/aparate`) and are stored encrypted |
 | — (Miele client secret file) | `KasaMonitor__MieleClientSecretFile` | `/run/secrets/miele-client.secret` | file with the client secret, read once at startup; never stored in the database, shown or logged ([Miele appliances](#miele-appliances)) |
 | — (Miele client secret) | `KasaMonitor__MieleClientSecret` | — | alternative to the file (wins when set); prefer the file |
+| Outdoor latitude / longitude | `KasaMonitor__ClimateLatitude`, `KasaMonitor__ClimateLongitude` | — (off) | location for the outdoor temperature of Open-Meteo (`/settings` → Climă); both empty = no request |
+| — (Govee API key file) | `GOVEE_API_KEY_FILE` or `KasaMonitor__GoveeApiKeyFile` | `/run/secrets/govee-api.key` | file with the Govee Developer API key, read once at startup; never stored in the database, shown or logged ([Climate](#climate)) |
+| — (Govee API key) | `KasaMonitor__GoveeApiKey` | — | alternative to the file (wins when set); prefer the file |
 | Boiler time zone | `KasaMonitor__BoilerTimeZone` | `Europe/Berlin` | IANA zone of the boiler's day: its „today” counters reset at midnight there (Viessmann: Central European Time, 00:00 CET/CEST = 01:00 Romanian time); every daily attribution of the boiler's gas, electricity and heat uses it |
 | — | `KasaMonitor__DbPath` | `/data/kasa.db` (image) | |
 | — | `KasaMonitor__NilmApiToken` | — | optional; when set, every `/api/nilm/*` route needs the header `X-Api-Key` with this value. Set it before exposing KasaMonitor outside the LAN ([HTTP API (LAN)](#http-api-lan)); read per request |
@@ -238,7 +245,8 @@ increase method above, not `rate()`/`increase()`, for energy.
 
 Withdrawn or unsupported plugs have no series. Renaming a plug removes the series with the old alias.
 
-The gas boiler has its own `heating_*` family, see [Gas boiler (Viessmann ViCare)](#gas-boiler-viessmann-vicare).
+The gas boiler has its own `heating_*` family, see [Gas boiler (Viessmann ViCare)](#gas-boiler-viessmann-vicare); the
+temperature and humidity sensors the `climate_*` family, see [Climate](#climate).
 
 Appliance detection (see [Appliance detection (NILM)](#appliance-detection-nilm)):
 
@@ -730,6 +738,64 @@ miele_status_info{status="running"} == 1          # what runs now
 increase(miele_cycles_total[7d])                   # cycles per week
 ```
 
+## Climate
+
+Since 0.8.7 the page **`/clima`** (menu „Climă”) shows temperature and humidity per room from four sources, in one
+generic model: a **sensor** (`ClimateSensors`: source, external id, editable name, room, „afară” = outdoor, archived,
+last seen, battery) and its **readings** (`ClimateReadings`: time, temperature °C, humidity % RH, battery).
+
+| Source (`source`) | What | How it is read | Interval |
+|---|---|---|---|
+| `viessmann` | the boiler's room thermostat („Termostat (cameră)”, the Zigbee room sensor), supply („Tur centrală”) and hot water („Apă caldă”) | virtual sensors fed from the stored boiler readings (`HeatingReadings`); **no extra Viessmann API call**. On the first run the readings of the last 30 days are imported | every minute (new readings only) |
+| `govee` | Govee Wi-Fi thermometers (e.g. H5179) of the account | Govee Developer API v1: `GET https://openapi.api.govee.com/router/api/v1/user/devices` and `POST …/device/state` (header `Govee-API-Key`); the temperature comes in **°F** and is converted to °C; an offline device answers `online:false` with `""` values (nothing is stored, the card shows „offline la sursă”) | 10 minutes per ticked thermometer (they upload about every 30 minutes); the device list every 6 hours |
+| `shelly` | Shelly H&T Gen3, Shelly Plus Add-on (DS18B20 / DHT22) | local RPC: `Shelly.GetStatus` components `temperature:N` (`tC`) and `humidity:N` (`rh`, paired by id), battery from `devicepower:0`; found by mDNS (`_shelly._tcp`, only when Shelly discovery is on) | every minute; an H&T on batteries sleeps and is read only when it is awake |
+| `openmeteo` | the outdoor temperature and humidity („Afară”) | `https://api.open-meteo.com/v1/forecast?latitude=…&longitude=…&current=temperature_2m,relative_humidity_2m&timezone=auto` (free, no key) | 15 minutes, only when latitude and longitude are set |
+
+**Setup.** Govee: mount the API key as a file (`/run/secrets/govee-api.key`; another path: `GOVEE_API_KEY_FILE` or
+`KasaMonitor__GoveeApiKeyFile`; or, less safe, `KasaMonitor__GoveeApiKey`; compose lines in `deploy/README.md`,
+*Govee API key*). It is read once at startup, never stored in the database, shown or logged. `/settings` → *Govee*
+lists the devices of the account; only those ticked **„acasă”** are read and stored (all are unticked at first, so
+thermometers of other places in the same account are never requested); unticking hides the sensor (its history
+stays). Requests per day ≈ 144 per ticked thermometer + 4 for the list (Govee allows 10,000). Open-Meteo:
+`/settings` → *Climă: temperatura exterioară*, latitude and longitude (both empty = off). Shelly: nothing to set;
+a sensor appears at its first value. A Shelly H&T without a meter is also listed by the plug discovery as an
+unsupported plug („fără componentă de măsurare”).
+
+**Storage.** A reading is stored when the temperature changed by **≥ 0.1 °C** or the humidity by **≥ 1 % RH** since the
+last stored reading, and at least every **30 minutes** (heartbeat); a value read in between only updates the card and
+`/metrics`. Raw readings are kept **one year** (deleted daily). A sensor is created at its first value with the
+source's name; name, room and „afară” are edited on its card in `/clima` (the boiler's sensors have no room at first).
+
+**Page.** One card per sensor: name, room, temperature, humidity, battery, source and the age of the last value
+coloured against the source's interval (Viessmann: its poll interval; Govee 10 min; Shelly 1 min, 2 h on batteries —
+an assumption; Open-Meteo 15 min): green up to 2 intervals, yellow up to 6, red beyond. A chart of all sensors over
+**24 h / 7 days / 30 days** (temperature, and humidity as a second chart; 5-min / 30-min / 2-h averages; click a
+name in the legend to hide it) and a table **min / mean / max** per sensor for the period. The mean is weighted by how
+long each value held (a value holds until the next reading, at most 60 minutes; a longer silence is a gap), so a
+sensor written often while it changed is not over-counted. `/centrala` shows an **„Afară”** tile next to its
+temperatures when an outdoor sensor has a value (a physical one before Open-Meteo). The in-memory service
+`ClimateState` (sensors, values, freshness, `Outdoor()`) is what other pages use.
+
+**Metrics** (labels `sensor` = name, `room`, `source`; one series per sensor, a renamed sensor replaces its series, an
+archived one disappears; ids and MACs are never labels):
+
+| Metric | Type | Notes |
+|---|---|---|
+| `climate_temperature_celsius` | gauge | last temperature read |
+| `climate_humidity_percent` | gauge | last humidity (no series for sensors without humidity) |
+| `climate_battery_percent` | gauge | Govee / Shelly battery, when reported |
+| `climate_online` | gauge | 0/1: the source reports it online and the last value is within 6 intervals of its source |
+| `climate_last_reading_timestamp_seconds` | gauge | unix time of the last value read |
+| `climate_api_requests_today{source}` | gauge | HTTP requests to Govee / Open-Meteo today (local day; in memory, restarts at 0) |
+
+```promql
+avg by (room) (climate_temperature_celsius{source!="viessmann"})   # rooms
+climate_online == 0                                                  # sensors without data
+```
+
+Not yet verified on hardware: the Shelly H&T Gen3 and the Plus Add-on (implemented from the Gen2+ API docs, tested on
+synthetic answers); the Govee battery capability (H5179 does not report it in the captured answers).
+
 ## Reports (`/history` „Casă” and `/centrala` „Rapoarte”)
 
 Both use one period selector, as in the ViCare app: **Zi** (bars per hour), **Săptămână** (Monday–Sunday, per day),
@@ -1001,6 +1067,7 @@ curl -s "$K/api/nilm/events?from=2026-11-02T08:00:00Z&to=2026-11-02T09:00:00Z&mi
 | Relay commands | `RelayCommands` | one row per command | never |
 | Appliance events, signatures, runs | `MeterEvents`, `ApplianceSignatures`, `ApplianceRuns` | one row per event (≥ 30 W step of the house) / appliance / run | events and finished runs after 365 days (nightly); signatures never |
 | Miele appliances, state snapshots, cycles | `MieleDevices`, `MieleStateSnapshots`, `MieleCycles` | a snapshot on every change of the state (≈ one per minute while a program runs, as the remaining time changes) and at most every 5 minutes otherwise; one row per program cycle | never |
+| Climate sensors and readings | `ClimateSensors`, `ClimateReadings` | a reading on a change of ≥ 0.1 °C / ≥ 1 % RH and at least every 30 minutes per sensor (≈ 40 bytes; ≤ 48 rows per quiet sensor per day) | readings after 365 days (daily); sensors never |
 | Minute aggregates | `OneMinuteAggregates` | ≈ 120 bytes per plug-minute ≈ 65 MB per plug per year | never |
 | Daily / monthly energy | `DailyEnergy`, `MonthlyEnergy` | one row per plug per day / month | never |
 
@@ -1040,15 +1107,15 @@ dotnet test KasaMonitor.sln
 From the repository root, with Docker running and `docker login` done once:
 
 ```powershell
-.\deploy\build-and-push.ps1 -Version 0.8.6          # build :0.8.6 + :latest and push both
-.\deploy\build-and-push.ps1 -Version 0.8.6 -NoPush  # local build only
+.\deploy\build-and-push.ps1 -Version 0.8.7          # build :0.8.7 + :latest and push both
+.\deploy\build-and-push.ps1 -Version 0.8.7 -NoPush  # local build only
 ```
 
 or manually:
 
 ```bash
-docker build -t duobit/kasamonitor:0.8.6 -t duobit/kasamonitor:latest -f deploy/Dockerfile .
-docker push duobit/kasamonitor:0.8.6
+docker build -t duobit/kasamonitor:0.8.7 -t duobit/kasamonitor:latest -f deploy/Dockerfile .
+docker push duobit/kasamonitor:0.8.7
 docker push duobit/kasamonitor:latest
 ```
 

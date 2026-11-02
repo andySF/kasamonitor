@@ -1,0 +1,13 @@
+{
+  "name": null,
+  "id": "shellyhtg3-aabbccddee01",
+  "mac": "AABBCCDDEE01",
+  "slot": 1,
+  "model": "S3SN-0U12A",
+  "gen": 3,
+  "fw_id": "20250101-000000/1.5.0-synthetic",
+  "ver": "1.5.0",
+  "app": "HTG3",
+  "auth_en": false,
+  "auth_domain": null
+}

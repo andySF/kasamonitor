@@ -210,6 +210,36 @@ builder.Services.AddSingleton(sp => new MieleHistorySync(
 builder.Services.AddHostedService(sp => sp.GetRequiredService<MieleHistorySync>());
 builder.Services.AddSingleton(sp => new MieleGroundTruth(sp.GetRequiredService<MieleState>()));
 
+// Climate (/clima): temperature and humidity per room from the boiler's readings, Govee (cloud, key from a mounted file),
+// Shelly H&T / Add-on (local, mDNS) and Open-Meteo (outdoor, when latitude/longitude are set). The Govee key comes from
+// KasaMonitor__GoveeApiKey or the file KasaMonitor__GoveeApiKeyFile / GOVEE_API_KEY_FILE (read once here).
+builder.Services.AddSingleton(new ClimateSettingsDefaults(
+    Latitude: ClimateSettingsService.ParseCoordinate(builder.Configuration["KasaMonitor:ClimateLatitude"]),
+    Longitude: ClimateSettingsService.ParseCoordinate(builder.Configuration["KasaMonitor:ClimateLongitude"]),
+    GoveeApiKeyFile: builder.Configuration["KasaMonitor:GoveeApiKeyFile"]
+                     ?? Environment.GetEnvironmentVariable(KasaMonitor.Core.Climate.GoveeApi.KeyFileEnvironmentVariable)
+                     ?? KasaMonitor.Core.Climate.GoveeApi.DefaultKeyFile,
+    GoveeApiKey: builder.Configuration["KasaMonitor:GoveeApiKey"]));
+builder.Services.AddSingleton<IClimateSettingsService, ClimateSettingsService>();
+builder.Services.AddSingleton<KasaMonitor.Core.Climate.IGoveeClient>(_ => new KasaMonitor.Core.Climate.GoveeClient(TimeSpan.FromSeconds(20)));
+builder.Services.AddSingleton<KasaMonitor.Core.Climate.IOpenMeteoClient>(_ => new KasaMonitor.Core.Climate.OpenMeteoClient(TimeSpan.FromSeconds(20)));
+builder.Services.AddSingleton(sp => new ClimateState(() => sp.GetRequiredService<HeatingState>().PollIntervalSeconds));
+builder.Services.AddSingleton(sp => new ClimateRecorder(
+    sp.GetRequiredService<IServiceScopeFactory>(),
+    sp.GetRequiredService<ClimateState>(),
+    sp.GetRequiredService<ILogger<ClimateRecorder>>()));
+builder.Services.AddSingleton(sp => new ClimateWorker(
+    sp.GetRequiredService<IServiceScopeFactory>(),
+    sp.GetRequiredService<IClimateSettingsService>(),
+    sp.GetRequiredService<ClimateRecorder>(),
+    sp.GetRequiredService<ClimateState>(),
+    sp.GetRequiredService<KasaMonitor.Core.Climate.IGoveeClient>(),
+    sp.GetRequiredService<KasaMonitor.Core.Climate.IOpenMeteoClient>(),
+    sp.GetRequiredService<ILogger<ClimateWorker>>(),
+    kasa: sp.GetRequiredService<IKasaSettingsService>(),
+    shelly: sp.GetRequiredService<IShellyClient>()));
+builder.Services.AddHostedService(sp => sp.GetRequiredService<ClimateWorker>());
+
 // Appliance detection (NILM) from the main meter's 1 s stream; the classifier is saved next to the database.
 builder.Services.AddSingleton(sp => new KasaMonitor.Workers.Nilm.NilmService(
     sp.GetRequiredService<IServiceScopeFactory>(),
@@ -244,6 +274,7 @@ RemoteWriteMetrics.Register(app.Services.GetRequiredService<PrometheusRemoteWrit
 HeatingMetrics.Register(app.Services.GetRequiredService<HeatingState>());
 NilmMetrics.Register(app.Services.GetRequiredService<KasaMonitor.Workers.Nilm.NilmService>());
 MieleMetrics.Register(app.Services.GetRequiredService<MieleState>());
+ClimateMetrics.Register(app.Services.GetRequiredService<ClimateState>());
 
 using (var scope = app.Services.CreateScope())
 {

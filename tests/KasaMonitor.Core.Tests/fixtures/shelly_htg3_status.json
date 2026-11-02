@@ -1,0 +1,11 @@
+{
+  "ble": {},
+  "cloud": { "connected": true },
+  "devicepower:0": { "id": 0, "battery": { "V": 5.84, "percent": 87 }, "external": { "present": false } },
+  "humidity:0": { "id": 0, "rh": 48.36 },
+  "mqtt": { "connected": false },
+  "sys": { "mac": "AABBCCDDEE01", "restart_required": false, "uptime": 12, "wakeup_reason": { "boot": "deepsleep_wake", "cause": "periodic" } },
+  "temperature:0": { "id": 0, "tC": 22.47, "tF": 72.4 },
+  "wifi": { "sta_ip": "192.0.2.50", "status": "got ip", "ssid": "test", "rssi": -61 },
+  "ws": { "connected": false }
+}

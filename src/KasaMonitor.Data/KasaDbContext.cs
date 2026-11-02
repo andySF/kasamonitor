@@ -27,6 +27,8 @@ public sealed class KasaDbContext : DbContext
     public DbSet<MieleDeviceEntity> MieleDevices => Set<MieleDeviceEntity>();
     public DbSet<MieleStateSnapshotEntity> MieleStateSnapshots => Set<MieleStateSnapshotEntity>();
     public DbSet<MieleCycleEntity> MieleCycles => Set<MieleCycleEntity>();
+    public DbSet<ClimateSensorEntity> ClimateSensors => Set<ClimateSensorEntity>();
+    public DbSet<ClimateReadingEntity> ClimateReadings => Set<ClimateReadingEntity>();
 
     public KasaDbContext(DbContextOptions<KasaDbContext> options) : base(options) { }
 
@@ -198,6 +200,22 @@ public sealed class KasaDbContext : DbContext
             e.HasIndex(x => x.EndTs);
             // A run of the API history is stored once per appliance (NULL for cycles the API has not reported).
             e.HasIndex(x => new { x.DeviceId, x.ApiStartTs }).IsUnique();
+        });
+
+        // Climate (temperature / humidity per room): sensors of every source and their readings (on change, 30-min heartbeat).
+        mb.Entity<ClimateSensorEntity>(e =>
+        {
+            e.ToTable("ClimateSensors");
+            e.HasKey(x => x.Id);
+            e.HasIndex(x => new { x.Source, x.ExternalId }).IsUnique();
+        });
+
+        mb.Entity<ClimateReadingEntity>(e =>
+        {
+            e.ToTable("ClimateReadings");
+            e.HasKey(x => new { x.SensorId, x.Ts });
+            // Retention deletes by time over all sensors.
+            e.HasIndex(x => x.Ts);
         });
     }
 }

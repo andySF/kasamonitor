@@ -27,5 +27,7 @@
     <None Include="../KasaMonitor.Core.Tests/fixtures/shelly_*.json" Link="fixtures/%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
     <!-- Viessmann answers (real B0KA dump with fictitious ids, synthetic installations), owned by KasaMonitor.Core.Tests. -->
     <None Include="../KasaMonitor.Core.Tests/fixtures/vicare_*.json" Link="fixtures/%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
+    <!-- Govee device list (real, anonymised device ids), owned by KasaMonitor.Core.Tests. -->
+    <None Include="../KasaMonitor.Core.Tests/fixtures/govee_*.json" Link="fixtures/%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>

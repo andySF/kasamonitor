@@ -27,7 +27,8 @@ public class MigrationTests
             "DailyEnergy", "MonthlyEnergy", "OneHourAggregates", "OneMinuteAggregates",
             "Plugs", "Samples", "Settings", "LiveSamples", "LiveMinuteAggregates", "RelayCommands",
             "MeterEvents", "ApplianceSignatures", "ApplianceRuns",
-            "MieleDevices", "MieleStateSnapshots", "MieleCycles"
+            "MieleDevices", "MieleStateSnapshots", "MieleCycles",
+            "ClimateSensors", "ClimateReadings"
         });
     }
 

@@ -1,0 +1,14 @@
+{
+  "requestId": "6e518f4a-3694-4a51-81ad-23b4787d442f",
+  "msg": "success",
+  "code": 200,
+  "payload": {
+    "sku": "H5179",
+    "device": "AA:BB:CC:DD:EE:FF:00:11",
+    "capabilities": [
+      { "type": "devices.capabilities.online", "instance": "online", "state": { "value": true } },
+      { "type": "devices.capabilities.property", "instance": "sensorTemperature", "state": { "value": 78.26 } },
+      { "type": "devices.capabilities.property", "instance": "sensorHumidity", "state": { "value": 56.7 } }
+    ]
+  }
+}

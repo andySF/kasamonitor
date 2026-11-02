@@ -1,0 +1,6 @@
+{
+  "sys": { "device": { "name": "Centrala releu", "mac": "AABBCCDDEE02" } },
+  "temperature:100": { "id": 100, "name": "Pod", "report_thr_C": 0.5 },
+  "temperature:101": { "id": 101, "name": null, "report_thr_C": 0.5 },
+  "humidity:100": { "id": 100, "name": null }
+}

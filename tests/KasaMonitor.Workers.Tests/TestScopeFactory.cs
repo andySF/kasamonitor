@@ -33,6 +33,7 @@ internal sealed class TestScopeFactory : IServiceScopeFactory
             if (serviceType == typeof(IHeatingRepository)) return new HeatingRepository(_ctx);
             if (serviceType == typeof(INilmRepository)) return new NilmRepository(_ctx);
             if (serviceType == typeof(IMieleRepository)) return new MieleRepository(_ctx);
+            if (serviceType == typeof(IClimateRepository)) return new ClimateRepository(_ctx);
             return null;
         }
 

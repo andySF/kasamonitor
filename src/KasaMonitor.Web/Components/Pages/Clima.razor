@@ -1,0 +1,361 @@
+@page "/clima"
+@rendermode InteractiveServer
+@using KasaMonitor.Workers
+@using KasaMonitor.Core.Climate
+@using KasaMonitor.Web.Ui
+@inject IServiceScopeFactory ScopeFactory
+@inject ClimateState Climate
+@inject ClimateRecorder Recorder
+@implements IDisposable
+
+<PageTitle>KasaMonitor — Climă</PageTitle>
+
+<h1 class="h3 mb-3"><i class="bi bi-thermometer-half me-2"></i>Climă</h1>
+
+@foreach (var source in ClimateSources.All)
+{
+    if (Climate.SourceStatus(source) is { } st)
+    {
+        <div class="alert alert-warning py-2 small">@ClimateSources.DisplayName(source): @st</div>
+    }
+}
+
+@if (_sensors.Count == 0)
+{
+    <div class="alert alert-secondary">
+        <p class="mb-2"><b>Niciun senzor încă.</b> Senzorii apar singuri când sursa lor dă prima valoare:</p>
+        <ul class="mb-0 small">
+            <li>centrala Viessmann: termostatul de cameră, turul și apa caldă, din citirile centralei (<a href="/centrala">Centrală</a>);</li>
+            <li>Govee: bifează termometrele „acasă” în <a href="/settings">Setări → Govee</a> (cu cheia API montată);</li>
+            <li>Shelly H&amp;T Gen3 / Plus Add-on: găsite prin mDNS în rețea (un H&amp;T pe baterii apare când se trezește);</li>
+            <li>afară: latitudinea și longitudinea în <a href="/settings">Setări → Climă</a> (Open-Meteo).</li>
+        </ul>
+    </div>
+}
+else
+{
+    <div class="row row-cols-1 row-cols-sm-2 row-cols-lg-3 row-cols-xxl-4 g-3 mb-3">
+        @foreach (var s in _sensors)
+        {
+            var level = Climate.Freshness(s, _now);
+            <div class="col">
+                <div class="card h-100 @(s.Sensor.IsOutdoor ? "border-info" : "")">
+                    <div class="card-body">
+                        @if (_editId == s.Sensor.Id)
+                        {
+                            <div class="mb-2">
+                                <label class="form-label small mb-0" for="eName">Nume</label>
+                                <input class="form-control form-control-sm" id="eName" @bind="_editName" />
+                            </div>
+                            <div class="mb-2">
+                                <label class="form-label small mb-0" for="eRoom">Cameră</label>
+                                <input class="form-control form-control-sm" id="eRoom" @bind="_editRoom" list="climaRooms" />
+                            </div>
+                            <div class="form-check mb-2">
+                                <input class="form-check-input" type="checkbox" id="eOut" @bind="_editOutdoor" />
+                                <label class="form-check-label small" for="eOut">afară (temperatura exterioară)</label>
+                            </div>
+                            <div class="d-flex gap-2">
+                                <button class="btn btn-primary btn-sm" @onclick="SaveEditAsync"><i class="bi bi-save me-1"></i>Salvează</button>
+                                <button class="btn btn-outline-secondary btn-sm" @onclick="CancelEdit">Anulează</button>
+                            </div>
+                            @if (_editError is not null) { <div class="text-danger small mt-1">@_editError</div> }
+                        }
+                        else
+                        {
+                            <div class="d-flex align-items-start gap-2">
+                                <div class="me-auto">
+                                    <div class="fw-semibold">@s.Sensor.Name</div>
+                                    <div class="small text-secondary">@(s.Sensor.Room.Length > 0 ? s.Sensor.Room : "fără cameră")@(s.Sensor.IsOutdoor ? " · afară" : "")</div>
+                                </div>
+                                <span class="badge text-bg-light border" title="Sursa">@ClimateSources.DisplayName(s.Sensor.Source)</span>
+                                <button class="btn btn-link btn-sm p-0" title="Editează numele, camera, „afară”" @onclick="() => StartEdit(s)"><i class="bi bi-pencil"></i></button>
+                            </div>
+                            <div class="d-flex align-items-baseline gap-3 mt-2">
+                                <span class="display-6 fw-semibold">@(s.TemperatureC is { } t ? HeatingFormat.Number(t, 1) : "—")<span class="fs-5"> °C</span></span>
+                                @if (s.HumidityPercent is { } h) { <span class="fs-5 text-secondary" title="Umiditate relativă"><i class="bi bi-droplet me-1"></i>@HeatingFormat.Number(h, 0) %</span> }
+                            </div>
+                            <div class="d-flex flex-wrap align-items-center gap-2 small mt-2">
+                                <span class="badge @FreshnessBadge(level)" title="@FreshnessTitle(s)">@(s.ReadUtc is { } r ? UiFormat.RelativeRo(r, _now) : "necitit")</span>
+                                @if (!s.SourceOnline) { <span class="badge text-bg-danger">offline la sursă</span> }
+                                @if (s.BatteryPercent is { } b) { <span class="@(b <= 20 ? "text-danger" : "text-secondary")" title="Baterie"><i class="bi @BatteryIcon(b) me-1"></i>@b %</span> }
+                            </div>
+                        }
+                    </div>
+                </div>
+            </div>
+        }
+    </div>
+    <datalist id="climaRooms">
+        @foreach (var room in _sensors.Select(x => x.Sensor.Room).Where(x => x.Length > 0).Distinct(StringComparer.CurrentCultureIgnoreCase))
+        {
+            <option value="@room"></option>
+        }
+    </datalist>
+
+    <div class="card mb-3">
+        <div class="card-header d-flex flex-wrap align-items-center gap-2">
+            <span class="fw-semibold"><i class="bi bi-graph-up me-2"></i>Istoric</span>
+            <span class="text-secondary" style="cursor: help" title="@ChartNote">ⓘ</span>
+            <div class="btn-group btn-group-sm ms-auto" role="group" aria-label="Perioadă">
+                @foreach (var (span, name) in Spans)
+                {
+                    <button type="button" class="btn @(_span == span ? "btn-primary" : "btn-outline-primary")" @onclick="() => SelectSpan(span)">@name</button>
+                }
+            </div>
+        </div>
+        <div class="card-body">
+            @if (_chartError is { } err)
+            {
+                <div class="alert alert-warning mb-0">Istoricul nu a putut fi încărcat: @err</div>
+            }
+            else if (!_chartLoaded)
+            {
+                <p class="text-secondary mb-0"><span class="spinner-border spinner-border-sm me-2"></span>Se încarcă…</p>
+            }
+            else if (_series.Count == 0)
+            {
+                <div class="small text-secondary">Nu există citiri în această perioadă.</div>
+            }
+            else
+            {
+                <h2 class="h6 text-secondary">Temperatură (°C)</h2>
+                <ApexChart @key="_key" TItem="ChartPoint" Options="_tempOptions" Height="300" XAxisType="XAxisType.Datetime">
+                    @foreach (var line in _series)
+                    {
+                        <ApexPointSeries TItem="ChartPoint" Items="line.Temperature" Name="@line.Name" Color="@line.Color" SeriesType="SeriesType.Line"
+                                         XValue="@(p => p.Ms)" YValue="@(p => p.Value)" />
+                    }
+                </ApexChart>
+                @if (_series.Any(l => l.HasHumidity))
+                {
+                    <h2 class="h6 text-secondary mt-3">Umiditate relativă (%)</h2>
+                    <ApexChart @key="(_key + 100000)" TItem="ChartPoint" Options="_humOptions" Height="220" XAxisType="XAxisType.Datetime">
+                        @foreach (var line in _series.Where(l => l.HasHumidity))
+                        {
+                            <ApexPointSeries TItem="ChartPoint" Items="line.Humidity" Name="@line.Name" Color="@line.Color" SeriesType="SeriesType.Line"
+                                             XValue="@(p => p.Ms)" YValue="@(p => p.Value)" />
+                        }
+                    </ApexChart>
+                }
+
+                <h2 class="h6 text-secondary mt-3">Min / medie / max pe @SpanName(_span)</h2>
+                <div class="table-responsive">
+                    <table class="table table-sm align-middle mb-0">
+                        <thead>
+                            <tr>
+                                <th>Senzor</th><th>Cameră</th>
+                                <th class="text-end">Min °C</th><th class="text-end">Medie °C</th><th class="text-end">Max °C</th>
+                                <th class="text-end">Min %</th><th class="text-end">Medie %</th><th class="text-end">Max %</th>
+                                <th class="text-end" title="Citiri salvate în perioadă (la schimbare sau la 30 min)">Citiri</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @foreach (var line in _series)
+                            {
+                                var st = line.Stats;
+                                <tr>
+                                    <td><span class="d-inline-block rounded-1 me-1 align-middle" style="width: .8rem; height: .8rem; background: @line.Color"></span>@line.Name</td>
+                                    <td>@line.Room</td>
+                                    <td class="text-end">@HeatingFormat.Number(st.MinC, 1)</td>
+                                    <td class="text-end">@HeatingFormat.Number(st.AvgC, 1)</td>
+                                    <td class="text-end">@HeatingFormat.Number(st.MaxC, 1)</td>
+                                    <td class="text-end">@HeatingFormat.Number(st.MinHumidity, 0)</td>
+                                    <td class="text-end">@HeatingFormat.Number(st.AvgHumidity, 0)</td>
+                                    <td class="text-end">@HeatingFormat.Number(st.MaxHumidity, 0)</td>
+                                    <td class="text-end">@st.Count</td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                </div>
+            }
+        </div>
+    </div>
+}
+
+@code {
+    public sealed record ChartPoint(long Ms, decimal? Value);
+    private sealed record Line(Guid Id, string Name, string Room, string Color, List<ChartPoint> Temperature, List<ChartPoint> Humidity, ClimateStats Stats)
+    {
+        public bool HasHumidity => Humidity.Any(p => p.Value is not null);
+    }
+
+    private static readonly (TimeSpan Span, string Name)[] Spans =
+    {
+        (TimeSpan.FromHours(24), "24 h"), (TimeSpan.FromDays(7), "7 zile"), (TimeSpan.FromDays(30), "30 zile"),
+    };
+
+    /// <summary>Okabe–Ito (colour-blind safe), then repeated.</summary>
+    private static readonly string[] Palette = { "#0072B2", "#D55E00", "#009E73", "#CC79A7", "#E69F00", "#56B4E9", "#555555", "#F0E442" };
+
+    private const string ChartNote =
+        "Citirile se salvează la schimbare (≥ 0,1 °C sau ≥ 1 % umiditate) și cel puțin o dată la 30 min. Graficul arată media pe intervale " +
+        "(5 min la 24 h, 30 min la 7 zile, 2 h la 30 zile); media din tabel e ponderată cu timpul cât a ținut fiecare valoare, iar o tăcere mai " +
+        "lungă de o oră e gol, nu valoarea veche. Click pe numele unui senzor în legendă îl ascunde.";
+
+    private TimeSpan _span = TimeSpan.FromHours(24);
+    private IReadOnlyList<ClimateSensorLive> _sensors = Array.Empty<ClimateSensorLive>();
+    private DateTimeOffset _now = DateTimeOffset.UtcNow;
+    private List<Line> _series = new();
+    private bool _chartLoaded;
+    private string? _chartError;
+    private int _key;
+    private DateTimeOffset _chartLoadedAt = DateTimeOffset.MinValue;
+    private ApexChartOptions<ChartPoint> _tempOptions = new();
+    private ApexChartOptions<ChartPoint> _humOptions = new();
+    private System.Threading.Timer? _timer;
+
+    private Guid? _editId;
+    private string _editName = "";
+    private string _editRoom = "";
+    private bool _editOutdoor;
+    private string? _editError;
+
+    protected override async Task OnInitializedAsync()
+    {
+        Refresh();
+        await LoadChartAsync();
+        _timer = new System.Threading.Timer(_ => InvokeAsync(OnTimerAsync), null, 30_000, 30_000);
+    }
+
+    /// <summary>Cards every 30 s from the in-memory state; the charts every 5 minutes.</summary>
+    private async Task OnTimerAsync()
+    {
+        Refresh();
+        if (DateTimeOffset.UtcNow - _chartLoadedAt >= TimeSpan.FromMinutes(5)) await LoadChartAsync();
+        StateHasChanged();
+    }
+
+    private void Refresh()
+    {
+        _now = DateTimeOffset.UtcNow;
+        _sensors = Climate.Sensors;
+    }
+
+    private async Task SelectSpan(TimeSpan span)
+    {
+        _span = span;
+        await LoadChartAsync();
+    }
+
+    private async Task LoadChartAsync()
+    {
+        try
+        {
+            var requested = _span;
+            var to = DateTimeOffset.UtcNow;
+            var from = to - requested;
+            var sensors = Climate.Sensors;
+            IReadOnlyDictionary<Guid, IReadOnlyList<ClimateReading>> readings;
+            using (var scope = ScopeFactory.CreateScope())
+                readings = await scope.ServiceProvider.GetRequiredService<KasaMonitor.Core.Abstractions.IClimateRepository>()
+                    .ListReadingsAsync(sensors.Select(s => s.Sensor.Id).ToList(), from - ClimateAggregation.MaxHold, to, CancellationToken.None);
+            if (requested != _span) return;   // a slower earlier request must not overwrite the period chosen since
+            var bucket = ClimateAggregation.BucketFor(requested);
+            var lines = new List<Line>();
+            var i = 0;
+            foreach (var s in sensors)
+            {
+                var points = readings.TryGetValue(s.Sensor.Id, out var rs)
+                    ? rs.Select(r => new ClimatePoint(r.TsUtc, r.TemperatureC, r.HumidityPercent)).ToList()
+                    : new List<ClimatePoint>();
+                var stats = ClimateAggregation.Stats(points, from, to);
+                if (stats.Count == 0 && stats.AvgC is null) continue;
+                var buckets = ClimateAggregation.Buckets(points, from, to, bucket);
+                var color = Palette[i++ % Palette.Length];
+                lines.Add(new Line(s.Sensor.Id, s.Sensor.Name, s.Sensor.Room, color,
+                    buckets.Select(b => new ChartPoint(b.StartUtc.ToUnixTimeMilliseconds(), Dec(b.TemperatureC))).ToList(),
+                    buckets.Select(b => new ChartPoint(b.StartUtc.ToUnixTimeMilliseconds(), Dec(b.HumidityPercent))).ToList(),
+                    stats));
+            }
+            _series = lines;
+            long min = from.ToUnixTimeMilliseconds(), max = to.ToUnixTimeMilliseconds();
+            _tempOptions = Options(min, max, "°C", null);
+            _humOptions = Options(min, max, "%", 100);
+            _chartError = null;
+            _chartLoadedAt = DateTimeOffset.UtcNow;
+            _key++;
+        }
+        catch (Exception ex)
+        {
+            _chartError = ex.Message;
+        }
+        _chartLoaded = true;
+    }
+
+    private static ApexChartOptions<ChartPoint> Options(long min, long max, string unit, double? yMax) => new()
+    {
+        Chart = new Chart { Toolbar = new Toolbar { Show = false }, Animations = new Animations { Enabled = false }, Zoom = new Zoom { Enabled = false } },
+        Stroke = new Stroke { Width = 2, Curve = Curve.Straight },
+        DataLabels = new DataLabels { Enabled = false },
+        Xaxis = new XAxis { Min = min, Max = max, Labels = new XAxisLabels { DatetimeUTC = false } },
+        Yaxis = new List<YAxis> { new() { Max = yMax, DecimalsInFloat = 0, Labels = new YAxisLabels { MinWidth = 40 } } },
+        Legend = new Legend { Show = true, Position = LegendPosition.Bottom },
+        Tooltip = new Tooltip
+        {
+            Shared = true,
+            X = new TooltipX { Format = "dd.MM HH:mm" },
+            Y = new TooltipY { Formatter = "function(v) { return v == null ? '' : v.toFixed(1) + ' " + unit + "'; }" },
+        },
+    };
+
+    private void StartEdit(ClimateSensorLive s)
+    {
+        _editId = s.Sensor.Id;
+        _editName = s.Sensor.Name;
+        _editRoom = s.Sensor.Room;
+        _editOutdoor = s.Sensor.IsOutdoor;
+        _editError = null;
+    }
+
+    private void CancelEdit()
+    {
+        _editId = null;
+        _editError = null;
+    }
+
+    private async Task SaveEditAsync()
+    {
+        if (_editId is not { } id) return;
+        try
+        {
+            await Recorder.UpdateSensorAsync(id, _editName, _editRoom, _editOutdoor, CancellationToken.None);
+            _editId = null;
+            _editError = null;
+            Refresh();
+            await LoadChartAsync();
+        }
+        catch (Exception ex) when (ex is ArgumentException or KeyNotFoundException)
+        {
+            _editError = ex.Message;
+        }
+    }
+
+    private string FreshnessTitle(ClimateSensorLive s)
+    {
+        var expected = Climate.Expected(s);
+        var at = s.ReadUtc is { } r ? "Ultima valoare: " + UiFormat.FullLocal(r) + ". " : "";
+        return at + $"Sursa dă o valoare cam la {UiFormat.DurationRo(expected.TotalSeconds)}: verde până la {ClimateFreshness.FreshIntervals}×, galben până la {ClimateFreshness.LateIntervals}×, apoi roșu.";
+    }
+
+    private static string FreshnessBadge(ClimateFreshnessLevel level) => level switch
+    {
+        ClimateFreshnessLevel.Fresh => "text-bg-success",
+        ClimateFreshnessLevel.Late => "text-bg-warning",
+        _ => "text-bg-danger",
+    };
+
+    private static string BatteryIcon(int percent) => percent switch
+    {
+        >= 75 => "bi-battery-full",
+        >= 30 => "bi-battery-half",
+        _ => "bi-battery",
+    };
+
+    private static string SpanName(TimeSpan span) => Spans.FirstOrDefault(x => x.Span == span).Name ?? "";
+
+    private static decimal? Dec(double? v) => v is { } x ? Math.Round((decimal)x, 1) : null;
+
+    public void Dispose() => _timer?.Dispose();
+}

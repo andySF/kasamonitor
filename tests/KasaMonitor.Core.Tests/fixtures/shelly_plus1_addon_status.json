@@ -1,0 +1,10 @@
+{
+  "input:0": { "id": 0, "state": false },
+  "switch:0": { "id": 0, "source": "init", "output": false, "temperature": { "tC": 41.2, "tF": 106.2 } },
+  "sys": { "mac": "AABBCCDDEE02", "uptime": 3600 },
+  "temperature:100": { "id": 100, "tC": 19.81, "tF": 67.7 },
+  "temperature:101": { "id": 101, "tC": null, "tF": null, "errors": ["read"] },
+  "humidity:100": { "id": 100, "rh": 61.2 },
+  "humidity:102": { "id": 102, "rh": 40.0 },
+  "wifi": { "sta_ip": "192.0.2.51", "status": "got ip", "rssi": -55 }
+}

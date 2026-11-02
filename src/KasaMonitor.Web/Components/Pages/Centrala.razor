@@ -6,6 +6,7 @@
 @inject IServiceScopeFactory ScopeFactory
 @inject IHeatingSettingsService HeatingSettings
 @inject HeatingState State
+@inject ClimateState Climate
 @inject NavigationManager Nav
 @implements IDisposable
 
@@ -394,6 +395,11 @@ else if (!_settings.HasClientId || _settings.Token is null)
         if (s.BoilerTempC is not null) yield return ("Cazan", HeatingFormat.Temp(s.BoilerTempC), "heating.boiler.sensors.temperature.main");
         if (s.ReturnTempC is not null) yield return ("Retur", HeatingFormat.Temp(s.ReturnTempC), "heating.sensors.temperature.return");
         if (s.OutsideTempC is not null) yield return ("Exterior", HeatingFormat.Temp(s.OutsideTempC), "heating.sensors.temperature.outside");
+        // The „afară” sensor of /clima (Open-Meteo or an outdoor thermometer), next to the boiler's own temperatures.
+        if (Climate.Outdoor(DateTimeOffset.UtcNow) is { TemperatureC: { } outC } o)
+            yield return ("Afară", HeatingFormat.Temp(outC) + (o.HumidityPercent is { } rh ? " · " + HeatingFormat.Number(rh, 0) + " %" : ""),
+                $"{o.Sensor.Name} ({KasaMonitor.Core.Climate.ClimateSources.DisplayName(o.Sensor.Source)}), citit "
+                + (o.ReadUtc is { } r ? UiFormat.RelativeRo(r, DateTimeOffset.UtcNow) : "—") + "; vezi Climă");
         if (s.PressureBar is not null) yield return ("Presiune", HeatingFormat.Number(s.PressureBar, 1) + " bar", "heating.sensors.pressure.supply");
     }
 

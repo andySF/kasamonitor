@@ -21,7 +21,8 @@ public class MieleRepositoryTests
         ctx.GetService<Microsoft.EntityFrameworkCore.Migrations.IMigrator>().Migrate("20261101185832_AddHeatingReadingCounters");
         var before = ctx.Database.SqlQueryRaw<string>("SELECT name AS Value FROM sqlite_master WHERE type='table' ORDER BY name").ToList();
 
-        ctx.Database.Migrate();
+        // Up to the last Miele migration (later ones add their own tables, e.g. AddClimate).
+        ctx.GetService<Microsoft.EntityFrameworkCore.Migrations.IMigrator>().Migrate("20261102121526_AddMieleCycleSource");
 
         var after = ctx.Database.SqlQueryRaw<string>("SELECT name AS Value FROM sqlite_master WHERE type='table' ORDER BY name").ToList();
         after.Except(before).Should().BeEquivalentTo("MieleDevices", "MieleStateSnapshots", "MieleCycles");

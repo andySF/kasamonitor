@@ -16,6 +16,7 @@ public static class DependencyInjectionExtensions
         services.AddScoped<IHeatingRepository, HeatingRepository>();
         services.AddScoped<INilmRepository, NilmRepository>();
         services.AddScoped<IMieleRepository, MieleRepository>();
+        services.AddScoped<IClimateRepository, ClimateRepository>();
 
         services.AddSingleton<IPlugStateBroadcaster, PlugStateBroadcaster>();
         services.AddSingleton<ILiveStreamBroadcaster>(sp => new LiveStreamBroadcaster(

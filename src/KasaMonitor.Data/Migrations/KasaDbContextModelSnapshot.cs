@@ -108,6 +108,72 @@ namespace KasaMonitor.Data.Migrations
                     b.ToTable("ApplianceSignatures", (string)null);
                 });
 
+            modelBuilder.Entity("KasaMonitor.Data.Entities.ClimateReadingEntity", b =>
+                {
+                    b.Property<Guid>("SensorId")
+                        .HasColumnType("TEXT");
+
+                    b.Property<long>("Ts")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int?>("BatteryPercent")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<double?>("HumidityPercent")
+                        .HasColumnType("REAL");
+
+                    b.Property<double>("TemperatureC")
+                        .HasColumnType("REAL");
+
+                    b.HasKey("SensorId", "Ts");
+
+                    b.HasIndex("Ts");
+
+                    b.ToTable("ClimateReadings", (string)null);
+                });
+
+            modelBuilder.Entity("KasaMonitor.Data.Entities.ClimateSensorEntity", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("TEXT");
+
+                    b.Property<int?>("BatteryPercent")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("ExternalId")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<bool>("IsArchived")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<bool>("IsOutdoor")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<long?>("LastSeenUtc")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("Room")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("Source")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("Source", "ExternalId")
+                        .IsUnique();
+
+                    b.ToTable("ClimateSensors", (string)null);
+                });
+
             modelBuilder.Entity("KasaMonitor.Data.Entities.DailyEnergyEntity", b =>
                 {
                     b.Property<Guid>("PlugId")

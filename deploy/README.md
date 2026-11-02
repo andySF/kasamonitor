@@ -33,10 +33,10 @@ stack has no repository directory. Keep `network_mode: host`.
 ## Local build & push to Docker Hub
 
 ```powershell
-docker build -t duobit/kasamonitor:latest -t duobit/kasamonitor:0.8.6 -f deploy/Dockerfile .
+docker build -t duobit/kasamonitor:latest -t duobit/kasamonitor:0.8.7 -f deploy/Dockerfile .
 docker login
 docker push duobit/kasamonitor:latest
-docker push duobit/kasamonitor:0.8.6
+docker push duobit/kasamonitor:0.8.7
 ```
 
 ## Configuration
@@ -58,6 +58,9 @@ the environment variables are only initial values (full list in `../README.md`).
 | `KasaMonitor__MieleClientId` | — | Miele developer client (better: `/settings` → Miele) |
 | `KasaMonitor__MieleClientSecretFile` | `/run/secrets/miele-client.secret` | file with the Miele client secret, read at startup (see below) |
 | `KasaMonitor__MieleClientSecret` | — | alternative to the file; avoid (visible in `docker inspect`) |
+| `GOVEE_API_KEY_FILE` / `KasaMonitor__GoveeApiKeyFile` | `/run/secrets/govee-api.key` | file with the Govee API key, read at startup (see below) |
+| `KasaMonitor__GoveeApiKey` | — | alternative to the file; avoid (visible in `docker inspect`) |
+| `KasaMonitor__ClimateLatitude` / `KasaMonitor__ClimateLongitude` | — | initial location for the outdoor temperature (Open-Meteo); better: `/settings` |
 
 ### Miele client secret
 
@@ -76,6 +79,26 @@ file is read once at startup (restart the container after changing it); `/settin
 the source, never the value) or why it is missing. Then set the Client ID there and connect from `/aparate`
 („Conectează Miele”), with KasaMonitor opened at the address the redirect URI is built from, e.g.
 `http://192.168.254.2:8910` → `http://192.168.254.2:8910/miele/callback`.
+
+### Govee API key
+
+The Govee Developer API key (for the Wi-Fi thermometers of `/clima`) is never stored in the database or shown in the
+UI: mount it read-only as a file, like the Miele secret. On the QNAP stack put the key alone in
+`/share/Container/kasamonitor/secrets/govee-api.key` (owner-only permissions, e.g. `chmod 600`) and add to the
+`kasamonitor` service:
+
+```yaml
+    volumes:
+      - /share/Container/kasamonitor/data:/data
+      - /share/Container/kasamonitor/secrets/miele-client.secret:/run/secrets/miele-client.secret:ro
+      - /share/Container/kasamonitor/secrets/govee-api.key:/run/secrets/govee-api.key:ro
+```
+
+The default path needs no environment variable; another path goes into `GOVEE_API_KEY_FILE` (or
+`KasaMonitor__GoveeApiKeyFile`, which wins). The file is read once at startup (restart the container after changing
+it). `/settings` → Govee shows „încărcată” (with the source, never the value) or why it is missing, and lists the
+devices of the account: tick „acasă” on the thermometers to read; the others are never requested. Without the file
+the rest of KasaMonitor (and the other climate sources) work as before.
 
 ## Troubleshooting
 

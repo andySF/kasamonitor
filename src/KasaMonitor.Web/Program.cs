@@ -4,6 +4,7 @@ using KasaMonitor.Core.Protocol.Shelly;
 using KasaMonitor.Core.Protocol.Tapo;
 using KasaMonitor.Data;
 using KasaMonitor.Web;
+using KasaMonitor.Web.Api;
 using KasaMonitor.Web.Components;
 using KasaMonitor.Web.Integration;
 using KasaMonitor.Workers;
@@ -230,6 +231,9 @@ app.MapMetrics();
 app.MapPost("/api/client-error", (KasaMonitor.Web.Diagnostics.ClientErrorReport report, HttpContext ctx,
         KasaMonitor.Web.Diagnostics.ClientErrorEndpoint endpoint) => endpoint.Handle(report, ctx))
     .DisableAntiforgery();
+
+// NILM administration over HTTP (/api/nilm/*): the same actions as /consumatori; writes only from the LAN.
+app.MapNilmApi();
 
 // ViCare OAuth: /centrala/connect redirects to Viessmann (PKCE + state); Viessmann redirects back to /centrala/callback.
 // The redirect URI is this app's own address + /centrala/callback and must be registered on the developer portal.

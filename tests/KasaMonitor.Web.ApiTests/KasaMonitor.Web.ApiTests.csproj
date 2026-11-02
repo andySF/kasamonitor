@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Integration tests on WebApplicationFactory, in their own process: the app registers callbacks on the static
+       Prometheus registry that would interfere with the metric tests of KasaMonitor.Web.Tests. -->
+  <PropertyGroup>
+    <IsPackable>false</IsPackable>
+    <RootNamespace>KasaMonitor.Web.ApiTests</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.*" />
+    <PackageReference Include="xunit" Version="2.*" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="2.*" />
+    <PackageReference Include="FluentAssertions" Version="6.*" />
+    <PackageReference Include="Microsoft.AspNetCore.Mvc.Testing" Version="10.0.12" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\KasaMonitor.Web\KasaMonitor.Web.csproj" />
+  </ItemGroup>
+</Project>

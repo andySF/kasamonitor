@@ -7,7 +7,7 @@ plugs and energy meters (e.g. Shelly EM Gen3, local JSON-RPC; the only write is 
 with SQLite, a web UI on port 8910 and a Prometheus `/metrics` endpoint. An optional Prometheus + Grafana stack
 with a ready-made dashboard and alert rules is included.
 
-Version: **0.8.2** (`Directory.Build.props`). Docker image: `duobit/kasamonitor`.
+Version: **0.8.3** (`Directory.Build.props`). Docker image: `duobit/kasamonitor`.
 
 ## Quick start
 
@@ -59,9 +59,11 @@ TP-Link (Tapo app) account in `/settings` and press **Scanează acum** on `/plug
   the house) and „Rapoarte” on `/centrala` (gas, boiler electricity, heat produced), per day (hours), week, month
   (days) or year (months), with ◀ ▶ navigation, the change against the previous period and the cost. See
   [Reports](#reports-history-casă-and-centrala-rapoarte).
-- **Version in the menu**: „v0.8.2” at the right of the navigation bar; the tooltip shows the commit and the build time.
+- **Version in the menu**: „v0.8.3” at the right of the navigation bar; the tooltip shows the commit and the build time.
 - **Browser errors in the server log**: JavaScript errors and the Blazor error banner are reported to
   `POST /api/client-error` and logged at Warning (category `KasaMonitor.ClientErrors`), so `docker logs` shows them.
+- **HTTP API for the appliance detection** (`/api/nilm/*`, LAN only): list, sheet, label, merge, add to, hide, regroup,
+  train and raw events with `curl`, the same actions as `/consumatori`, plus „acum am pornit X” marks (`/api/nilm/mark`). See [HTTP API (LAN)](#http-api-lan).
 
 The web UI uses Bootstrap 5 and Bootstrap Icons, served locally (no CDN). Texts on Plugs/Settings/Integration are in Romanian.
 
@@ -106,6 +108,7 @@ not been saved from `/settings`.
 | Keep boiler readings (days) | `KasaMonitor__HeatingReadingsRetentionDays` | `0` = unlimited | `HeatingReadings` older than this are deleted once a day; daily gas history is never deleted |
 | Boiler time zone | `KasaMonitor__BoilerTimeZone` | `Europe/Berlin` | IANA zone of the boiler's day: its „today” counters reset at midnight there (Viessmann: Central European Time, 00:00 CET/CEST = 01:00 Romanian time); every daily attribution of the boiler's gas, electricity and heat uses it |
 | — | `KasaMonitor__DbPath` | `/data/kasa.db` (image) | |
+| — | `KasaMonitor__NilmApiToken` | — | optional; when set, every `/api/nilm/*` route needs the header `X-Api-Key` with this value. Set it before exposing KasaMonitor outside the LAN ([HTTP API (LAN)](#http-api-lan)); read per request |
 
 The DataProtection keys are kept next to the database, in `<db dir>/dp-keys` (`/data/dp-keys` in the container,
 on the persistent volume). If that directory is lost, the stored password cannot be decrypted and must be entered
@@ -779,6 +782,58 @@ house step (medians of the 20 s before and after, ±3 s ignored, cut at large ne
 two plugs moving together, or two large steps less than ~7 s apart give no label. Measured on the washing machine of
 2 Nov 2026: 12 of its 13 heater steps labelled with the plug's stream, 10 with the 10-second polls only (7 in 0.8.1).
 
+## HTTP API (LAN)
+
+Since 0.8.3 the appliance detection can be operated without the UI, with `curl` from the LAN: `/api/nilm/*`, JSON.
+Every route calls the same method as the matching button of `/consumatori` (same merge routine, same survivor rule,
+same „Adaugă la aparatul…” semantics); nothing in the API decides on its own.
+
+**Security.** Like the relay switch, the API has no password and is meant for the LAN only: the `POST` routes
+(changes) are accepted only from private addresses (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, loopback),
+judged on the address of the TCP connection (never on `X-Forwarded-For`); any other address gets `403`. The `GET`
+routes are read-only. Every `POST` is logged at Information with what was done and the caller's address (category
+`KasaMonitor.Web.Api.NilmApi`); a refused one at Warning. **If KasaMonitor is ever reachable from outside the LAN**
+(port forward, reverse proxy, VPN without filtering), set a token: `KasaMonitor__NilmApiToken=<long random value>`.
+With a token every `/api/nilm/*` route (also `GET`) needs the header `X-Api-Key: <token>` (otherwise `401`), and the
+`POST` routes still need a private address (behind a reverse proxy that address is the proxy's, so the token is
+what protects them).
+
+Answers: `200` with JSON; `400` for a bad request (`{"error": "…"}` in Romanian), `404` when a signature id does not
+exist, `403` from outside the LAN, `401` without the token (when one is set), `503` when the detection is busy (a
+backfill, the nightly job or another regroup; retry in a few seconds).
+
+| Route | What it does (button on `/consumatori`) |
+|---|---|
+| `GET /api/nilm/signatures[?all=true]` | the signatures: id, name, category, labelSource, plugAlias (the plug that measures it, or the „posibil” plug), plugLinked, meanDeltaP, meanDeltaQ, meanTransient, count, hidden, lastSeen. By default the page's filter (plug-measured ones, and the detected ones with ≥ 3 events, a name of their own or a „posibil” plug, not hidden); `all=true` adds the rare and hidden ones. Most events first |
+| `GET /api/nilm/signatures/{id}` | the sheet („fișa”: profile over the window) and the newest 50 events (ts, deltaP, deltaQ, label, source, …) |
+| `POST /api/nilm/signatures/{id}/label` | body `{"name": "…", "category": "washer"}`, both optional but not both missing: rename (a user label) and/or set the category (`fridge`, `boiler`, `cooking`, `washer`, `hvac`, `lighting`, `electronics`, `other`) |
+| `POST /api/nilm/signatures/{id}/merge-into/{targetId}` | „Unește cu…”: the survivor is chosen by the rule of the automatic merge (your name, then a plug, then more events); the answer gives `survivorId` and `absorbedId` |
+| `POST /api/nilm/signatures/{id}/add-to/{targetId}` | „Adaugă la aparatul…”: `outcome` = `merged` (close centres: the events move to the target) or `named` (distant: the signature takes the target's name and category, two rows stay) |
+| `POST /api/nilm/signatures/{id}/hide`, `…/unhide` | hide / show again |
+| `POST /api/nilm/mark` | „acum am pornit X” (ground truth, no button): body `{"name": "Fierbător", "category": "cooking", "at": "2026-11-02T12:15:00+02:00"}`, `category` and `at` optional (default: now). The stored main-meter event with \|ΔP\| ≥ 100 W nearest to `at` within ±90 s is labelled by you, like an event label on `/consumatori` (it moves to the signature of that name if one exists; otherwise its automatic signature, or a new one, takes the name and the category): `outcome` = `matched`, with the event and its signature. Without such an event yet (the appliance starts in a few seconds, or the event still waits the 45 s for the plugs' readings) the mark waits in memory up to 10 minutes (`pendingUntil`; lost at a restart) and the detector gives it the first event ≥ 100 W it stores from `at` − 90 s on: `outcome` = `pending`. A time more than 45 s + 90 s in the past without such an event: `404` |
+| `POST /api/nilm/regroup` | „Regrupează acum”: events, anchored, clusters, signatures, moved, merged, the merges with their reason, and the training that follows |
+| `POST /api/nilm/train` | „Antrenează acum”: trained, labelled events and classes, the classes, cross-validated accuracy, folds, duration |
+| `GET /api/nilm/events?from=…&to=…&minAbsDeltaP=…` | the raw stored events (diagnostics), oldest first; `from`/`to` ISO 8601 (default: the last 24 h, at most 31 days), `minAbsDeltaP` in W (default 0) |
+
+Examples (`K=http://<host>:8910`; add `-H "X-Api-Key: $TOKEN"` when a token is set):
+
+```bash
+curl -s "$K/api/nilm/signatures" | jq '.[] | {id, name, count, meanDeltaP, plugAlias}'
+curl -s "$K/api/nilm/signatures?all=true"
+curl -s "$K/api/nilm/signatures/53"
+curl -s -X POST "$K/api/nilm/signatures/53/label" -H "Content-Type: application/json" \
+     -d '{"name": "Mașina de spălat", "category": "washer"}'
+curl -s -X POST "$K/api/nilm/signatures/55/merge-into/53"
+curl -s -X POST "$K/api/nilm/signatures/61/add-to/53"
+curl -s -X POST "$K/api/nilm/signatures/70/hide"
+curl -s -X POST "$K/api/nilm/signatures/70/unhide"
+curl -s -X POST "$K/api/nilm/mark" -H "Content-Type: application/json" -d '{"name": "Fierbător", "category": "cooking"}'
+curl -s -X POST "$K/api/nilm/mark" -H "Content-Type: application/json" -d '{"name": "Fierbător", "at": "2026-11-02T12:15:00+02:00"}'
+curl -s -X POST "$K/api/nilm/regroup"
+curl -s -X POST "$K/api/nilm/train"
+curl -s "$K/api/nilm/events?from=2026-11-02T08:00:00Z&to=2026-11-02T09:00:00Z&minAbsDeltaP=100"
+```
+
 ## Data retention
 
 | Data | Table | Written | Deleted |
@@ -805,6 +860,11 @@ a retention. SQLite does not shrink the file after deletions (the space is reuse
 - `Live stream <mac> (<ip>) connected: EM1.GetStatus for channels 0` — Information (Shelly); a device that fails
   logs one Warning (`…; retrying with backoff`), repeats at Debug, then `receiving again after N failed attempts`.
 - `Relay command ON|OFF for <alias> (<ip>, switch:N) from ui: ok|<error>` — Information.
+- `NILM API: signature <id> labelled (name <name>, category <category>) from <ip>` (and `… merged, <id> stays`, `… added
+  to <id> (Merged|Named)`, `… hidden|unhidden`, `regroup from <ip>: …`, `train from <ip>: …`) — Information, every
+  `POST /api/nilm/*` (`NILM API: mark <name> (category <c>) at <time> from <ip>: Matched|Pending|NotFound…`); `NILM: pending
+  mark <name> labelled the event <id> …` and `NILM: mark <name> of <time> expired without an event …` — Information;
+  `NILM API: POST <path> refused from <ip> (not a LAN address)` — Warning.
 
 ## Build and test
 
@@ -818,8 +878,8 @@ dotnet test KasaMonitor.sln
 From the repository root, with Docker running and `docker login` done once:
 
 ```powershell
-.\deploy\build-and-push.ps1 -Version 0.8.2          # build :0.8.2 + :latest and push both
-.\deploy\build-and-push.ps1 -Version 0.8.2 -NoPush  # local build only
+.\deploy\build-and-push.ps1 -Version 0.8.3          # build :0.8.3 + :latest and push both
+.\deploy\build-and-push.ps1 -Version 0.8.3 -NoPush  # local build only
 ```
 
 or manually:

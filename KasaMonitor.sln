@@ -23,6 +23,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "KasaMonitor.Web", "src\Kasa
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "KasaMonitor.Web.Tests", "tests\KasaMonitor.Web.Tests\KasaMonitor.Web.Tests.csproj", "{56D8217D-2CEB-452F-A656-9049FAC02AAB}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "KasaMonitor.Web.ApiTests", "tests\KasaMonitor.Web.ApiTests\KasaMonitor.Web.ApiTests.csproj", "{28341451-5691-42FF-850F-89E95E405530}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -129,6 +131,18 @@ Global
 		{56D8217D-2CEB-452F-A656-9049FAC02AAB}.Release|x64.Build.0 = Release|Any CPU
 		{56D8217D-2CEB-452F-A656-9049FAC02AAB}.Release|x86.ActiveCfg = Release|Any CPU
 		{56D8217D-2CEB-452F-A656-9049FAC02AAB}.Release|x86.Build.0 = Release|Any CPU
+		{28341451-5691-42FF-850F-89E95E405530}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{28341451-5691-42FF-850F-89E95E405530}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{28341451-5691-42FF-850F-89E95E405530}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{28341451-5691-42FF-850F-89E95E405530}.Debug|x64.Build.0 = Debug|Any CPU
+		{28341451-5691-42FF-850F-89E95E405530}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{28341451-5691-42FF-850F-89E95E405530}.Debug|x86.Build.0 = Debug|Any CPU
+		{28341451-5691-42FF-850F-89E95E405530}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{28341451-5691-42FF-850F-89E95E405530}.Release|Any CPU.Build.0 = Release|Any CPU
+		{28341451-5691-42FF-850F-89E95E405530}.Release|x64.ActiveCfg = Release|Any CPU
+		{28341451-5691-42FF-850F-89E95E405530}.Release|x64.Build.0 = Release|Any CPU
+		{28341451-5691-42FF-850F-89E95E405530}.Release|x86.ActiveCfg = Release|Any CPU
+		{28341451-5691-42FF-850F-89E95E405530}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
@@ -140,5 +154,6 @@ Global
 		{80463264-687A-41FB-B89B-4DC54AC7E9B1} = {0AB3BF05-4346-4AA6-1389-037BE0695223}
 		{84F9113A-25FE-4248-89D9-5D2FD565F8A0} = {827E0CD3-B72D-47B6-A68D-7590B98EB39B}
 		{56D8217D-2CEB-452F-A656-9049FAC02AAB} = {0AB3BF05-4346-4AA6-1389-037BE0695223}
+		{28341451-5691-42FF-850F-89E95E405530} = {0AB3BF05-4346-4AA6-1389-037BE0695223}
 	EndGlobalSection
 EndGlobal

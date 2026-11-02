@@ -301,6 +301,51 @@ public class NilmServiceTests
     }
 
     [Fact]
+    public async Task Mark_WithoutAStoredEvent_WaitsAndLabelsTheFirstLargeEventTheDetectorStores_Once()
+    {
+        using var rig = new Rig();
+        var main = await rig.AddAsync("aabbccddee00", "Casa", PlugRole.MainMeter, PlugProtocols.ShellyRpc);
+        var svc = rig.Service();
+        await svc.RunOnceAsync(CancellationToken.None);
+
+        var mark = await svc.MarkAsync("  Fierbător ", "cooking", null, CancellationToken.None);
+        mark!.Outcome.Should().Be(MarkOutcome.Pending);
+        mark.Event.Should().BeNull();
+        mark.Mark.ExpiresUtc.Should().Be(T0 + NilmService.MarkPendingFor);
+
+        // +60 W at 10 s (too small for a mark), +2000 W at 20 s (the kettle), then +2000 W more at 100 s (something else).
+        for (var t = 0; t < 140; t++)
+            rig.Live.Publish(new LiveSample(main, T0.AddSeconds(t), 300 + (t >= 10 ? 60 : 0) + (t >= 20 ? 2000 : 0) + (t >= 100 ? 2000 : 0)));
+        rig.Now = T0.AddSeconds(141);
+        await svc.RunOnceAsync(CancellationToken.None);
+        rig.Now = T0.AddSeconds(200);
+        await svc.RunOnceAsync(CancellationToken.None);
+
+        var events = await rig.Repo(r => r.ListEventsAsync(T0, rig.Now, CancellationToken.None));
+        events.Select(e => Math.Round(e.DeltaP)).Should().Equal(60, 2000, 2000);
+        events[0].Source.Should().Be(EventLabelSource.None, "below the mark's minimum step");
+        events[1].Label.Should().Be("Fierbător");
+        events[1].Source.Should().Be(EventLabelSource.User);
+        events[2].Source.Should().Be(EventLabelSource.None, "a mark labels one event");
+        var sig = await rig.Repo(r => r.GetSignatureAsync(events[1].SignatureId!.Value, CancellationToken.None));
+        sig!.Name.Should().Be("Fierbător");
+        sig.Category.Should().Be("cooking");
+        sig.LabelSource.Should().Be(SignatureLabelSource.User);
+    }
+
+    [Fact]
+    public async Task Mark_ATimeLongPastWithoutAnEvent_IsNotFound_NeverPending()
+    {
+        using var rig = new Rig();
+        var svc = rig.Service();
+
+        var r = await svc.MarkAsync("Fierbător", null, T0.AddMinutes(-10), CancellationToken.None);
+
+        r!.Outcome.Should().Be(MarkOutcome.NotFound);
+        (await svc.MarkAsync("   ", null, null, CancellationToken.None)).Should().BeNull();
+    }
+
+    [Fact]
     public async Task PlugStream_LabelsTheEvent_LiveAndFromStorage_WithoutAny10SecondReading()
     {
         using var rig = new Rig();

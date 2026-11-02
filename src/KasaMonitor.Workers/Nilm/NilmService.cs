@@ -64,6 +64,12 @@ public sealed record NilmOverview(IReadOnlyList<SignatureRow> Detected, int Dete
 public sealed record SignatureProfileView(ApplianceSignature Signature, SignatureProfile Profile, string? PlugAlias, bool PlugLinked);
 
 /// <summary>
+/// One signature of the HTTP API's list: <see cref="PlugAlias"/> = the plug that measures it (<see cref="PlugLinked"/>)
+/// or, for a detected one, the plug of its „posibil &lt;priză&gt;” badge.
+/// </summary>
+public sealed record SignatureListItem(ApplianceSignature Signature, string? PlugAlias, bool PlugLinked);
+
+/// <summary>
 /// What a re-clustering did: events re-clustered, of which given to an anchor (labelled signature) before DBSCAN, clusters
 /// found, signatures left, events moved, signatures merged automatically (<see cref="Merges"/>: which, and why).
 /// </summary>
@@ -83,6 +89,25 @@ public enum AddToOutcome
     Merged = 1,
     Named = 2,
 }
+
+/// <summary>
+/// „Acum am pornit X” (ground truth from the HTTP API): the name (and category) for the main meter's event nearest to
+/// <see cref="AtUtc"/>; kept in memory until <see cref="ExpiresUtc"/> while that event is not stored yet.
+/// </summary>
+public sealed record NilmMark(string Name, string? Category, DateTimeOffset AtUtc, DateTimeOffset ExpiresUtc);
+
+/// <summary>What a mark did: labelled a stored event, waits for the next one, or found none (a time in the past).</summary>
+public enum MarkOutcome
+{
+    Matched = 1,
+    Pending = 2,
+
+    /// <summary>No such event, and the mark's time is too old for one still to come (<see cref="NilmService.MarkAsync"/>).</summary>
+    NotFound = 3,
+}
+
+/// <summary>The result of <see cref="NilmService.MarkAsync"/>: <see cref="Event"/> = the labelled event (matched).</summary>
+public sealed record NilmMarkResult(MarkOutcome Outcome, NilmMark Mark, MeterEvent? Event);
 
 /// <summary>The NILM settings in effect.</summary>
 public sealed record NilmSettings(bool Enabled, int MinEventDeltaW, int ClusterWindowDays, bool MlEnabled);
@@ -138,6 +163,15 @@ public sealed class NilmService : BackgroundService
     public const int MaxQueuedSamples = 100_000;
     public const int PageSize = 50;
 
+    /// <summary>A mark („acum am pornit X”) labels only an event of at least this |ΔP|…</summary>
+    public const double MarkMinDeltaW = 100;
+
+    /// <summary>…within this much of the mark's time (a stored event), or after the mark's time minus this (a pending mark)…</summary>
+    public static readonly TimeSpan MarkWindow = TimeSpan.FromSeconds(90);
+
+    /// <summary>…and a mark without such an event waits in memory this long for the detector.</summary>
+    public static readonly TimeSpan MarkPendingFor = TimeSpan.FromMinutes(10);
+
     /// <summary>A detected appliance is exported to /metrics when the user named it or it has at least this many events in the window.</summary>
     public const int MinEventsForMetrics = 10;
 
@@ -171,6 +205,7 @@ public sealed class NilmService : BackgroundService
     private bool _initialized;
     private bool _reclusterDue;
     private bool _trainDue;
+    private readonly List<NilmMark> _marks = new();   // pending marks, consumed by the next batch (under the lock)
     private readonly List<MeterEvent> _recentLabelled = new();   // the last minute of labelled events (neighbours of the next batch)
     private NilmSettings _current = new(true, KasaSettingsDefaults.DefaultMinEventDeltaW, KasaSettingsDefaults.DefaultClusterWindowDays, true);
     private DateTimeOffset _lastMarker = DateTimeOffset.MinValue, _lastSummary = DateTimeOffset.MinValue, _lastPlugs = DateTimeOffset.MinValue;
@@ -643,6 +678,42 @@ public sealed class NilmService : BackgroundService
         }
         await SaveRunsAsync(runs.Values.ToList(), ct, sp);
         await RefreshSignaturesAsync(repo, stored.Select(e => e.SignatureId!.Value).Distinct().ToList(), ct);
+        await ConsumeMarksAsync(sp, repo, stored, ct);
+    }
+
+    /// <summary>
+    /// Pending marks (oldest first) take the first stored event of the batch with |ΔP| ≥ <see cref="MarkMinDeltaW"/> from
+    /// <see cref="MarkWindow"/> before the mark's time until it expires, one event each, labelled like a matched mark;
+    /// expired marks are dropped.
+    /// </summary>
+    private async Task ConsumeMarksAsync(IServiceProvider sp, INilmRepository repo, IReadOnlyList<MeterEvent> stored, CancellationToken ct)
+    {
+        List<NilmMark> marks;
+        lock (_marks)
+        {
+            if (_marks.Count == 0) return;
+            marks = _marks.OrderBy(m => m.AtUtc).ToList();
+        }
+        var used = new HashSet<long>();
+        var done = new List<NilmMark>();
+        foreach (var m in marks)
+        {
+            var e = stored.Where(x => IsMarkable(x) && !used.Contains(x.Id) && x.TsUtc >= m.AtUtc - MarkWindow && x.TsUtc <= m.ExpiresUtc)
+                .OrderBy(x => x.TsUtc).FirstOrDefault();
+            if (e is null) continue;
+            used.Add(e.Id);
+            done.Add(m);
+            await ApplyMarkAsync(sp, repo, m, e.Id, ct);
+            _log.LogInformation("NILM: pending mark {Name} labelled the event {Id} at {Ts:o} (ΔP {DeltaP:0} W)", m.Name, e.Id, e.TsUtc, e.DeltaP);
+        }
+        var now = _clock();
+        lock (_marks)
+        {
+            foreach (var m in _marks.Where(m => m.ExpiresUtc <= now && !done.Any(d => ReferenceEquals(d, m))))
+                _log.LogInformation("NILM: mark {Name} of {At:o} expired without an event of at least {Min} W", m.Name, m.AtUtc, MarkMinDeltaW);
+            _marks.RemoveAll(m => m.ExpiresUtc <= now || done.Any(d => ReferenceEquals(d, m)));
+        }
+        if (done.Count > 0) _signatures = (await repo.ListSignaturesAsync(ct)).ToList();
     }
 
     /// <summary>
@@ -1160,7 +1231,7 @@ public sealed class NilmService : BackgroundService
     }
 
     /// <summary>Renames a signature (kept by the re-clustering; a signature measured by a plug stays measured by it).</summary>
-    public Task RenameAsync(long id, string name, CancellationToken ct) => UnderGateAsync<bool>(async (_, repo) =>
+    public Task<bool> RenameAsync(long id, string name, CancellationToken ct) => UnderGateAsync(async (_, repo) =>
     {
         name = SignatureNaming.CleanName(name);
         if (name.Length == 0 || await repo.GetSignatureAsync(id, ct) is not { } s) return false;
@@ -1169,16 +1240,19 @@ public sealed class NilmService : BackgroundService
     }, ct);
 
     /// <summary>Sets the category (and its icon).</summary>
-    public Task SetCategoryAsync(long id, string category, CancellationToken ct) => UnderGateAsync<bool>(async (_, repo) =>
+    public Task<bool> SetCategoryAsync(long id, string category, CancellationToken ct) =>
+        UnderGateAsync((_, repo) => SetCategoryCoreAsync(repo, id, category, ct), ct);
+
+    private static async Task<bool> SetCategoryCoreAsync(INilmRepository repo, long id, string category, CancellationToken ct)
     {
         if (await repo.GetSignatureAsync(id, ct) is not { } s) return false;
         var c = ApplianceCategories.Get(category);
         await repo.UpdateSignatureAsync(s with { Category = c.Key, Icon = c.Icon }, ct);
         return true;
-    }, ct);
+    }
 
     /// <summary>Hides a signature: not in the cards and metrics (its energy stays "unidentified").</summary>
-    public Task SetHiddenAsync(long id, bool hidden, CancellationToken ct) => UnderGateAsync<bool>(async (_, repo) =>
+    public Task<bool> SetHiddenAsync(long id, bool hidden, CancellationToken ct) => UnderGateAsync(async (_, repo) =>
     {
         if (await repo.GetSignatureAsync(id, ct) is not { } s) return false;
         await repo.UpdateSignatureAsync(s with { Hidden = hidden }, ct);
@@ -1310,6 +1384,60 @@ public sealed class NilmService : BackgroundService
     }
 
     /// <summary>
+    /// The signatures for the HTTP API (read without the processing lock). By default the filter of /consumatori: every
+    /// signature measured by a plug, and the detected ones of <see cref="SignatureListing.ShownByDefault"/> that are not
+    /// hidden; with <paramref name="all"/> every signature (rare and hidden ones too). Most events first, then id.
+    /// </summary>
+    public async Task<IReadOnlyList<SignatureListItem>> ListSignaturesAsync(bool all, CancellationToken ct)
+    {
+        using var scope = _scopes.CreateScope();
+        var repo = scope.ServiceProvider.GetRequiredService<INilmRepository>();
+        var items = await ListItemsAsync(scope.ServiceProvider, repo, await repo.ListSignaturesAsync(ct), ct);
+        return items.Where(i => all || i.Signature.ConfirmedByPlug
+                || (!i.Signature.Hidden && SignatureListing.ShownByDefault(i.Signature, i.PlugAlias is not null)))
+            .OrderByDescending(i => i.Signature.Count).ThenBy(i => i.Signature.Id).ToList();
+    }
+
+    /// <summary>One signature as in <see cref="ListSignaturesAsync"/>, or null when it does not exist.</summary>
+    public async Task<SignatureListItem?> GetSignatureAsync(long id, CancellationToken ct)
+    {
+        using var scope = _scopes.CreateScope();
+        var repo = scope.ServiceProvider.GetRequiredService<INilmRepository>();
+        if (await repo.GetSignatureAsync(id, ct) is not { } sig) return null;
+        return (await ListItemsAsync(scope.ServiceProvider, repo, new[] { sig }, ct))[0];
+    }
+
+    private async Task<IReadOnlyList<SignatureListItem>> ListItemsAsync(IServiceProvider sp, INilmRepository repo,
+        IReadOnlyList<ApplianceSignature> signatures, CancellationToken ct)
+    {
+        var plugs = _plugs.Count > 0 ? _plugs : await sp.GetRequiredService<IPlugRepository>().ListAllAsync(ct);
+        var possible = await PossiblePlugsAsync(sp, repo, signatures.Where(s => !s.ConfirmedByPlug).Select(s => s.Id).ToList(), _clock(), ct);
+        return signatures.Select(s => s.PlugId is { } pid
+                ? new SignatureListItem(s, plugs.FirstOrDefault(p => p.Id == pid)?.Alias, true)
+                : new SignatureListItem(s, possible.GetValueOrDefault(s.Id), false))
+            .ToList();
+    }
+
+    /// <summary>The newest <paramref name="max"/> events of a signature (all stored ones, not only the window), newest first.</summary>
+    public async Task<IReadOnlyList<MeterEvent>> ListSignatureEventsAsync(long id, int max, CancellationToken ct)
+    {
+        using var scope = _scopes.CreateScope();
+        var events = await scope.ServiceProvider.GetRequiredService<INilmRepository>()
+            .ListEventsBySignaturesAsync(new[] { id }, DateTimeOffset.UnixEpoch, ct);
+        return events.Reverse().Take(max).ToList();
+    }
+
+    /// <summary>The stored events of a range with |ΔP| ≥ <paramref name="minAbsDeltaP"/>, oldest first, with their signature's name.</summary>
+    public async Task<IReadOnlyList<EventRow>> ListEventsAsync(DateTimeOffset fromUtc, DateTimeOffset toUtc, double minAbsDeltaP, CancellationToken ct)
+    {
+        using var scope = _scopes.CreateScope();
+        var repo = scope.ServiceProvider.GetRequiredService<INilmRepository>();
+        var names = (await repo.ListSignaturesAsync(ct)).ToDictionary(s => s.Id, s => s.Name);
+        return (await repo.ListEventsAsync(fromUtc, toUtc, ct)).Where(e => Math.Abs(e.DeltaP) >= minAbsDeltaP)
+            .Select(e => new EventRow(e, e.SignatureId is { } sid && names.TryGetValue(sid, out var n) ? n : null)).ToList();
+    }
+
+    /// <summary>
     /// Splits a signature by clustering its events of the window again with half the eps; the largest part keeps the
     /// signature, every other part becomes a new one. Returns the number of parts (1 = could not be split).
     /// </summary>
@@ -1343,15 +1471,25 @@ public sealed class NilmService : BackgroundService
     /// user, not measured by a plug), else a new signature with that name is created for it.
     /// </summary>
     public Task<bool> LabelEventAsync(long eventId, string label, CancellationToken ct) => UnderGateAsync(async (sp, repo) =>
+        await LabelEventCoreAsync(sp, repo, eventId, label, ct) is not null, ct);
+
+    /// <summary>
+    /// The body of <see cref="LabelEventAsync"/> (caller holds the processing lock): the event's signature afterwards and
+    /// whether that signature took the name here (an automatic one renamed, or a new one), or null (empty label, no event).
+    /// </summary>
+    private async Task<(long SignatureId, bool Named)?> LabelEventCoreAsync(IServiceProvider sp, INilmRepository repo, long eventId, string label,
+        CancellationToken ct)
     {
         label = SignatureNaming.CleanName(label);
-        if (label.Length == 0 || await repo.GetEventAsync(eventId, ct) is not { } e) return false;
+        if (label.Length == 0 || await repo.GetEventAsync(eventId, ct) is not { } e) return null;
         var signatures = await repo.ListSignaturesAsync(ct);
         var current = e.SignatureId is { } cid ? signatures.FirstOrDefault(s => s.Id == cid) : null;
         long sigId;
-        if (signatures.FirstOrDefault(s => string.Equals(s.Name, label, StringComparison.Ordinal)) is { } named)
+        var named = true;
+        if (signatures.FirstOrDefault(s => string.Equals(s.Name, label, StringComparison.Ordinal)) is { } existing)
         {
-            sigId = named.Id;
+            sigId = existing.Id;
+            named = false;
         }
         else if (current is { LabelSource: SignatureLabelSource.Cluster, PlugId: null })
         {
@@ -1370,8 +1508,51 @@ public sealed class NilmService : BackgroundService
         var ids = current is not null && current.Id != sigId ? new[] { current.Id, sigId } : new[] { sigId };
         await RefreshSignaturesAsync(repo, ids, ct);
         if (current?.Id != sigId) await RebuildRunsAsync(sp, ids, WindowStart(_clock()), _clock(), ct);
-        return true;
-    }, ct);
+        return (sigId, named);
+    }
+
+    /// <summary>
+    /// „Acum am pornit X” (HTTP API, ground truth): the stored event of the main meter with |ΔP| ≥ <see cref="MarkMinDeltaW"/>
+    /// nearest to <paramref name="atUtc"/> (default now) within ±<see cref="MarkWindow"/> is labelled by the user like an
+    /// event label of /consumatori (<see cref="LabelEventAsync"/>); the signature that takes the name (an automatic one, or
+    /// a new one) also takes <paramref name="category"/>. Without such an event (the appliance starts in a few seconds,
+    /// or the event waits <see cref="LabelDelay"/>) the mark waits in memory for <see cref="MarkPendingFor"/> and the
+    /// detector gives it the first such event it stores. A time older than <see cref="LabelDelay"/> + <see cref="MarkWindow"/>
+    /// (every event of its window is stored already) without such an event is <see cref="MarkOutcome.NotFound"/>, never
+    /// pending. Null when the name is empty.
+    /// </summary>
+    public Task<NilmMarkResult?> MarkAsync(string name, string? category, DateTimeOffset? atUtc, CancellationToken ct) =>
+        UnderGateAsync<NilmMarkResult?>(async (sp, repo) =>
+        {
+            name = SignatureNaming.CleanName(name);
+            if (name.Length == 0) return null;
+            var now = _clock();
+            var at = atUtc ?? now;
+            var mark = new NilmMark(name, category is null ? null : ApplianceCategories.Normalize(category), at, (at > now ? at : now) + MarkPendingFor);
+            var near = (await repo.ListEventsAsync(at - MarkWindow, at + MarkWindow, ct)).Where(IsMarkable)
+                .OrderBy(e => (e.TsUtc - at).Duration()).FirstOrDefault();
+            if (near is null && at < now - LabelDelay - MarkWindow) return new NilmMarkResult(MarkOutcome.NotFound, mark, null);
+            if (near is null)
+            {
+                lock (_marks)
+                {
+                    _marks.RemoveAll(m => m.ExpiresUtc <= now);
+                    _marks.Add(mark);
+                }
+                return new NilmMarkResult(MarkOutcome.Pending, mark, null);
+            }
+            return new NilmMarkResult(MarkOutcome.Matched, mark, await ApplyMarkAsync(sp, repo, mark, near.Id, ct));
+        }, ct);
+
+    private static bool IsMarkable(MeterEvent e) => Math.Abs(e.DeltaP) >= MarkMinDeltaW;
+
+    /// <summary>Labels the event with the mark (caller holds the processing lock); returns the event as stored afterwards.</summary>
+    private async Task<MeterEvent?> ApplyMarkAsync(IServiceProvider sp, INilmRepository repo, NilmMark mark, long eventId, CancellationToken ct)
+    {
+        if (await LabelEventCoreAsync(sp, repo, eventId, mark.Name, ct) is not { } r) return null;
+        if (mark.Category is { } c && r.Named) await SetCategoryCoreAsync(repo, r.SignatureId, c, ct);
+        return await repo.GetEventAsync(eventId, ct);
+    }
 
     public override void Dispose()
     {

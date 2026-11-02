@@ -48,8 +48,15 @@ public sealed record SignatureRow(ApplianceSignature Signature, double TodayWh, 
 /// <summary>One event of the last 24 h on /consumatori.</summary>
 public sealed record EventRow(MeterEvent Event, string? SignatureName);
 
-/// <summary>A plug and whether it teaches the detection.</summary>
-public sealed record PlugNilmRow(Guid PlugId, string Alias, PlugNilmState State);
+/// <summary>
+/// A plug and whether it teaches the detection. <see cref="SingleAppliance"/>: „un singur aparat pe priză”, its events
+/// labelled <see cref="ApplianceName"/> (the name in effect: the alias when none was given) and kept out of the training.
+/// </summary>
+public sealed record PlugNilmRow(Guid PlugId, string Alias, PlugNilmState State, bool SingleAppliance = false, string? ApplianceName = null,
+    string? ApplianceCategory = null)
+{
+    public static PlugNilmRow Of(Plug p) => new(p.Id, p.Alias, p.NilmState, p.SingleAppliance, p.Appliance ?? p.ApplianceName, p.ApplianceCategory);
+}
 
 /// <param name="DetectedTotal">Every detected signature (not measured by a plug), listed or not.</param>
 /// <param name="RareCount">Detected signatures left out of the default list (<see cref="SignatureListing.ShownByDefault"/>).</param>
@@ -306,6 +313,17 @@ public sealed class NilmService : BackgroundService
     private DateTimeOffset WindowStart(DateTimeOffset nowUtc) => nowUtc.AddDays(-_current.ClusterWindowDays);
 
     private IReadOnlyCollection<Guid> ExcludedPlugs => _plugs.Where(p => PlugNilmStates.IsIgnored(p.NilmState)).Select(p => p.Id).ToList();
+
+    /// <summary>
+    /// The plugs whose labels never train the classifier (<see cref="Plug.ExcludedFromTraining"/>): those excluded from
+    /// learning and the single-appliance ones. Only the training uses this list; the plug rule and the profiles keep
+    /// <see cref="ExcludedPlugs"/>, so a single-appliance plug still labels and links its events.
+    /// </summary>
+    public static IReadOnlyCollection<Guid> TrainingExcluded(IEnumerable<Plug> plugs) => plugs.Where(p => p.ExcludedFromTraining).Select(p => p.Id).ToList();
+
+    /// <summary>The single-appliance plug with this id (<see cref="Plug.Appliance"/> set), or null.</summary>
+    private Plug? SingleAppliancePlug(Guid? plugId) =>
+        plugId is { } id ? _plugs.FirstOrDefault(p => p.Id == id && p.Appliance is not null) : null;
 
     /// <summary>A detected appliance (not hidden, not measured by a plug) that the user named or that has ≥ 10 events in the window.</summary>
     public static bool IsExported(ApplianceSignature s) =>
@@ -596,7 +614,8 @@ public sealed class NilmService : BackgroundService
         q.Enqueue(ts);
         while (q.Count > 0 && ts - q.Peek() > TimeSpan.FromHours(1)) q.Dequeue();
         var plug = _plugs.FirstOrDefault(p => p.Id == plugId);
-        if (plug is null || plug.NilmState != PlugNilmState.Auto || q.Count <= PlugNilmStates.MaxMatchesPerHour) return true;
+        // A single-appliance plug is never excluded automatically: its matches are that appliance, and it does not train.
+        if (plug is null || plug.SingleAppliance || plug.NilmState != PlugNilmState.Auto || q.Count <= PlugNilmStates.MaxMatchesPerHour) return true;
         using (var scope = _scopes.CreateScope())
             await scope.ServiceProvider.GetRequiredService<IPlugRepository>().SetNilmStateAsync(plugId, PlugNilmState.IgnoredAuto, ct);
         _plugs = _plugs.Select(p => p.Id == plugId ? p with { NilmState = PlugNilmState.IgnoredAuto } : p).ToList();
@@ -636,7 +655,8 @@ public sealed class NilmService : BackgroundService
             var neighbours = NeighboursOf(e, batch, later);
             if (PlugEventMatcher.Match(e.TsUtc, e.DeltaP, plugsFor(e), _usedChanges, neighbours) is { } m && await RegisterMatchAsync(m.PlugId, e.TsUtc, ct))
             {
-                e = e with { Label = m.Alias, Source = EventLabelSource.AutoPlug, LabelPlugId = m.PlugId };
+                // A single-appliance plug labels with its appliance's name („Frigider”), any other with its alias.
+                e = e with { Label = SingleAppliancePlug(m.PlugId)?.Appliance ?? m.Alias, Source = EventLabelSource.AutoPlug, LabelPlugId = m.PlugId };
                 // Ground truth (e.g. a Miele appliance in its main wash): only for an event the plug already confirmed.
                 if (GroundTruthLabel(m.PlugId, e.TsUtc) is { } truth)
                 {
@@ -649,6 +669,9 @@ public sealed class NilmService : BackgroundService
                 e = e with { Label = p.Label, Source = EventLabelSource.Model };
 
             long? sigId = null;
+            // Confirmed by a single-appliance plug: that plug's signature at once (no 60 % / 3 events), never an anonymous one.
+            if (e.Source == EventLabelSource.AutoPlug && SingleAppliancePlug(e.LabelPlugId) is { } single)
+                sigId = await SingleApplianceSignatureAsync(repo, e, single, created, ct);
             if (e.Source == EventLabelSource.Model)
                 sigId = _signatures.Where(s => string.Equals(s.Name, e.Label, StringComparison.Ordinal))
                     .OrderByDescending(s => s.LabelSource).ThenByDescending(s => s.Count).FirstOrDefault()?.Id;
@@ -693,6 +716,27 @@ public sealed class NilmService : BackgroundService
         await NameFromGroundTruthAsync(repo, stored, truths, ct);
         await RefreshSignaturesAsync(repo, stored.Select(e => e.SignatureId!.Value).Distinct().ToList(), ct);
         await ConsumeMarksAsync(sp, repo, stored, ct);
+    }
+
+    /// <summary>
+    /// The signature of an event confirmed by a single-appliance plug: the nearest signature linked to that plug within
+    /// the anchor radius (<see cref="SignatureClusterer.AnchorScale"/> × eps; one per component, e.g. a compressor), else a
+    /// new one, linked to the plug right away with the appliance's name and category (<see cref="SignatureLabelSource.Plug"/>).
+    /// </summary>
+    private async Task<long> SingleApplianceSignatureAsync(INilmRepository repo, MeterEvent e, Plug plug, List<long> created, CancellationToken ct)
+    {
+        var features = EventFeatures.Of(e);
+        if (SignatureClusterer.Nearest(features, _signatures.Where(s => s.IsAnchor && s.PlugId == plug.Id).Select(SignatureCentre.Of),
+                SignatureClusterer.AnchorScale) is { } own)
+            return own;
+        var (mp, mq, mt) = SignatureClusterer.Means(new[] { features });
+        var cat = ApplianceCategories.Get(plug.ApplianceCategory);
+        var sig = await repo.AddSignatureAsync(new ApplianceSignature(0, plug.Appliance!, cat.Icon, cat.Key, mp, mq, mt, 0, e.TsUtc,
+            SignatureLabelSource.Plug, plug.Id, false), ct);
+        _signatures.Add(sig);
+        created.Add(sig.Id);
+        _log.LogInformation("NILM: signature #{Id} created for the single appliance {Name} of plug {Alias}", sig.Id, sig.Name, plug.Alias);
+        return sig.Id;
     }
 
     /// <summary>
@@ -825,7 +869,9 @@ public sealed class NilmService : BackgroundService
     /// <summary>
     /// Recomputes the means of the given signatures (SQL aggregates over the window) and applies the plug rule: when
     /// ≥ 60 % of a signature's events were labelled by the same (not excluded) plug, the signature is measured by that
-    /// plug (<see cref="ApplianceSignature.PlugId"/>; it also takes the plug's name unless the user named it).
+    /// plug (<see cref="ApplianceSignature.PlugId"/>; it also takes the plug's name unless the user named it). A signature
+    /// linked to a single-appliance plug stays linked while any of its events comes from it
+    /// (<see cref="SignatureNaming.LinksToPlug(int, int, bool, bool)"/>) and takes the appliance's name and category.
     /// </summary>
     private async Task RefreshSignaturesAsync(INilmRepository repo, IReadOnlyCollection<long> ids, CancellationToken ct)
     {
@@ -837,15 +883,21 @@ public sealed class NilmService : BackgroundService
         foreach (var sig in updated)
         {
             var named = sig;
-            if (shares.TryGetValue(sig.Id, out var share) && share.TopPlugId is { } plugId
-                && SignatureNaming.LinksToPlug(share.TopPlugEvents, share.Events))
+            var plug = shares.TryGetValue(sig.Id, out var share) && share.TopPlugId is { } top ? _plugs.FirstOrDefault(p => p.Id == top) : null;
+            if (share?.TopPlugId is { } plugId
+                && SignatureNaming.LinksToPlug(share.TopPlugEvents, share.Events, plug?.Appliance is not null, sig.PlugId == plugId))
             {
-                var alias = _plugs.FirstOrDefault(p => p.Id == plugId)?.Alias ?? share.TopLabel ?? sig.Name;
+                var alias = plug?.DisplayName ?? share.TopLabel ?? sig.Name;
                 // A name from the ground truth („<appliance> · <phase>”) is more precise than the plug's alias: kept.
                 named = sig.LabelSource == SignatureLabelSource.User
                         || sig.LabelSource == SignatureLabelSource.Plug && KasaMonitor.Core.Miele.MieleGroundTruthRule.IsGroundTruthName(sig.Name)
                     ? sig with { PlugId = plugId }
                     : sig with { PlugId = plugId, Name = alias, LabelSource = SignatureLabelSource.Plug };
+                if (plug?.Appliance is not null && named.LabelSource == SignatureLabelSource.Plug)
+                {
+                    var cat = ApplianceCategories.Get(plug.ApplianceCategory);
+                    named = named with { Category = cat.Key, Icon = cat.Icon };
+                }
             }
             else if (sig.PlugId is { } linked && sig.Count > 0 && !excluded.Contains(linked))
             {
@@ -1103,7 +1155,8 @@ public sealed class NilmService : BackgroundService
         try
         {
             using var scope = _scopes.CreateScope();
-            labeled = await scope.ServiceProvider.GetRequiredService<INilmRepository>().ListLabeledEventsAsync(ExcludedPlugs, SignatureClusterer.MaxEvents, ct);
+            // Single-appliance plugs' events are explained by the plug: neither a class nor examples of the model.
+            labeled = await scope.ServiceProvider.GetRequiredService<INilmRepository>().ListLabeledEventsAsync(TrainingExcluded(_plugs), SignatureClusterer.MaxEvents, ct);
         }
         finally { _gate.Release(); }
         var classes = labeled.Where(e => !string.IsNullOrWhiteSpace(e.Label)).Select(e => e.Label).Distinct(StringComparer.Ordinal).Count();
@@ -1279,10 +1332,9 @@ public sealed class NilmService : BackgroundService
             .Select(e => new EventRow(e, e.SignatureId is { } sid && names.TryGetValue(sid, out var n) ? n : null)).ToList();
 
         var plugs = _plugs.Count > 0 ? _plugs : await scope.ServiceProvider.GetRequiredService<IPlugRepository>().ListAllAsync(ct);
-        var (labeled, classes) = await repo.CountLabeledAsync(plugs.Where(p => PlugNilmStates.IsIgnored(p.NilmState)).Select(p => p.Id).ToList(), ct);
+        var (labeled, classes) = await repo.CountLabeledAsync(TrainingExcluded(plugs), ct);
         var main = plugs.FirstOrDefault(p => p.Role == PlugRole.MainMeter && !p.IsArchived)?.Alias;
-        var plugRows = plugs.Where(p => p.IsPolled && p.Role == PlugRole.Plug).OrderBy(p => p.Alias)
-            .Select(p => new PlugNilmRow(p.Id, p.Alias, p.NilmState)).ToList();
+        var plugRows = PlugRows(plugs);
         return new NilmOverview(shown, detectedAll.Count, page, pages, measured, signatures, events, eventsTotal, eventsPage, eventPages,
             ModelInfo, labeled, classes, Summary, main, _current, plugRows, _busy, rare, cleanable, showRare);
     }
@@ -1342,6 +1394,41 @@ public sealed class NilmService : BackgroundService
         await LoadPlugsAsync(ct);
         return true;
     }, ct);
+
+    /// <summary>The polled plugs (role plug) of /consumatori and of <c>GET /api/nilm/plugs</c>, by alias.</summary>
+    private static List<PlugNilmRow> PlugRows(IEnumerable<Plug> plugs) =>
+        plugs.Where(p => p.IsPolled && p.Role == PlugRole.Plug).OrderBy(p => p.Alias).Select(PlugNilmRow.Of).ToList();
+
+    /// <summary>The plugs that can label events (HTTP API), read without the processing lock.</summary>
+    public async Task<IReadOnlyList<PlugNilmRow>> ListPlugsAsync(CancellationToken ct)
+    {
+        using var scope = _scopes.CreateScope();
+        return PlugRows(await scope.ServiceProvider.GetRequiredService<IPlugRepository>().ListAllAsync(ct));
+    }
+
+    /// <summary>
+    /// „Un singur aparat pe priză” (/plugs and <c>POST /api/nilm/plugs/{id}/appliance</c>): stores the flag, the name (empty
+    /// = the alias) and the category (null keeps the current one), then the signatures linked to the plug take the
+    /// appliance's name and category at once (or the alias again when the flag is cleared). A change of the flag retrains
+    /// the classifier on the next pass (its labels leave or rejoin the training set) when the model is on. Null when the
+    /// plug does not exist or is not a plug (a meter measures more than one appliance).
+    /// </summary>
+    public Task<PlugNilmRow?> SetPlugApplianceAsync(Guid plugId, bool single, string? name, string? category, CancellationToken ct) =>
+        UnderGateAsync<PlugNilmRow?>(async (sp, repo) =>
+        {
+            var plugRepo = sp.GetRequiredService<IPlugRepository>();
+            if ((await plugRepo.ListAllAsync(ct)).FirstOrDefault(p => p.Id == plugId && p.Role == PlugRole.Plug) is not { } before) return null;
+            if (!await plugRepo.SetApplianceAsync(plugId, single, name, category ?? before.ApplianceCategory, ct)) return null;
+            _plugMatches.Remove(plugId);
+            await LoadPlugsAsync(ct);
+            var linked = (await repo.ListSignaturesAsync(ct)).Where(s => s.PlugId == plugId).Select(s => s.Id).ToList();
+            await RefreshSignaturesAsync(repo, linked, ct);
+            if (before.SingleAppliance != single && _current.MlEnabled) _trainDue = true;
+            var after = _plugs.First(p => p.Id == plugId);
+            _log.LogInformation("NILM: plug {Alias}: single appliance {Single} ({Name}, {Category})", after.Alias, after.SingleAppliance,
+                after.Appliance ?? after.ApplianceName ?? "-", after.ApplianceCategory ?? "-");
+            return PlugNilmRow.Of(after);
+        }, ct);
 
     /// <summary>The „posibil &lt;priză&gt;” badge of the given signatures (one grouped query): signature → plug alias.</summary>
     private async Task<Dictionary<long, string>> PossiblePlugsAsync(IServiceProvider sp, INilmRepository repo, IReadOnlyCollection<long> ids,

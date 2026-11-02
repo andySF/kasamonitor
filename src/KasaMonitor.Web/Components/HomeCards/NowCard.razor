@@ -188,7 +188,7 @@
                 : running is not null ? $"{running.Device.Alias} · {running.Values?.PhaseText ?? "pornită"}"
                 : relayOff ? "oprit" : null;
             var kind = !s.IsOnline || relayOff || w < OffBelowW ? NowKind.Off : NowKind.Plug;
-            plugs.Add(new NowPart(s.PlugId.ToString(), s.Alias, kind, w, note, kind == NowKind.Plug && (w >= ActiveW || running is not null),
+            plugs.Add(new NowPart(s.PlugId.ToString(), s.DisplayName, kind, w, note, kind == NowKind.Plug && (w >= ActiveW || running is not null),
                 "/history?plugId=" + s.PlugId));
         }
 

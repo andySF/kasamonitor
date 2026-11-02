@@ -139,6 +139,18 @@ public sealed class PlugRepository : IPlugRepository
         await _db.SaveChangesAsync(ct);
     }
 
+    public async Task<bool> SetApplianceAsync(Guid plugId, bool single, string? name, string? category, CancellationToken ct)
+    {
+        var existing = await _db.Plugs.FindAsync(new object?[] { plugId }, ct);
+        if (existing is null) return false;
+        var clean = KasaMonitor.Core.Nilm.SignatureNaming.CleanName(name);
+        existing.SingleAppliance = single;
+        existing.ApplianceName = clean.Length > 0 ? clean : null;
+        existing.ApplianceCategory = KasaMonitor.Core.Nilm.ApplianceCategories.Normalize(category);
+        await _db.SaveChangesAsync(ct);
+        return true;
+    }
+
     private static Plug Map(PlugEntity e) => new(
         Id: e.Id,
         Mac: e.Mac,
@@ -158,5 +170,8 @@ public sealed class PlugRepository : IPlugRepository
         Channel: e.Channel,
         Role: PlugRoles.FromInt(e.Role),
         StreamEnabled: e.StreamEnabled,
-        NilmState: KasaMonitor.Core.Nilm.PlugNilmStates.FromInt(e.NilmIgnored));
+        NilmState: KasaMonitor.Core.Nilm.PlugNilmStates.FromInt(e.NilmIgnored),
+        SingleAppliance: e.SingleAppliance,
+        ApplianceName: e.ApplianceName,
+        ApplianceCategory: e.ApplianceCategory);
 }

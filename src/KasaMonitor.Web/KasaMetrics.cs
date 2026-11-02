@@ -49,6 +49,18 @@ public sealed class KasaMetrics : IHostedService, IDisposable
     private static readonly Counter EnergyReturned = Metrics.CreateCounter(EnergyReturnedInfo.Name, EnergyReturnedInfo.Help, LabelNames);
     private static readonly Gauge Temperature = Metrics.CreateGauge(TemperatureInfo.Name, TemperatureInfo.Help, LabelNames);
 
+    /// <summary>
+    /// The power of each single-appliance plug („un singur aparat pe priză”) under its appliance's name. A family of its own
+    /// (labels <see cref="AppliancePlugLabels"/>), so the <c>kasa_*</c> series above keep their labels and their history;
+    /// not in <see cref="Catalog"/> (which lists the per-plug families with <see cref="LabelNames"/>).
+    /// </summary>
+    public static readonly MetricInfo AppliancePlugPowerInfo = new("kasa_appliance_plug_power_w", "gauge", "W",
+        "Active power of the plugs that measure a single appliance, by appliance name (watts).");
+
+    public static readonly string[] AppliancePlugLabels = { "appliance", "alias" };
+
+    private static readonly Gauge AppliancePlugPower = Metrics.CreateGauge(AppliancePlugPowerInfo.Name, AppliancePlugPowerInfo.Help, AppliancePlugLabels);
+
     private static readonly Collector[] AllFamilies =
         { PowerLoad, Voltage, Current, RelayState, OnlineState, Rssi, PowerTotal, PowerFactor, ApparentPower, Frequency, EnergyReturned, Temperature };
 
@@ -57,6 +69,7 @@ public sealed class KasaMetrics : IHostedService, IDisposable
     private readonly Dictionary<Guid, double> _lastTotalWh = new();
     private readonly Dictionary<Guid, double> _lastReturnedWh = new();
     private readonly Dictionary<Guid, string[]> _labels = new();
+    private readonly Dictionary<Guid, string[]> _applianceLabels = new();
 
     public KasaMetrics(IPlugStateBroadcaster broadcaster)
     {
@@ -80,6 +93,13 @@ public sealed class KasaMetrics : IHostedService, IDisposable
 
     public static string[] LabelValues(PlugLiveState s) => PlugMetricLabels.For(s);
 
+    /// <summary>
+    /// The labels of <see cref="AppliancePlugPowerInfo"/>: the appliance name normalised like <c>kasa_appliance_*</c>
+    /// (<see cref="NilmMetrics.Label"/>) and the alias of <see cref="LabelValues"/>; null for a plug without a single appliance.
+    /// </summary>
+    public static string[]? ApplianceLabelValues(PlugLiveState s) =>
+        string.IsNullOrEmpty(s.ApplianceName) ? null : new[] { NilmMetrics.Label(s.ApplianceName), LabelValues(s)[0] };
+
     private void Update(PlugLiveState s)
     {
         lock (_sync)
@@ -92,12 +112,23 @@ public sealed class KasaMetrics : IHostedService, IDisposable
                 _lastReturnedWh.Remove(s.PlugId);
             }
             _labels[s.PlugId] = labels;
+            var appliance = ApplianceLabelValues(s);
+            if (_applianceLabels.TryGetValue(s.PlugId, out var previousAppliance) && (appliance is null || !previousAppliance.SequenceEqual(appliance)))
+            {
+                AppliancePlugPower.RemoveLabelled(previousAppliance);
+                _applianceLabels.Remove(s.PlugId);
+            }
 
             OnlineState.WithLabels(labels).Set(s.IsOnline ? 1 : 0);
 
             if (s.LastReading is null) return;
 
             PowerLoad.WithLabels(labels).Set(s.LastReading.PowerMw / 1000.0);
+            if (appliance is not null)
+            {
+                AppliancePlugPower.WithLabels(appliance).Set(s.LastReading.PowerMw / 1000.0);
+                _applianceLabels[s.PlugId] = appliance;
+            }
             if (s.LastReading.VoltageMv is { } mv) Voltage.WithLabels(labels).Set(mv / 1000.0);
             if (s.LastReading.CurrentMa is { } ma) Current.WithLabels(labels).Set(ma / 1000.0);
             if (s.LastReading.RelayOn is { } relayOn)
@@ -146,6 +177,7 @@ public sealed class KasaMetrics : IHostedService, IDisposable
         lock (_sync)
         {
             if (_labels.Remove(plugId, out var labels)) RemoveSeries(labels);
+            if (_applianceLabels.Remove(plugId, out var appliance)) AppliancePlugPower.RemoveLabelled(appliance);
             _lastTotalWh.Remove(plugId);
             _lastReturnedWh.Remove(plugId);
         }

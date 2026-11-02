@@ -128,7 +128,7 @@ public sealed class PollingWorker : BackgroundService
             reading.PowerMw, reading.VoltageMv, reading.CurrentMa, reading.TotalWh,
             Rssi: null, RelayOn: reading.RelayOn, ErrorMessage: null);
         _broadcaster.Publish(new PlugLiveState(plug.Id, plug.Mac, plug.Alias, true, reading, now,
-            PlugModelName.Short(plug.Model), plug.Protocol, plug.Channel, plug.Role));
+            PlugModelName.Short(plug.Model), plug.Protocol, plug.Channel, plug.Role, plug.Appliance));
         var ended = _failures.RecordSuccess(plug.Id);
         if (ended > 0)
             _log.LogInformation("Plug {Alias} ({Ip}) is responding again after {Failures} failed polls",
@@ -141,7 +141,7 @@ public sealed class PollingWorker : BackgroundService
     {
         var s = new Sample(0, plug.Id, now, false, null, null, null, null, null, null, reason);
         _broadcaster.Publish(new PlugLiveState(plug.Id, plug.Mac, plug.Alias, false, null, now,
-            PlugModelName.Short(plug.Model), plug.Protocol, plug.Channel, plug.Role));
+            PlugModelName.Short(plug.Model), plug.Protocol, plug.Channel, plug.Role, plug.Appliance));
         var (shouldLog, count) = _failures.RecordFailure(plug.Id, now);
         if (shouldLog && log)
             _log.LogWarning("Poll failed for plug {Alias} ({Ip}, {Protocol}), {Failures} consecutive failures: {Reason}",

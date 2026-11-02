@@ -820,6 +820,12 @@ namespace KasaMonitor.Data.Migrations
                     b.Property<bool>("AliasIsCustom")
                         .HasColumnType("INTEGER");
 
+                    b.Property<string>("ApplianceCategory")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("ApplianceName")
+                        .HasColumnType("TEXT");
+
                     b.Property<int>("Channel")
                         .HasColumnType("INTEGER");
 
@@ -865,6 +871,9 @@ namespace KasaMonitor.Data.Migrations
                         .HasDefaultValue("legacy");
 
                     b.Property<int>("Role")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<bool>("SingleAppliance")
                         .HasColumnType("INTEGER");
 
                     b.Property<bool>("StreamEnabled")

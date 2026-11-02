@@ -339,6 +339,8 @@ else
         <div class="card-body small text-secondary pb-1">
             Semnături ale căror evenimente vin, în cel puțin @SignatureNaming.MinPlugEvents cazuri și 60 % din ele, de la aceeași priză: consumul exact e al prizei (cardul ei, metricile
             <code>kasa_*</code>), așa că nu apar în „Acum pornite”, în energia detectată și nici în <code>kasa_appliance_*</code>. Redenumirea nu schimbă legătura cu priza.
+            O priză bifată „un singur aparat pe priză” (pagina Dispozitive) își leagă semnătura de la primul eveniment confirmat, cu numele și categoria aparatului
+            (insigna <span class="badge text-bg-info">priză cu un singur aparat</span>); evenimentele ei nu intră în antrenarea modelului ML.
         </div>
         @if (_overview.PlugMeasured.Count > 0)
         {
@@ -353,7 +355,14 @@ else
                                 <td style="min-width: 12rem">
                                     <input class="form-control form-control-sm" value="@s.Name" maxlength="@SignatureNaming.MaxNameLength" @onchange="e => RenameAsync(s.Id, e.Value?.ToString())" disabled="@Blocked" />
                                 </td>
-                                <td>@(_overview.Plugs.FirstOrDefault(p => p.PlugId == s.PlugId)?.Alias ?? "—")</td>
+                                @{ var measuredBy = _overview.Plugs.FirstOrDefault(p => p.PlugId == s.PlugId); }
+                                <td>
+                                    @(measuredBy?.Alias ?? "—")
+                                    @if (measuredBy is { SingleAppliance: true })
+                                    {
+                                        <span class="badge text-bg-info ms-1" title="Pe priză e un singur aparat („@measuredBy.ApplianceName”): evenimentele confirmate de ea sunt explicate complet și nu intră în antrenarea modelului ML">priză cu un singur aparat</span>
+                                    }
+                                </td>
                                 <td class="text-end">@s.MeanDeltaP.ToString("0") W</td>
                                 <td class="text-end">@s.Count</td>
                                 <td class="text-nowrap">@(s.LastSeenUtc is { } ls ? UiFormat.FullLocal(ls) : "—")</td>
@@ -376,8 +385,8 @@ else
                 @foreach (var p in _overview.Plugs)
                 {
                     var ignored = PlugNilmStates.IsIgnored(p.State);
-                    <span class="badge @(ignored ? "text-bg-warning" : "text-bg-light border") d-inline-flex align-items-center gap-1" title="@(PlugNilmStates.Badge(p.State) ?? "folosită la învățare")">
-                        @p.Alias@(p.State == PlugNilmState.IgnoredAuto ? " (exclusă automat)" : p.State == PlugNilmState.IgnoredManual ? " (exclusă)" : "")
+                    <span class="badge @(ignored ? "text-bg-warning" : "text-bg-light border") d-inline-flex align-items-center gap-1" title="@(PlugNilmStates.Badge(p.State) ?? (p.SingleAppliance ? "un singur aparat pe priză: etichetează evenimentele, nu antrenează modelul" : "folosită la învățare"))">
+                        @p.Alias@(p.State == PlugNilmState.IgnoredAuto ? " (exclusă automat)" : p.State == PlugNilmState.IgnoredManual ? " (exclusă)" : p.SingleAppliance ? " (un singur aparat)" : "")
                         <button class="btn btn-link btn-sm p-0 ms-1" @onclick="() => SetPlugAsync(p.PlugId, ignored ? PlugNilmState.AlwaysUse : PlugNilmState.IgnoredManual)" disabled="@Blocked"
                                 title="@(ignored ? "Anulează excluderea (nu se mai exclude automat)" : "Exclude din învățare")"><i class="bi @(ignored ? "bi-arrow-counterclockwise" : "bi-x-circle")"></i></button>
                     </span>

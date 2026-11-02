@@ -362,6 +362,42 @@ public class NilmApiTests(NilmApiFactory app) : IClassFixture<NilmApiFactory>
     }
 
     [Fact]
+    public async Task Plugs_ListAndSingleAppliance_200_400_404_And403()
+    {
+        var plug = await app.Repo((_, sp) => sp.GetRequiredService<IPlugRepository>().UpsertFromDiscoveryAsync(new DiscoveredPlug(IPAddress.Parse("192.168.1.142"),
+            new PlugInfo("aabbccddee21", "Priza bucatarie", "KP115(EU)", "1", "1", "x", true, -50, TimeSpan.Zero), PlugProtocols.Legacy, null, 0,
+            PlugRole.Plug), DateTimeOffset.UtcNow.AddDays(-1), CancellationToken.None));
+        using var client = app.Client();
+
+        var before = (await client.GetFromJsonAsync<List<NilmApi.PlugDto>>($"{Api}/plugs"))!.Single(p => p.Id == plug);
+        before.Alias.Should().Be("Priza bucatarie");
+        before.Single.Should().BeFalse();
+        before.NilmState.Should().Be("Auto");
+
+        var url = $"{Api}/plugs/{plug}/appliance";
+        using (var outside = app.Client(NilmApiFactory.PublicIp))
+            (await outside.PostAsJsonAsync(url, new { name = "Frigider", category = "fridge", single = true })).StatusCode.Should().Be(HttpStatusCode.Forbidden);
+        await ShouldBe(await client.PostAsJsonAsync(url, new { name = "Frigider", category = "frigider" }), HttpStatusCode.BadRequest);
+        await ShouldBe(await client.PostAsJsonAsync($"{Api}/plugs/{Guid.NewGuid()}/appliance", new { name = "X" }), HttpStatusCode.NotFound);
+        await ShouldBe(await client.PostAsJsonAsync($"{Api}/plugs/{await app.MainAsync()}/appliance", new { name = "Casa" }), HttpStatusCode.NotFound);
+
+        var resp = await client.PostAsJsonAsync(url, new { name = "Frigider", category = "fridge", single = true });
+        await ShouldBe(resp, HttpStatusCode.OK);
+        var dto = (await resp.Content.ReadFromJsonAsync<NilmApi.PlugDto>())!;
+        dto.Single.Should().BeTrue();
+        dto.ApplianceName.Should().Be("Frigider");
+        dto.Category.Should().Be("fridge");
+        dto.Alias.Should().Be("Priza bucatarie", "the alias stays");
+        (await client.GetFromJsonAsync<List<NilmApi.PlugDto>>($"{Api}/plugs"))!.Single(p => p.Id == plug).Should().Be(dto);
+        app.Logs.Lines.Should().Contain(l => l.Level == LogLevel.Information && l.Message.Contains("NILM API: plug Priza bucatarie single appliance True")
+            && l.Message.Contains(NilmApiFactory.LanIp));
+
+        var cleared = (await (await client.PostAsJsonAsync(url, new { single = false })).Content.ReadFromJsonAsync<NilmApi.PlugDto>())!;
+        cleared.Single.Should().BeFalse();
+        cleared.Category.Should().Be("fridge", "no category: unchanged");
+    }
+
+    [Fact]
     public async Task Train_WithTooFewLabels_SaysWhatIsMissing_And403()
     {
         using var client = app.Client();

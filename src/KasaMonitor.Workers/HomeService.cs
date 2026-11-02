@@ -299,8 +299,11 @@ public sealed class HomeService : BackgroundService
         EnergyFlows? flows = null;
         if (house?.HouseTotalKwh is { } meterKwh)
         {
+            // A single-appliance plug stands for its appliance („Frigider”), the others for their alias.
+            var names = await DisplayNamesAsync(ct);
             var plugs = (house.PlugTotals ?? Array.Empty<SubMeterTotal>())
-                .Select(p => new FlowItem(p.PlugId.ToString(), p.Alias, FlowKind.Plug, p.Kwh ?? 0, null, "/history?plugId=" + p.PlugId))
+                .Select(p => new FlowItem(p.PlugId.ToString(), names.GetValueOrDefault(p.PlugId, p.Alias), FlowKind.Plug, p.Kwh ?? 0, null,
+                    "/history?plugId=" + p.PlugId))
                 .ToList();
             IReadOnlyList<ApplianceEnergyRow> detected = Array.Empty<ApplianceEnergyRow>();
             if (_detected is not null)
@@ -402,6 +405,13 @@ public sealed class HomeService : BackgroundService
 
     private static IReadOnlyList<double?> Buckets(HeatingKindReport r, int count) =>
         Enumerable.Range(0, count).Select(i => ReportMath.SumOrNull(r.Series.Select(s => i < s.Values.Count ? s.Values[i] : null))).ToList();
+
+    /// <summary>Plug id → the name it stands for on the home page (<see cref="Plug.DisplayName"/>).</summary>
+    private async Task<Dictionary<Guid, string>> DisplayNamesAsync(CancellationToken ct)
+    {
+        using var scope = _scopes.CreateScope();
+        return (await scope.ServiceProvider.GetRequiredService<IPlugRepository>().ListAllAsync(ct)).ToDictionary(p => p.Id, p => p.DisplayName);
+    }
 
     private async Task<Guid?> MainIdAsync(CancellationToken ct)
     {

@@ -122,6 +122,22 @@ public class HomeServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task Flows_ASingleAppliancePlug_StandsForItsAppliance_TheReportKeepsTheAlias()
+    {
+        await SeedAsync();
+        await using (var ctx = Create())
+            (await new KasaMonitor.Data.Repositories.PlugRepository(ctx).SetApplianceAsync(_fridge, true, "Combină frigorifică", "fridge", CancellationToken.None))
+                .Should().BeTrue();
+        var day = await Service().GetAsync(ReportPeriod.Containing(ReportGranularity.Day, new DateOnly(2026, 11, 2)), CancellationToken.None);
+
+        var row = day.Flows!.Rows.Single(r => r.Key == _fridge.ToString());
+        row.Name.Should().Be("Combină frigorifică", "the bars and the Sankey show the appliance");
+        row.Kwh.Should().BeApproximately(0.4675, 1e-9);
+        day.Flows.Rows.Should().Contain(r => r.Name == "TV", "a plain plug keeps its alias");
+        day.House!.PlugTotals!.Select(p => p.Alias).Should().BeEquivalentTo("Frigider", "TV");
+    }
+
+    [Fact]
     public async Task Period_IsCachedForAMinute_ThenServedStaleWhileOneRefreshRuns()
     {
         await SeedAsync();

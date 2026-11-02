@@ -32,4 +32,13 @@ public sealed class PlugEntity
     public bool StreamEnabled { get; set; } = true;
     /// <summary><see cref="KasaMonitor.Core.Nilm.PlugNilmState"/>: 0 used, 1 ignored automatically, 2 ignored by the user, 3 always used.</summary>
     public int NilmIgnored { get; set; }
+
+    /// <summary>„Un singur aparat pe priză”: the plug measures exactly one appliance (<see cref="ApplianceName"/>).</summary>
+    public bool SingleAppliance { get; set; }
+
+    /// <summary>Name of the single appliance (e.g. „Frigider”); the alias when empty.</summary>
+    public string? ApplianceName { get; set; }
+
+    /// <summary>Category key of the single appliance (<see cref="KasaMonitor.Core.Nilm.ApplianceCategories"/>).</summary>
+    public string? ApplianceCategory { get; set; }
 }

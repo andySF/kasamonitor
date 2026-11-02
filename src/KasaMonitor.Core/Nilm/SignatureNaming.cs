@@ -15,6 +15,14 @@ public static class SignatureNaming
     public static bool LinksToPlug(int plugEvents, int signatureEvents) =>
         signatureEvents > 0 && plugEvents >= MinPlugEvents && plugEvents >= PlugShare * signatureEvents;
 
+    /// <summary>
+    /// The plug rule with „un singur aparat pe priză”: a signature already linked to a single-appliance plug stays linked
+    /// while any of its events in the window comes from that plug (no 60 % / <see cref="MinPlugEvents"/> threshold: the
+    /// plug explains its events completely); otherwise <see cref="LinksToPlug(int, int)"/>.
+    /// </summary>
+    public static bool LinksToPlug(int plugEvents, int signatureEvents, bool singleAppliancePlug, bool linkedToThatPlug) =>
+        LinksToPlug(plugEvents, signatureEvents) || singleAppliancePlug && linkedToThatPlug && plugEvents > 0;
+
     /// <summary>The plug that labelled ≥ 60 % of the events (with its alias), or null.</summary>
     public static (Guid PlugId, string Alias)? FromPlugs(IReadOnlyCollection<MeterEvent> events)
     {

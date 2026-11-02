@@ -88,6 +88,30 @@ public class MigrationTests
     }
 
     [Fact]
+    public void AddPlugAppliance_KeepsExistingPlugs_NoneMarkedAsASingleAppliance()
+    {
+        using var conn = new SqliteConnection("Filename=:memory:");
+        conn.Open();
+        var opts = new DbContextOptionsBuilder<KasaDbContext>().UseSqlite(conn).Options;
+        using var ctx = new KasaDbContext(opts);
+        var migrator = ctx.GetService<Microsoft.EntityFrameworkCore.Migrations.IMigrator>();
+
+        // Schema as deployed in 0.9.0, with one plug and one event labelled by it.
+        migrator.Migrate("20261102130647_AddClimate");
+        ctx.Database.ExecuteSqlRaw(
+            "INSERT INTO Plugs (Id, Mac, IpAddress, Alias, AliasIsCustom, Model, HwVer, SwVer, OemId, FirstSeenUtc, LastSeenUtc, IsArchived, Protocol, Channel, Role, StreamEnabled, NilmIgnored) " +
+            "VALUES ('6f1c3c1e-0000-0000-0000-000000000001', 'aabbccddee00', '192.168.254.105', 'Frigider', 0, 'KP115(EU)', '1.0', '1.0.20', 'X', '2026-05-08 10:00:00+00:00', '2026-05-08 10:00:00+00:00', 0, 'legacy', 0, 0, 1, 0)");
+
+        ctx.Database.Migrate();
+
+        ctx.Database.SqlQueryRaw<int>("SELECT SingleAppliance AS Value FROM Plugs").ToList().Should().Equal(0);
+        ctx.Database.SqlQueryRaw<int>("SELECT COUNT(*) AS Value FROM Plugs WHERE ApplianceName IS NULL AND ApplianceCategory IS NULL").ToList().Should().Equal(1);
+        ctx.Database.SqlQueryRaw<string>("SELECT Alias AS Value FROM Plugs").ToList().Should().Equal("Frigider");
+        ctx.Database.ExecuteSqlRaw("UPDATE Plugs SET SingleAppliance = 1, ApplianceName = 'Frigider', ApplianceCategory = 'fridge'");
+        ctx.Database.SqlQueryRaw<int>("SELECT COUNT(*) AS Value FROM Plugs WHERE SingleAppliance = 1").ToList().Should().Equal(1);
+    }
+
+    [Fact]
     public void AddRolesAndLiveStream_ShellyMeterChannelsBecomeSubMetersWithoutStream_EverythingElseStaysAStreamedPlug()
     {
         // A temporary file, like kasa.db on the QNAP (0.3.0 schema with the two EM Gen3 channels and a Kasa plug).

@@ -7,7 +7,7 @@ plugs and energy meters (e.g. Shelly EM Gen3, local JSON-RPC; the only write is 
 with SQLite, a web UI on port 8910 and a Prometheus `/metrics` endpoint. An optional Prometheus + Grafana stack
 with a ready-made dashboard and alert rules is included.
 
-Version: **0.9.0** (`Directory.Build.props`). Docker image: `duobit/kasamonitor`.
+Version: **0.9.1** (`Directory.Build.props`). Docker image: `duobit/kasamonitor`.
 
 ## Quick start
 
@@ -73,7 +73,7 @@ TP-Link (Tapo app) account in `/settings` and press **Scanează acum** on `/plug
   the house) and „Rapoarte” on `/centrala` (gas, boiler electricity, heat produced), per day (hours), week, month
   (days) or year (months), with ◀ ▶ navigation, the change against the previous period and the cost. See
   [Reports](#reports-history-casă-and-centrala-rapoarte).
-- **Version in the menu**: „v0.9.0” at the right of the navigation bar; the tooltip shows the commit and the build time.
+- **Version in the menu**: „v0.9.1” at the right of the navigation bar; the tooltip shows the commit and the build time.
 - **Browser errors in the server log**: JavaScript errors and the Blazor error banner are reported to
   `POST /api/client-error` and logged at Warning (category `KasaMonitor.ClientErrors`), so `docker logs` shows them.
 - **HTTP API for the appliance detection** (`/api/nilm/*`, LAN only): list, sheet, label, merge, add to, hide, regroup,
@@ -251,6 +251,13 @@ across KasaMonitor restarts (it is re-seeded from the plug's total, which can be
 increase method above, not `rate()`/`increase()`, for energy.
 
 Withdrawn or unsupported plugs have no series. Renaming a plug removes the series with the old alias.
+
+**Single-appliance plugs** (since 0.9.1, see [Single-appliance plugs](#single-appliance-plugs)): the `kasa_*` series
+above keep their labels (`alias`, …), so no series and no history changes when a plug is ticked „un singur aparat pe
+priză”. The appliance's name is published in a family of its own, only for those plugs:
+`kasa_appliance_plug_power_w{appliance, alias}` (gauge, W; the same value as `kasa_power_load` of that plug; `appliance`
+normalised like `kasa_appliance_*`: no diacritics, at most 40 characters). Renaming the appliance or clearing the flag
+removes its series. Example: `kasa_appliance_plug_power_w{appliance="Frigider"}`.
 
 The gas boiler has its own `heating_*` family, see [Gas boiler (Viessmann ViCare)](#gas-boiler-viessmann-vicare); the
 temperature and humidity sensors the `climate_*` family, see [Climate](#climate).
@@ -1104,6 +1111,33 @@ house step (medians of the 20 s before and after, ±3 s ignored, cut at large ne
 two plugs moving together, or two large steps less than ~7 s apart give no label. Measured on the washing machine of
 2 Nov 2026: 12 of its 13 heater steps labelled with the plug's stream, 10 with the 10-second polls only (7 in 0.8.1).
 
+### Single-appliance plugs
+
+Since 0.9.1 a plug can be marked „un singur aparat pe priză” on `/plugs` (Dispozitive, column *Rol*, for a plug with
+the role *plug*), with the appliance's name (empty = the plug's alias, e.g. „Frigider”) and category (`fridge`,
+`hvac`, …), or with `POST /api/nilm/plugs/{id}/appliance` ([HTTP API (LAN)](#http-api-lan)). Nothing is set
+automatically on upgrade (columns `Plugs.SingleAppliance`, `ApplianceName`, `ApplianceCategory`, migration
+`AddPlugAppliance`, default off). For such a plug:
+
+- **Labels at once.** A main-meter event confirmed by the plug (the plug's level moved by the same ΔP) gets the
+  appliance's name as its label (source *din priză*) and goes to the signature linked to that plug within the anchor
+  radius (1.5 × eps), or to a new one linked to the plug right away with the appliance's name and category (*confirmat
+  din priză*): no 60 % / 3 events threshold. A signature linked to it stays linked while any of its events in the window
+  comes from the plug; the signatures already linked take the name and category as soon as the flag is set (and the
+  alias again when it is cleared). Its events are pinned at the nightly re-clustering like every plug-confirmed one.
+- **Out of the ML model.** Its events are explained completely by the plug, so they are neither examples nor a class
+  of the classifier (the training set leaves out the labels of the excluded plugs and of the single-appliance ones).
+  The plug is **not** excluded from learning (`NilmIgnored` is untouched): it still labels and links its events, so they
+  never become „Necunoscut”; it is also never excluded automatically for matching too many events per hour. Changing
+  the flag retrains the model on the next pass when ML is on.
+- **Where the name appears.** The plug keeps its alias (`/plugs`, history, `kasa_*` metrics); the appliance's name is
+  shown where the plug stands for an appliance: the bubble and the row of the home page, the Sankey, `/consumatori`
+  (its signatures, in „Măsurate de prize” with the badge *priză cu un singur aparat*, never among the unknown ones),
+  and `kasa_appliance_plug_power_w`.
+- **Limit.** An inverter appliance (an AC) has no steady steps: few of its changes become events, and those that do may
+  give several signatures linked to the plug (one per component); the plug's own measurement (`kasa_*`, history) stays
+  the reference for its energy.
+
 ## HTTP API (LAN)
 
 Since 0.8.3 the appliance detection can be operated without the UI, with `curl` from the LAN: `/api/nilm/*`, JSON.
@@ -1120,7 +1154,7 @@ With a token every `/api/nilm/*` route (also `GET`) needs the header `X-Api-Key:
 `POST` routes still need a private address (behind a reverse proxy that address is the proxy's, so the token is
 what protects them).
 
-Answers: `200` with JSON; `400` for a bad request (`{"error": "…"}` in Romanian), `404` when a signature id does not
+Answers: `200` with JSON; `400` for a bad request (`{"error": "…"}` in Romanian), `404` when a signature (or plug) id does not
 exist, `403` from outside the LAN, `401` without the token (when one is set), `503` when the detection is busy (a
 backfill, the nightly job or another regroup; retry in a few seconds).
 
@@ -1135,6 +1169,8 @@ backfill, the nightly job or another regroup; retry in a few seconds).
 | `POST /api/nilm/mark` | „acum am pornit X” (ground truth, no button): body `{"name": "Fierbător", "category": "cooking", "at": "2026-11-02T12:15:00+02:00"}`, `category` and `at` optional (default: now). The stored main-meter event with \|ΔP\| ≥ 100 W nearest to `at` within ±90 s is labelled by you, like an event label on `/consumatori` (it moves to the signature of that name if one exists; otherwise its automatic signature, or a new one, takes the name and the category): `outcome` = `matched`, with the event and its signature. Without such an event yet (the appliance starts in a few seconds, or the event still waits the 45 s for the plugs' readings) the mark waits in memory up to 10 minutes (`pendingUntil`; lost at a restart) and the detector gives it the first event ≥ 100 W it stores from `at` − 90 s on: `outcome` = `pending`. A time more than 45 s + 90 s in the past without such an event: `404` |
 | `POST /api/nilm/regroup` | „Regrupează acum”: events, anchored, clusters, signatures, moved, merged, the merges with their reason, and the training that follows |
 | `POST /api/nilm/train` | „Antrenează acum”: trained, labelled events and classes, the classes, cross-validated accuracy, folds, duration |
+| `GET /api/nilm/plugs` | the plugs that can label events (polled, role *plug*): id, alias, single, applianceName (the name in effect when `single`: the alias when none was given), category, nilmState (`Auto`, `IgnoredAuto`, `IgnoredManual`, `AlwaysUse`) |
+| `POST /api/nilm/plugs/{id}/appliance` | „un singur aparat pe priză” (the checkbox on `/plugs`): body `{"name": "Frigider", "category": "fridge", "single": true}`; `single` defaults to `true` (`false` clears the flag, name and category are kept), an empty `name` = the alias, no `category` = unchanged. The plug's linked signatures take the name and category at once. `404` for an unknown id or a meter ([Single-appliance plugs](#single-appliance-plugs)) |
 | `GET /api/nilm/events?from=…&to=…&minAbsDeltaP=…` | the raw stored events (diagnostics), oldest first; `from`/`to` ISO 8601 (default: the last 24 h, at most 31 days), `minAbsDeltaP` in W (default 0) |
 
 Examples (`K=http://<host>:8910`; add `-H "X-Api-Key: $TOKEN"` when a token is set):
@@ -1154,6 +1190,9 @@ curl -s -X POST "$K/api/nilm/mark" -H "Content-Type: application/json" -d '{"nam
 curl -s -X POST "$K/api/nilm/regroup"
 curl -s -X POST "$K/api/nilm/train"
 curl -s "$K/api/nilm/events?from=2026-11-02T08:00:00Z&to=2026-11-02T09:00:00Z&minAbsDeltaP=100"
+curl -s "$K/api/nilm/plugs" | jq '.[] | {id, alias, single, applianceName}'
+curl -s -X POST "$K/api/nilm/plugs/<plug id>/appliance" -H "Content-Type: application/json" \
+     -d '{"name": "Frigider", "category": "fridge", "single": true}'
 ```
 
 ## Data retention
@@ -1206,15 +1245,15 @@ dotnet test KasaMonitor.sln
 From the repository root, with Docker running and `docker login` done once:
 
 ```powershell
-.\deploy\build-and-push.ps1 -Version 0.9.0          # build :0.9.0 + :latest and push both
-.\deploy\build-and-push.ps1 -Version 0.9.0 -NoPush  # local build only
+.\deploy\build-and-push.ps1 -Version 0.9.1          # build :0.9.1 + :latest and push both
+.\deploy\build-and-push.ps1 -Version 0.9.1 -NoPush  # local build only
 ```
 
 or manually:
 
 ```bash
-docker build -t duobit/kasamonitor:0.9.0 -t duobit/kasamonitor:latest -f deploy/Dockerfile .
-docker push duobit/kasamonitor:0.9.0
+docker build -t duobit/kasamonitor:0.9.1 -t duobit/kasamonitor:latest -f deploy/Dockerfile .
+docker push duobit/kasamonitor:0.9.1
 docker push duobit/kasamonitor:latest
 ```
 

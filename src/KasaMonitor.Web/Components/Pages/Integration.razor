@@ -94,6 +94,7 @@
             </tbody>
         </table>
         <p class="note"><code>kasa_power_total</code> e în Wh cumulativ și poate scădea puțin la repornirea aplicației; energia se calculează ca sumă a creșterilor la 5 minute (așa face dashboard-ul), nu cu <code>increase()</code>. <code>kasa_voltage</code>/<code>kasa_current</code> există doar pentru prizele care le raportează; <code>kasa_power_factor</code>, <code>kasa_apparent_power_va</code>, <code>kasa_frequency_hz</code>, <code>kasa_energy_returned_wh_total</code> și <code>kasa_device_temperature_c</code> doar pentru dispozitivele Shelly care le raportează; <code>kasa_rssi</code> nu e încă populată. Contoarele includ consumul prizelor din spatele lor, deci totalurile se fac doar pe <code>role="plug"</code>; /metrics exportă toate seriile, filtrarea se face în interogare.</p>
+        <p class="note">Prizele bifate „un singur aparat pe priză” (pagina Dispozitive) au în plus <code>@KasaMetrics.AppliancePlugPowerInfo.Name</code> (gauge, W; etichete @foreach (var l in KasaMetrics.AppliancePlugLabels) { <code>@l</code><span> </span> }): aceeași putere ca <code>kasa_power_load</code>, sub numele aparatului. Seriile <code>kasa_*</code> își păstrează etichetele și istoricul.</p>
         <p class="note mb-1">Exemple PromQL:</p>
         <ul class="note">
             <li>total prize: <code>sum(kasa_power_load{role="plug"})</code></li>

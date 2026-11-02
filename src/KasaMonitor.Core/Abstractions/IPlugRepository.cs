@@ -26,4 +26,11 @@ public interface IPlugRepository
 
     /// <summary>Whether the plug labels appliance events and trains the classifier (see <see cref="KasaMonitor.Core.Nilm.PlugNilmState"/>).</summary>
     Task SetNilmStateAsync(Guid plugId, KasaMonitor.Core.Nilm.PlugNilmState state, CancellationToken ct);
+
+    /// <summary>
+    /// „Un singur aparat pe priză”: whether the plug measures one appliance, its name (cleaned; empty = the alias) and
+    /// category (normalised to <see cref="KasaMonitor.Core.Nilm.ApplianceCategories"/>). The name and category are kept when
+    /// the flag is cleared. False when the plug does not exist.
+    /// </summary>
+    Task<bool> SetApplianceAsync(Guid plugId, bool single, string? name, string? category, CancellationToken ct);
 }

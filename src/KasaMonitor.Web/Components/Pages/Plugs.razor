@@ -5,6 +5,7 @@
 @using KasaMonitor.Web.Ui
 @inject IServiceScopeFactory ScopeFactory
 @inject PlugDiscoveryService Discovery
+@inject KasaMonitor.Workers.Nilm.NilmService Nilm
 @implements IDisposable
 
 <PageTitle>KasaMonitor — Dispozitive</PageTitle>
@@ -152,6 +153,24 @@ else
                                     @if (KasaMonitor.Core.Nilm.PlugNilmStates.Badge(p.NilmState) is { } nilmBadge)
                                     {
                                         <span class="badge text-bg-warning" title="O priză cu sarcină variabilă (ex. UPS) se potrivește cu prea multe evenimente; bifează „învățare consumatori” ca să anulezi">@nilmBadge</span>
+                                    }
+                                    <div class="form-check form-check-inline small mt-1 me-0" title="Pe priză e un singur aparat (ex. frigiderul): evenimentele contorului confirmate de priză primesc numele aparatului și nu intră în antrenarea modelului ML; aliasul prizei rămâne">
+                                        <input class="form-check-input" type="checkbox" id="single-@p.Id" checked="@p.SingleAppliance" @onchange="e => SetApplianceAsync(p, e.Value is true, p.ApplianceName, p.ApplianceCategory)" />
+                                        <label class="form-check-label" for="single-@p.Id">un singur aparat pe priză</label>
+                                    </div>
+                                    @if (p.SingleAppliance)
+                                    {
+                                        <div class="input-group input-group-sm mt-1" style="max-width: 22rem;">
+                                            <span class="input-group-text" title="Aparatul de pe priză"><i class="bi @KasaMonitor.Core.Nilm.ApplianceCategories.Get(p.ApplianceCategory).Icon"></i></span>
+                                            <input class="form-control" value="@p.Appliance" placeholder="@p.Alias" maxlength="@KasaMonitor.Core.Nilm.SignatureNaming.MaxNameLength" aria-label="Numele aparatului"
+                                                   title="Numele aparatului (gol = aliasul prizei); apare în Acasă, Sankey și Consumatori" @onchange="e => SetApplianceAsync(p, true, e.Value?.ToString(), p.ApplianceCategory)" />
+                                            <select class="form-select" aria-label="Categoria aparatului" @onchange="e => SetApplianceAsync(p, true, p.ApplianceName, e.Value?.ToString())">
+                                                @foreach (var c in KasaMonitor.Core.Nilm.ApplianceCategories.All)
+                                                {
+                                                    <option value="@c.Key" selected="@(c.Key == KasaMonitor.Core.Nilm.ApplianceCategories.Normalize(p.ApplianceCategory))">@c.Name</option>
+                                                }
+                                            </select>
+                                        </div>
                                     }
                                 }
                                 @if (p.Role != PlugRole.MainMeter && p.Protocol == PlugProtocols.ShellyRpc && !p.IsArchived)
@@ -375,6 +394,23 @@ else
         _message = use
             ? $"„{p.Alias}” etichetează din nou consumatorii (nu se mai exclude automat)."
             : $"„{p.Alias}” e exclusă din învățarea consumatorilor.";
+        await ReloadAsync();
+    }
+
+    /// <summary>„Un singur aparat pe priză”: through the detection, so the plug's signatures take the name at once.</summary>
+    private async Task SetApplianceAsync(Plug p, bool single, string? name, string? category)
+    {
+        try
+        {
+            var row = await Nilm.SetPlugApplianceAsync(p.Id, single, name, category, CancellationToken.None);
+            _message = row is null ? $"„{p.Alias}” nu mai există sau nu e o priză."
+                : single ? $"„{p.Alias}”: un singur aparat pe priză, „{row.ApplianceName}” ({KasaMonitor.Core.Nilm.ApplianceCategories.Get(row.ApplianceCategory).Name}); evenimentele lui nu mai intră în antrenarea modelului."
+                : $"„{p.Alias}”: nu mai e marcată cu un singur aparat; evenimentele ei intră din nou în antrenarea modelului.";
+        }
+        catch (KasaMonitor.Workers.Nilm.NilmBusyException ex)
+        {
+            _message = ex.Message;
+        }
         await ReloadAsync();
     }
 

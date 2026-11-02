@@ -1034,4 +1034,165 @@ public class NilmServiceTests
         var after = await rig.Repo(r => r.ListEventsAsync(T0.AddDays(-1), T0, CancellationToken.None));
         after.Where(e => events.Any(x => x.Id == e.Id)).Should().OnlyContain(e => e.SignatureId != hidden.Id);
     }
+
+    // ------------------------------------------------------------------ „un singur aparat pe priză” (0.9.1)
+
+    private static async Task SetSingleAsync(Rig rig, Guid plug, string? name, string? category, bool single = true)
+    {
+        using var ctx = rig.Db.CreateContext();
+        (await new PlugRepository(ctx).SetApplianceAsync(plug, single, name, category, CancellationToken.None)).Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task SingleAppliancePlug_LabelsWithTheApplianceName_AndLinksItsSignatureAtOnce_NotAmongTheUnknown()
+    {
+        // One fridge cycle = 2 confirmed events: below the plug rule's 3 events, so a plain plug leaves the signature unlinked.
+        using (var plain = new Rig())
+        {
+            var m = await plain.AddAsync("aabbccddee00", "Casa", PlugRole.MainMeter, PlugProtocols.ShellyRpc);
+            var p = await plain.AddAsync("aabbccddee01", "Priza bucatarie", PlugRole.Plug, PlugProtocols.Legacy);
+            await SeedAsync(plain, m, p, cycles: 1);
+            plain.Now = T0.AddMinutes(31);
+            await plain.Service().RunOnceAsync(CancellationToken.None);
+            (await plain.Repo(r => r.ListEventsAsync(T0, plain.Now, CancellationToken.None))).Should().HaveCount(2).And.OnlyContain(e => e.Label == "Priza bucatarie");
+            (await plain.Repo(r => r.ListSignaturesAsync(CancellationToken.None))).Should().ContainSingle().Which.PlugId.Should().BeNull("2 events < 3");
+        }
+
+        using var rig = new Rig();
+        var main = await rig.AddAsync("aabbccddee00", "Casa", PlugRole.MainMeter, PlugProtocols.ShellyRpc);
+        var plug = await rig.AddAsync("aabbccddee01", "Priza bucatarie", PlugRole.Plug, PlugProtocols.Legacy);
+        await SetSingleAsync(rig, plug, "Frigider", "fridge");
+        await SeedAsync(rig, main, plug, cycles: 1);
+        rig.Now = T0.AddMinutes(31);
+        var svc = rig.Service();
+
+        await svc.RunOnceAsync(CancellationToken.None);
+
+        var events = await rig.Repo(r => r.ListEventsAsync(T0, rig.Now, CancellationToken.None));
+        events.Should().HaveCount(2).And.OnlyContain(e => e.Source == EventLabelSource.AutoPlug && e.LabelPlugId == plug && e.Label == "Frigider",
+            "the appliance's name, not the plug's alias");
+        var sig = (await rig.Repo(r => r.ListSignaturesAsync(CancellationToken.None))).Should().ContainSingle().Subject;
+        sig.PlugId.Should().Be(plug, "linked from the first confirmed event, without the 60 % / 3 events threshold");
+        sig.Name.Should().Be("Frigider");
+        sig.Category.Should().Be("fridge");
+        sig.Icon.Should().Be(ApplianceCategories.Get("fridge").Icon);
+        sig.LabelSource.Should().Be(SignatureLabelSource.Plug);
+        events.Should().OnlyContain(e => e.SignatureId == sig.Id);
+
+        var overview = await svc.GetOverviewAsync(0, 0, CancellationToken.None);
+        overview.PlugMeasured.Should().ContainSingle().Which.Signature.Id.Should().Be(sig.Id);
+        overview.DetectedTotal.Should().Be(0, "never in the list of unknown (detected) signatures");
+        var row = overview.Plugs.Should().ContainSingle().Subject;
+        row.SingleAppliance.Should().BeTrue();
+        row.ApplianceName.Should().Be("Frigider");
+        row.State.Should().Be(PlugNilmState.Auto, "not excluded from learning: the plug still labels its events");
+
+        // The nightly re-clustering keeps the link (the plug's events are pinned) and the name.
+        await svc.NightlyAsync(rig.Now, CancellationToken.None);
+        var after = (await rig.Repo(r => r.ListSignaturesAsync(CancellationToken.None))).Should().ContainSingle().Subject;
+        after.PlugId.Should().Be(plug);
+        after.Name.Should().Be("Frigider");
+    }
+
+    [Fact]
+    public async Task SettingTheAppliance_RenamesTheSignaturesLinkedToThePlug_AndClearingItGivesBackTheAlias()
+    {
+        using var rig = new Rig();
+        var main = await rig.AddAsync("aabbccddee00", "Casa", PlugRole.MainMeter, PlugProtocols.ShellyRpc);
+        var plug = await rig.AddAsync("aabbccddee01", "Priza bucatarie", PlugRole.Plug, PlugProtocols.Legacy);
+        await SeedAsync(rig, main, plug);   // 4 events: linked by the plain plug rule, named after the alias
+        rig.Now = T0.AddMinutes(31);
+        var svc = rig.Service();
+        await svc.RunOnceAsync(CancellationToken.None);
+        var sig = (await rig.Repo(r => r.ListSignaturesAsync(CancellationToken.None))).Single();
+        sig.Name.Should().Be("Priza bucatarie");
+
+        var row = await svc.SetPlugApplianceAsync(plug, true, "  Frigider   Arctic ", "fridge", CancellationToken.None);
+        row!.ApplianceName.Should().Be("Frigider Arctic");
+        var named = (await rig.Repo(r => r.GetSignatureAsync(sig.Id, CancellationToken.None)))!;
+        named.Name.Should().Be("Frigider Arctic", "the linked signatures follow at once, not only with the next event");
+        named.Category.Should().Be("fridge");
+
+        (await svc.SetPlugApplianceAsync(plug, false, null, null, CancellationToken.None))!.SingleAppliance.Should().BeFalse();
+        (await rig.Repo(r => r.GetSignatureAsync(sig.Id, CancellationToken.None)))!.Name.Should().Be("Priza bucatarie");
+        using (var ctx = rig.Db.CreateContext())
+        {
+            var p = (await new PlugRepository(ctx).ListAllAsync(CancellationToken.None)).Single(x => x.Id == plug);
+            p.ApplianceCategory.Should().Be("fridge", "a null category keeps the current one");
+            p.Appliance.Should().BeNull();
+        }
+        (await svc.SetPlugApplianceAsync(main, true, "Casa", null, CancellationToken.None)).Should().BeNull("a meter measures more than one appliance");
+        (await svc.SetPlugApplianceAsync(Guid.NewGuid(), true, "X", null, CancellationToken.None)).Should().BeNull();
+    }
+
+    [Fact]
+    public async Task SingleAppliancePlug_IsLeftOutOfTheTraining_ButStaysUsedForLabelling()
+    {
+        using var rig = new Rig(ml: true);
+        var main = await rig.AddAsync("aabbccddee00", "Casa", PlugRole.MainMeter, PlugProtocols.ShellyRpc);
+        var plugs = new Dictionary<string, Guid>
+        {
+            ["Frigider"] = await rig.AddAsync("aabbccddee01", "Frigider", PlugRole.Plug, PlugProtocols.Legacy),
+            ["Boiler"] = await rig.AddAsync("aabbccddee02", "Boiler", PlugRole.Plug, PlugProtocols.Legacy),
+            ["TV"] = await rig.AddAsync("aabbccddee03", "TV", PlugRole.Plug, PlugProtocols.Legacy),
+        };
+        using (var ctx = rig.Db.CreateContext())
+        {
+            var repo = new NilmRepository(ctx);
+            var t = T0.AddHours(-20);
+            foreach (var e in NilmClassifierTests.Labeled(24).OrderBy(e => e.Label).ThenBy(e => e.Id))
+            {
+                t = t.AddMinutes(5);
+                await repo.AddEventsAsync(new[] { e with { Id = 0, PlugId = main, TsUtc = t, LabelPlugId = plugs[e.Label!] } }, CancellationToken.None);
+            }
+        }
+        using (var ctx = rig.Db.CreateContext())   // re-clustered recently: no regroup at startup
+            await new SettingsRepository(ctx).SetAsync(SettingKeys.NilmLastReclusterTs,
+                T0.ToUnixTimeSeconds().ToString(System.Globalization.CultureInfo.InvariantCulture), CancellationToken.None);
+        var svc = rig.Service();
+        await svc.RunOnceAsync(CancellationToken.None);
+        (await svc.TrainNowAsync(CancellationToken.None)).Info!.Classes.Should().Equal("Boiler", "Frigider", "TV");
+
+        await svc.SetPlugApplianceAsync(plugs["Frigider"], true, "Frigider", "fridge", CancellationToken.None);
+
+        var trained = await svc.TrainNowAsync(CancellationToken.None);
+        trained.Info!.Classes.Should().Equal(new[] { "Boiler", "TV" }, "its events are explained by the plug: neither a class nor examples");
+        trained.LabeledEvents.Should().Be(48);
+        trained.Info.Examples.Should().Be(48);
+        var overview = await svc.GetOverviewAsync(0, 0, CancellationToken.None);
+        overview.LabeledEvents.Should().Be(48);
+        overview.LabeledClasses.Should().Be(2);
+        overview.Plugs.Single(p => p.PlugId == plugs["Frigider"]).State.Should().Be(PlugNilmState.Auto, "NilmIgnored is not touched");
+        NilmService.TrainingExcluded(new[] { new Plug(Guid.NewGuid(), "m", IPAddress.Loopback, "a", false, "", "", "", "", T0, T0, false, null, SingleAppliance: true) })
+            .Should().HaveCount(1);
+    }
+
+    [Fact]
+    public async Task SingleAppliancePlug_IsNeverExcludedAutomatically_ForManyMatchesAnHour()
+    {
+        using var rig = new Rig();
+        var main = await rig.AddAsync("aabbccddee00", "Casa", PlugRole.MainMeter, PlugProtocols.ShellyRpc);
+        var ac = await rig.AddAsync("aabbccddee02", "Priza AC", PlugRole.Plug, PlugProtocols.Legacy);
+        await SetSingleAsync(rig, ac, "AC sufragerie", "hvac");
+        bool On(int t) => t / 60 % 2 == 1;   // +40 W every other minute, for 50 minutes
+        using (var ctx = rig.Db.CreateContext())
+        {
+            var house = Enumerable.Range(0, 3000).Select(t => new LiveSample(main, T0.AddSeconds(t), 300 + (On(t) ? 40 : 0) + (t % 3 - 1))).ToList();
+            await new LiveRepository(ctx).SaveBatchAsync(house, Array.Empty<LiveMinuteAggregate>(), CancellationToken.None);
+            await new SampleRepository(ctx).InsertManyAsync(Enumerable.Range(0, 300).Select(k => k * 10 + 4)
+                .Select(t => new Sample(0, ac, T0.AddSeconds(t), true, On(t) ? 42_000 : 2_000, 230_000, null, null, null, true, null)).ToList(),
+                CancellationToken.None);
+        }
+        rig.Now = T0.AddMinutes(51);
+        await rig.Service().RunOnceAsync(CancellationToken.None);
+
+        var events = await rig.Repo(r => r.ListEventsAsync(T0, rig.Now, CancellationToken.None));
+        events.Count(e => e.Source == EventLabelSource.AutoPlug).Should().BeGreaterThan(PlugNilmStates.MaxMatchesPerHour,
+            "its matches are the appliance: the events do not become unknown");
+        events.Where(e => e.Source == EventLabelSource.AutoPlug).Should().OnlyContain(e => e.Label == "AC sufragerie");
+        using (var ctx = rig.Db.CreateContext())
+            (await new PlugRepository(ctx).ListAllAsync(CancellationToken.None)).Single(p => p.Id == ac).NilmState.Should().Be(PlugNilmState.Auto);
+        (await rig.Repo(r => r.ListSignaturesAsync(CancellationToken.None))).Should().NotBeEmpty()
+            .And.OnlyContain(s => s.PlugId == ac && s.Name == "AC sufragerie" && s.Category == "hvac");
+    }
 }

@@ -37,6 +37,33 @@ public class KasaMetricsTests
     }
 
     [Fact]
+    public async Task SingleAppliancePlug_GetsItsOwnApplianceSeries_TheKasaSeriesKeepTheirLabels()
+    {
+        var bc = new PlugStateBroadcaster();
+        using var metrics = new KasaMetrics(bc);
+        await metrics.StartAsync(CancellationToken.None);
+        var id = Guid.NewGuid();
+        var reading = new EmeterReading(48_000, 230_000, 210, 100);
+
+        bc.Publish(new PlugLiveState(id, "aabbccddee10", "Priza AC", true, reading, DateTimeOffset.UtcNow, "KP115(EU)", ApplianceName: "AC sufragerie"));
+        var scrape = await ScrapeAsync();
+        var kasa = LinesFor(scrape, "aabbccddee10").ToList();
+        kasa.Should().Contain(l => l.StartsWith("kasa_power_load{") && l.Contains("alias=\"Priza AC\"") && l.EndsWith(" 48"));
+        kasa.Should().NotContain(l => l.Contains("appliance="), "the kasa_* series do not change (no duplicate series)");
+        scrape.Split('\n').Should().Contain("kasa_appliance_plug_power_w{appliance=\"AC sufragerie\",alias=\"Priza AC\"} 48");
+
+        // Renamed appliance: the old series goes; cleared flag: no appliance series at all, the kasa_* one stays.
+        bc.Publish(new PlugLiveState(id, "aabbccddee10", "Priza AC", true, reading, DateTimeOffset.UtcNow, "KP115(EU)", ApplianceName: "Aer condiționat"));
+        scrape = await ScrapeAsync();
+        scrape.Should().Contain("kasa_appliance_plug_power_w{appliance=\"Aer conditionat\",alias=\"Priza AC\"} 48").And.NotContain("appliance=\"AC sufragerie\"");
+        bc.Publish(new PlugLiveState(id, "aabbccddee10", "Priza AC", true, reading, DateTimeOffset.UtcNow, "KP115(EU)"));
+        scrape = await ScrapeAsync();
+        scrape.Should().NotContain("alias=\"Priza AC\"}").And.NotContain("appliance=\"Aer conditionat\"");
+        LinesFor(scrape, "aabbccddee10").Should().Contain(l => l.StartsWith("kasa_power_load{"));
+        await metrics.StopAsync(CancellationToken.None);
+    }
+
+    [Fact]
     public async Task KlapPlug_ExportsVoltageAndCurrentWhenReported_AndOmitsThemWhenNot()
     {
         var bc = new PlugStateBroadcaster();

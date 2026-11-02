@@ -60,6 +60,15 @@ public static class NilmApi
 
     public sealed record ErrorDto(string Error);
 
+    /// <summary>
+    /// Body of <c>POST /plugs/{id}/appliance</c>: <see cref="Single"/> (default true) = „un singur aparat pe priză”;
+    /// <see cref="Name"/> empty = the plug's alias; <see cref="Category"/> absent = unchanged.
+    /// </summary>
+    public sealed record ApplianceRequest(string? Name, string? Category, bool? Single);
+
+    /// <summary>A plug that can label events: <see cref="ApplianceName"/> = the appliance's name in effect when <see cref="Single"/>.</summary>
+    public sealed record PlugDto(Guid Id, string Alias, bool Single, string? ApplianceName, string? Category, string NilmState);
+
     public static RouteGroupBuilder MapNilmApi(this IEndpointRouteBuilder app)
     {
         var api = app.MapGroup(Prefix);
@@ -142,6 +151,19 @@ public static class NilmApi
             SetHidden(id, true, nilm, http, ct)));
         Write(api.MapPost("/signatures/{id:long}/unhide", (long id, NilmService nilm, HttpContext http, CancellationToken ct) =>
             SetHidden(id, false, nilm, http, ct)));
+
+        api.MapGet("/plugs", async (NilmService nilm, CancellationToken ct) =>
+            Results.Ok((await nilm.ListPlugsAsync(ct)).Select(ToDto).ToList()));
+
+        Write(api.MapPost("/plugs/{id:guid}/appliance", (Guid id, ApplianceRequest body, NilmService nilm, HttpContext http, CancellationToken ct) => Guard(async () =>
+        {
+            if (UnknownCategory(body.Category) is { } bad) return bad;
+            if (await nilm.SetPlugApplianceAsync(id, body.Single ?? true, body.Name, body.Category, ct) is not { } row)
+                return Error(StatusCodes.Status404NotFound, $"Priza {id} nu există (sau nu are rolul de priză).");
+            Log(http).LogInformation("NILM API: plug {Alias} single appliance {Single} ({Name}, {Category}) from {Ip}",
+                row.Alias, row.SingleAppliance, row.ApplianceName ?? "-", row.ApplianceCategory ?? "-", Ip(http));
+            return Results.Ok(ToDto(row));
+        })));
 
         Write(api.MapPost("/regroup", (NilmService nilm, HttpContext http, CancellationToken ct) => Guard(async () =>
         {
@@ -242,6 +264,8 @@ public static class NilmApi
             p.StepPowerFactor, p.Runs, p.MedianRunSeconds, p.P10RunSeconds, p.P90RunSeconds, p.Hours, v.PlugAlias, v.PlugLinked, p.TopPlugShare,
             p.FirstSeenUtc, p.LastSeenUtc, p.Last7DaysWh);
     }
+
+    private static PlugDto ToDto(PlugNilmRow p) => new(p.PlugId, p.Alias, p.SingleAppliance, p.ApplianceName, p.ApplianceCategory, p.State.ToString());
 
     private static TrainDto ToDto(NilmTrainResult t) => new(t.Trained, t.LabeledEvents, t.LabeledClasses,
         t.Info?.Classes ?? Array.Empty<string>(), t.Info?.Accuracy, t.Info?.Folds, t.Info?.Examples, t.Duration.TotalSeconds);

@@ -14,6 +14,39 @@ public class PlugRepositoryTests
             RelayOn: true, RssiDbm: -53, OnTime: TimeSpan.FromMinutes(10)));
 
     [Fact]
+    public async Task SetAppliance_RoundTrips_NameCleaned_CategoryNormalised_AliasKept_AndSurvivesRediscovery()
+    {
+        using var f = new TestDbFactory();
+        using var ctx = f.CreateContext();
+        var repo = new PlugRepository(ctx);
+        var id = await repo.UpsertFromDiscoveryAsync(MakeDiscovered("aabbccddee00", "Priza bucatarie"), DateTimeOffset.UtcNow, CancellationToken.None);
+        var plain = (await repo.ListAllAsync(CancellationToken.None)).Single();
+        plain.SingleAppliance.Should().BeFalse();
+        plain.Appliance.Should().BeNull();
+        plain.DisplayName.Should().Be("Priza bucatarie");
+
+        (await repo.SetApplianceAsync(id, true, "  Frigider  ", "fridge", CancellationToken.None)).Should().BeTrue();
+        await repo.UpsertFromDiscoveryAsync(MakeDiscovered("aabbccddee00", "Priza bucatarie"), DateTimeOffset.UtcNow, CancellationToken.None);
+        var single = (await repo.ListAllAsync(CancellationToken.None)).Single();
+        single.SingleAppliance.Should().BeTrue();
+        single.ApplianceName.Should().Be("Frigider");
+        single.ApplianceCategory.Should().Be("fridge");
+        single.Alias.Should().Be("Priza bucatarie", "the alias stays");
+        single.Appliance.Should().Be("Frigider");
+        single.DisplayName.Should().Be("Frigider");
+        single.ExcludedFromTraining.Should().BeTrue();
+        single.TeachesNilm.Should().BeTrue("it still labels the events");
+
+        (await repo.SetApplianceAsync(id, true, " ", "nu-exista", CancellationToken.None)).Should().BeTrue();
+        var byAlias = (await repo.ListAllAsync(CancellationToken.None)).Single();
+        byAlias.ApplianceName.Should().BeNull();
+        byAlias.Appliance.Should().Be("Priza bucatarie", "an empty name = the alias");
+        byAlias.ApplianceCategory.Should().Be(KasaMonitor.Core.Nilm.ApplianceCategories.Other);
+
+        (await repo.SetApplianceAsync(Guid.NewGuid(), true, "X", null, CancellationToken.None)).Should().BeFalse();
+    }
+
+    [Fact]
     public async Task UpsertFromDiscovery_NewPlug_InsertsRowAndReturnsId()
     {
         using var f = new TestDbFactory();

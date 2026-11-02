@@ -7,7 +7,7 @@ plugs and energy meters (e.g. Shelly EM Gen3, local JSON-RPC; the only write is 
 with SQLite, a web UI on port 8910 and a Prometheus `/metrics` endpoint. An optional Prometheus + Grafana stack
 with a ready-made dashboard and alert rules is included.
 
-Version: **0.8.3** (`Directory.Build.props`). Docker image: `duobit/kasamonitor`.
+Version: **0.8.4** (`Directory.Build.props`). Docker image: `duobit/kasamonitor`.
 
 ## Quick start
 
@@ -49,7 +49,7 @@ TP-Link (Tapo app) account in `/settings` and press **Scanează acum** on `/plug
   change; minute aggregates from every reading.
 - **Contor page** (`/contor`): the house in real time (1 s), rest of the house, today per minute, energy per day, relay.
 - **Gas boiler** (`/centrala`, menu „Centrală”): a Viessmann boiler through the ViCare cloud API: burner, modulation,
-  temperatures, hot water, messages, gas per day for hot water vs heating with cost, raw features. See
+  temperatures, hot water, a burner timeline (heating vs hot water, inferred), messages, gas per day for hot water vs heating with cost, raw features. See
   [Gas boiler (Viessmann ViCare)](#gas-boiler-viessmann-vicare).
 - **Appliance detection (NILM)** (`/consumatori`, menu „Consumatori”): switch-on/off events of the appliances found in
   the main meter's 1-second power, grouped into signatures (one per appliance), labelled automatically from the plugs,
@@ -59,7 +59,7 @@ TP-Link (Tapo app) account in `/settings` and press **Scanează acum** on `/plug
   the house) and „Rapoarte” on `/centrala` (gas, boiler electricity, heat produced), per day (hours), week, month
   (days) or year (months), with ◀ ▶ navigation, the change against the previous period and the cost. See
   [Reports](#reports-history-casă-and-centrala-rapoarte).
-- **Version in the menu**: „v0.8.3” at the right of the navigation bar; the tooltip shows the commit and the build time.
+- **Version in the menu**: „v0.8.4” at the right of the navigation bar; the tooltip shows the commit and the build time.
 - **Browser errors in the server log**: JavaScript errors and the Blazor error banner are reported to
   `POST /api/client-error` and logged at Warning (category `KasaMonitor.ClientErrors`), so `docker logs` shows them.
 - **HTTP API for the appliance detection** (`/api/nilm/*`, LAN only): list, sheet, label, merge, add to, hide, regroup,
@@ -532,6 +532,25 @@ vs heating for today / 7 days / month / last month / year with the cost, a stack
 the apparent efficiency of last month (heat produced / gas × kWh/m³). **The consumption is estimated by the boiler's
 controller, not measured by a gas meter**: compare it with the gas bill before relying on it.
 
+**Burner timeline (since 0.8.4).** The first chart of `/centrala`, „Cronologie arzător”, shows when the burner burns and
+for what — **heating** (orange), **hot water** (blue), **burning, purpose unknown** (dark grey); off = no bar — over
+6 h / 24 h / 3 days / 7 days (◀ ▶ move by one window), with the supply, hot water (target dashed) and room temperatures
+and the modulation and pump % on the same time axis (they replace the former „Ultimele 24 de ore” charts). The tooltip of
+a bar gives start, end, duration, mean modulation and the gas the boiler's counters attributed to it. The Viessmann API
+has no explicit „heating hot water” signal (no `heating.dhw.charging` on a Vitodens 050-W), so the purpose is inferred
+(`BurnerTimeline`, Core) on each contiguous run of `BurnerActive = true` (a missing reading of up to 5 minutes beyond the
+usual cadence does not break a run; a bar runs from the first reading with the burner on to the next reading):
+(a) the boiler's „today” gas counters, which the boiler updates late (on 2 Nov 2026 the heating counter jumped by 0.6 m³
+20 minutes after a run had ended), from the reading before the run to at most 60 minutes after its end, but never past the
+reading before the next run (each increase belongs to one run): only hot water grew → hot water, only heating → heating,
+both → the run is split in proportion to the increases when longer than 10 minutes (heating first), otherwise unknown;
+(b) only when no counter grew (0.1 m³ steps), tuned for a combi boiler whose hot water sensor follows the supply while the
+burner runs (rises = highest value in the run − the reading before it): hot water when the hot water rose ≥ 2 °C more
+than the supply, or the supply stayed flat (< 1 °C) and the hot water rose ≥ 2 °C; heating when the supply rose ≥ 2 °C
+and the hot water did not rise more; otherwise unknown. The same rule, applied at every poll to the readings of the last
+12 hours, gives `heating_burner_purpose_info`: a run still going may be „unknown” until a counter moves. The page
+re-evaluates closed runs when the late counter arrives; samples already in Prometheus keep the value they had.
+
 **Storage.** `HeatingDevices`, `HeatingReadings` (one row per poll: about 720 rows a day at 120 s; kept forever unless
 `HeatingReadingsRetentionDays` > 0),
 `HeatingEnergyDaily`, `HeatingEnergyPeriods` and `HeatingRawFeatures` (only the latest raw answer, overwritten).
@@ -542,6 +561,7 @@ boiler does not report has no series):
 | Metric | Type | Unit | Source |
 |---|---|---|---|
 | `heating_burner_active` | gauge | 0/1 | `heating.burners.0.active` |
+| `heating_burner_purpose_info{purpose}` | gauge | 1 | built by KasaMonitor at every poll: `heating` / `dhw` / `unknown` / `off`, one series = 1 (rule above, „Burner timeline”) |
 | `heating_burner_modulation_percent` | gauge | % | `heating.burners.0.modulation` |
 | `heating_boiler_temperature_c` | gauge | °C | `heating.boiler.sensors.temperature.main` (not on 050-W) |
 | `heating_boiler_target_c` | gauge | °C | `heating.boiler.temperature` (target; 20 °C when idle on a 050-W) |
@@ -878,8 +898,8 @@ dotnet test KasaMonitor.sln
 From the repository root, with Docker running and `docker login` done once:
 
 ```powershell
-.\deploy\build-and-push.ps1 -Version 0.8.3          # build :0.8.3 + :latest and push both
-.\deploy\build-and-push.ps1 -Version 0.8.3 -NoPush  # local build only
+.\deploy\build-and-push.ps1 -Version 0.8.4          # build :0.8.4 + :latest and push both
+.\deploy\build-and-push.ps1 -Version 0.8.4 -NoPush  # local build only
 ```
 
 or manually:

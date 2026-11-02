@@ -375,6 +375,26 @@ public sealed class HeatingTests : IDisposable
         .Select(d => (d.Day, d.GasHeatingMaxM3, d.GasHeatingLastM3, d.GasDhwMaxM3, d.GasDhwLastM3)).ToList();
 
     [Fact]
+    public async Task Worker_PublishesTheBurnerPurpose_OfTheCurrentRun()
+    {
+        await ConnectAsync(expires: _now.AddDays(1));
+        var (worker, state, client, _) = CreateLoggedWorker();
+        async Task<BurnerPurpose?> ReadAsync(int minute, bool on, double heating, double dhw)
+        {
+            var at = new DateTimeOffset(2026, 11, 2, 10, minute, 0, TimeSpan.Zero);
+            _now = at;
+            client.FeaturesJson = () => GasJson(heating, dhw, at).Replace("\"value\":true", "\"value\":" + (on ? "true" : "false"));
+            (await worker.PollOnceAsync(CancellationToken.None)).Should().Be(HeatingPollResult.Read);
+            return state.Current!.BurnerPurpose;
+        }
+
+        (await ReadAsync(0, false, 1.0, 0.1)).Should().Be(BurnerPurpose.Off);
+        (await ReadAsync(2, true, 1.0, 0.1)).Should().Be(BurnerPurpose.Unknown, "no counter and no temperature moved yet");
+        (await ReadAsync(4, true, 1.0, 0.2)).Should().Be(BurnerPurpose.Dhw, "the hot water counter grew during the run");
+        (await ReadAsync(6, false, 1.0, 0.2)).Should().Be(BurnerPurpose.Off);
+    }
+
+    [Fact]
     public async Task Worker_BoilerDay_ReadingsBefore01RomanianTimeStayOnTheBoilersPreviousDay()
     {
         // The measured night of 1→2 Nov 2026: the boiler (CET) resets at 01:00 Romanian time.

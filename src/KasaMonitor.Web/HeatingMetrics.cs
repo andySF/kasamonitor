@@ -20,6 +20,8 @@ public static class HeatingMetrics
     private static KasaMetrics.MetricInfo C(string name, string unit, string help) => new(name, "counter", unit, help);
 
     public static readonly KasaMetrics.MetricInfo BurnerActiveInfo = G("heating_burner_active", "0/1", "Burner on (1) or off (0).");
+    public static readonly KasaMetrics.MetricInfo BurnerPurposeInfo = G("heating_burner_purpose_info", "1",
+        "What the burner is doing at the latest reading (label purpose = heating|dhw|unknown|off; one series = 1): inferred by KasaMonitor from the boiler's gas counters, else from the temperatures (no explicit API signal).");
     public static readonly KasaMetrics.MetricInfo ModulationInfo = G("heating_burner_modulation_percent", "%", "Burner modulation.");
     public static readonly KasaMetrics.MetricInfo BoilerTempInfo = G("heating_boiler_temperature_c", "°C", "Boiler water temperature (only boilers with this sensor).");
     public static readonly KasaMetrics.MetricInfo BoilerTargetInfo = G("heating_boiler_target_c", "°C", "Boiler target temperature (heating.boiler.temperature; 20 °C when idle on a Vitodens 050-W).");
@@ -50,7 +52,7 @@ public static class HeatingMetrics
 
     public static readonly IReadOnlyList<KasaMetrics.MetricInfo> Catalog = new[]
     {
-        BurnerActiveInfo, ModulationInfo, BoilerTempInfo, BoilerTargetInfo, SupplyTempInfo, ReturnTempInfo, OutsideTempInfo, DhwTempInfo, DhwTargetInfo,
+        BurnerActiveInfo, BurnerPurposeInfo, ModulationInfo, BoilerTempInfo, BoilerTargetInfo, SupplyTempInfo, ReturnTempInfo, OutsideTempInfo, DhwTempInfo, DhwTargetInfo,
         RoomTempInfo, PumpInfo, PressureInfo, StartsInfo, HoursInfo, GasInfo, GasTotalInfo, HeatInfo, HeatTotalInfo, PowerInfo,
         PowerTotalInfo, DhwModeInfo, ProgramInfo, WifiInfo, BatteryInfo, ErrorInfo, CallsInfo, LastSuccessInfo, OnlineInfo,
     };
@@ -59,6 +61,7 @@ public static class HeatingMetrics
     private static Counter Counter(KasaMetrics.MetricInfo i, string[]? labels = null) => Metrics.CreateCounter(i.Name, i.Help, labels ?? Labels);
 
     private static readonly Gauge BurnerActive = Gauge(BurnerActiveInfo);
+    private static readonly Gauge BurnerPurpose = Gauge(BurnerPurposeInfo, PurposeLabels);
     private static readonly Gauge Modulation = Gauge(ModulationInfo);
     private static readonly Gauge BoilerTemp = Gauge(BoilerTempInfo);
     private static readonly Gauge BoilerTarget = Gauge(BoilerTargetInfo);
@@ -89,7 +92,7 @@ public static class HeatingMetrics
 
     private static readonly Collector[] All =
     {
-        BurnerActive, Modulation, BoilerTemp, BoilerTarget, SupplyTemp, ReturnTemp, OutsideTemp, DhwTemp, DhwTarget, RoomTemp, Pump, Pressure,
+        BurnerActive, BurnerPurpose, Modulation, BoilerTemp, BoilerTarget, SupplyTemp, ReturnTemp, OutsideTemp, DhwTemp, DhwTarget, RoomTemp, Pump, Pressure,
         Starts, Hours, Gas, GasTotal, Heat, HeatTotal, Power, PowerTotal, DhwMode, Program, Wifi, Battery, Error, Calls, LastSuccess, Online,
     };
 
@@ -140,6 +143,7 @@ public static class HeatingMetrics
             if (s.BurnerHours is { } hours) Hours.WithLabels(labels).IncTo(hours);
 
             Info(DhwMode, labels, s.DhwMode);
+            Info(BurnerPurpose, labels, live.BurnerPurpose is { } bp ? BurnerTimeline.Label(bp) : null);
             Info(Program, labels, s.ActiveProgram);
 
             foreach (var p in live.Periods ?? Array.Empty<HeatingEnergyPeriod>())

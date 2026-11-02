@@ -125,6 +125,8 @@ else if (!_settings.HasClientId || _settings.Token is null)
         </div>
     </div>
 
+    <HeatingTimelineCard DeviceId="live.Device.Id" LastReadUtc="live.LastSuccessUtc" />
+
     <HeatingReportsCard DeviceId="live.Device.Id" LastReadUtc="live.LastSuccessUtc" />
 
     <div class="row g-3 mt-0">
@@ -184,30 +186,9 @@ else if (!_settings.HasClientId || _settings.Token is null)
         </div>
     </div>
 
+    @* The former "Ultimele 24 de ore" charts (temperatures, modulation) are the "Cronologie arzător" card at the top (24 h by default). *@
     <div class="row g-3 mt-0">
-        <div class="col-xl-8">
-            <div class="card h-100">
-                <div class="card-body">
-                    <h2 class="h6 text-secondary">Ultimele 24 de ore</h2>
-                    @if (_temps.Count == 0)
-                    {
-                        <div class="small text-secondary">Încă nu există citiri.</div>
-                    }
-                    else
-                    {
-                        <ApexChart @key="_readingsKey" TItem="TempPoint" Options="_tempOptions" Height="240" XAxisType="XAxisType.Datetime">
-                            <ApexPointSeries TItem="TempPoint" Items="_temps" Name="Tur (°C)" Color="#D55E00" SeriesType="SeriesType.Line" XValue="@(p => p.TimeUtc)" YValue="@(p => p.SupplyC)" />
-                            <ApexPointSeries TItem="TempPoint" Items="_temps" Name="Apă caldă (°C)" Color="#0072B2" SeriesType="SeriesType.Line" XValue="@(p => p.TimeUtc)" YValue="@(p => p.DhwC)" />
-                            <ApexPointSeries TItem="TempPoint" Items="_temps" Name="Cameră (°C)" Color="#009E73" SeriesType="SeriesType.Line" XValue="@(p => p.TimeUtc)" YValue="@(p => p.RoomC)" />
-                        </ApexChart>
-                        <ApexChart @key="(_readingsKey + 100000)" TItem="TempPoint" Options="_modOptions" Height="140" XAxisType="XAxisType.Datetime">
-                            <ApexPointSeries TItem="TempPoint" Items="_temps" Name="Modulație (%)" Color="#CC79A7" SeriesType="SeriesType.Area" XValue="@(p => p.TimeUtc)" YValue="@(p => p.ModulationPct)" />
-                        </ApexChart>
-                    }
-                </div>
-            </div>
-        </div>
-        <div class="col-xl-4">
+        <div class="col-12">
             <div class="card h-100">
                 <div class="card-body small">
                     <h2 class="h6 text-secondary">Arzător și conectare</h2>
@@ -311,7 +292,6 @@ else if (!_settings.HasClientId || _settings.Token is null)
 
 @code {
     public record GasDay(string Date, decimal DhwM3, decimal HeatingM3);
-    public record TempPoint(DateTime TimeUtc, decimal? SupplyC, decimal? DhwC, decimal? RoomC, decimal? ModulationPct);
     private sealed record RawFeature(string Name, string? DeviceId, string Json);
 
     [SupplyParameterFromQuery(Name = "auth")] public string? Auth { get; set; }
@@ -323,10 +303,9 @@ else if (!_settings.HasClientId || _settings.Token is null)
     private IReadOnlyList<HeatingFormat.GasRow> _gasRows = Array.Empty<HeatingFormat.GasRow>();
     private IReadOnlyList<HeatingEnergyPeriod> _periods = Array.Empty<HeatingEnergyPeriod>();
     private List<GasDay> _days = new();
-    private List<TempPoint> _temps = new();
     private long? _startsToday;
     private double? _hoursToday;
-    private int _daysKey, _readingsKey;
+    private int _daysKey;
     private bool _showRaw;
     private string _rawFilter = "";
     private DateTimeOffset? _rawTs;
@@ -342,26 +321,6 @@ else if (!_settings.HasClientId || _settings.Token is null)
         PlotOptions = new PlotOptions { Bar = new PlotOptionsBar { Horizontal = false } },
         DataLabels = new DataLabels { Enabled = false },
         Tooltip = new Tooltip { Shared = true, Intersect = false, Y = new TooltipY { Formatter = "function(v) { return v == null ? '' : v.toFixed(2) + ' m³'; }" } },
-    };
-
-    private readonly ApexChartOptions<TempPoint> _tempOptions = new()
-    {
-        Chart = new Chart { Toolbar = new Toolbar { Show = false }, Animations = new Animations { Enabled = false } },
-        Stroke = new Stroke { Width = 2, Curve = Curve.Straight },
-        DataLabels = new DataLabels { Enabled = false },
-        Xaxis = new XAxis { Labels = new XAxisLabels { DatetimeUTC = false } },
-        Yaxis = new List<YAxis> { new() { DecimalsInFloat = 0 } },
-        Tooltip = new Tooltip { Shared = true, X = new TooltipX { Format = "HH:mm" } },
-    };
-
-    private readonly ApexChartOptions<TempPoint> _modOptions = new()
-    {
-        Chart = new Chart { Toolbar = new Toolbar { Show = false }, Animations = new Animations { Enabled = false } },
-        Stroke = new Stroke { Width = 1, Curve = Curve.Stepline },
-        DataLabels = new DataLabels { Enabled = false },
-        Xaxis = new XAxis { Labels = new XAxisLabels { DatetimeUTC = false } },
-        Yaxis = new List<YAxis> { new() { Min = 0, Max = 100, DecimalsInFloat = 0 } },
-        Tooltip = new Tooltip { X = new TooltipX { Format = "HH:mm" } },
     };
 
     protected override async Task OnInitializedAsync()
@@ -416,18 +375,14 @@ else if (!_settings.HasClientId || _settings.Token is null)
         _days = days.Select(d => new GasDay(d.Day.ToString("yyyy-MM-dd"), Math.Round((decimal)(d.GasDhwFor(to) ?? 0), 2), Math.Round((decimal)(d.GasHeatingFor(to) ?? 0), 2))).ToList();
         _daysKey++;
 
-        var readings = await repo.ListReadingsAsync(id, DateTimeOffset.UtcNow.AddHours(-24), DateTimeOffset.UtcNow, CancellationToken.None);
-        _temps = readings.Select(r => new TempPoint(r.TsUtc.UtcDateTime, Dec(r.SupplyTempC), Dec(r.DhwTempC), Dec(r.RoomTempC), Dec(r.ModulationPct))).ToList();
         var localMidnight = new DateTimeOffset(DateTime.Today, TimeZoneInfo.Local.GetUtcOffset(DateTime.Today));
-        var today = readings.Where(r => r.TsUtc >= localMidnight).ToList();
+        // Today's readings (local day): starts and hours since midnight. The charts are in HeatingTimelineCard.
+        var today = await repo.ListReadingsAsync(id, localMidnight, DateTimeOffset.UtcNow, CancellationToken.None);
         _startsToday = today.Count >= 2 && today[0].BurnerStarts is { } s0 && today[^1].BurnerStarts is { } s1 ? s1 - s0 : null;
         _hoursToday = today.Count >= 2 && today[0].BurnerHours is { } h0 && today[^1].BurnerHours is { } h1 ? h1 - h0 : null;
-        _readingsKey++;
 
         if (_showRaw) await LoadRawAsync(repo, id);
     }
-
-    private static decimal? Dec(double? v) => v is { } x ? Math.Round((decimal)x, 1) : null;
 
     private IEnumerable<(string Label, string Value, string Title)> Temperatures(HeatingSnapshot? s)
     {

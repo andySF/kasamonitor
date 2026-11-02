@@ -2,7 +2,10 @@ using KasaMonitor.Core.Heating;
 
 namespace KasaMonitor.Workers;
 
-/// <summary>What the UI and /metrics show about the boiler: device, last snapshot, cumulative totals and the poll state.</summary>
+/// <summary>
+/// What the UI and /metrics show about the boiler: device, last snapshot, cumulative totals, the poll state and the
+/// purpose of the burner at the latest reading (<see cref="BurnerTimeline.Current"/>; null when unknown).
+/// </summary>
 public sealed record HeatingLive(
     HeatingDevice Device,
     HeatingSnapshot? Snapshot,
@@ -10,7 +13,8 @@ public sealed record HeatingLive(
     DateTimeOffset? LastSuccessUtc,
     string? LastError,
     bool LastPollOk,
-    IReadOnlyList<HeatingEnergyPeriod>? Periods = null);
+    IReadOnlyList<HeatingEnergyPeriod>? Periods = null,
+    BurnerPurpose? BurnerPurpose = null);
 
 /// <summary>
 /// In-memory state of the heating integration (singleton): the latest <see cref="HeatingLive"/>, the call budget and a

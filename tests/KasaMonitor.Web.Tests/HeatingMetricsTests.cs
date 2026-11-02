@@ -26,14 +26,14 @@ public class HeatingMetricsTests
         ]}
         """.Replace("__MODE__", dhwMode);
 
-    private static HeatingState State(string device, string dhwMode, double totalHeating)
+    private static HeatingState State(string device, string dhwMode, double totalHeating, BurnerPurpose? purpose = null)
     {
         var state = new HeatingState(new ApiCallBudget(() => Now));
         state.Calls.Record();
         var dev = new HeatingDevice(Guid.NewGuid(), "viessmann", "1", "2", "0", "E3_Test_050", device, true, Now, null);
         var s = HeatingFeatureParser.Parse(Json(dhwMode), Now);
         state.Publish(new HeatingLive(dev, s, new HeatingEnergyTotals(totalHeating, 0.1, 0, 0, 0, 0), Now, null, true,
-            HeatingEnergyBuilder.Periods(dev.Id, s, 10.55, EnergyUnit.CubicMeter)));
+            HeatingEnergyBuilder.Periods(dev.Id, s, 10.55, EnergyUnit.CubicMeter), purpose));
         return state;
     }
 
@@ -85,6 +85,22 @@ public class HeatingMetricsTests
     }
 
     [Fact]
+    public async Task BurnerPurpose_IsOneSeries_ThatFollowsThePurpose()
+    {
+        HeatingMetrics.Update(State("Centrala test D", "eco", 1, BurnerPurpose.Heating), Now);
+        var first = await LinesAsync("Centrala test D");
+        first.Should().ContainSingle(x => x.StartsWith("heating_burner_purpose_info{"))
+            .Which.Should().Be("heating_burner_purpose_info{device=\"Centrala test D\",model=\"E3_Test_050\",purpose=\"heating\"} 1");
+
+        HeatingMetrics.Update(State("Centrala test D", "eco", 1, BurnerPurpose.Off), Now);
+        (await LinesAsync("Centrala test D")).Where(x => x.StartsWith("heating_burner_purpose_info{")).Should()
+            .Equal("heating_burner_purpose_info{device=\"Centrala test D\",model=\"E3_Test_050\",purpose=\"off\"} 1");
+
+        HeatingMetrics.Update(State("Centrala test D", "eco", 1), Now);
+        (await LinesAsync("Centrala test D")).Should().NotContain(x => x.StartsWith("heating_burner_purpose_info{"), "an unknown state has no series");
+    }
+
+    [Fact]
     public async Task NoDevice_NoSeries()
     {
         HeatingMetrics.Update(State("Centrala test C", "eco", 1), Now);
@@ -98,7 +114,7 @@ public class HeatingMetricsTests
     {
         HeatingMetrics.Catalog.Select(c => c.Name).Should().Contain(new[]
         {
-            "heating_burner_active", "heating_burner_modulation_percent", "heating_boiler_temperature_c", "heating_boiler_target_c", "heating_supply_temperature_c",
+            "heating_burner_active", "heating_burner_purpose_info", "heating_burner_modulation_percent", "heating_boiler_temperature_c", "heating_boiler_target_c", "heating_supply_temperature_c",
             "heating_return_temperature_c", "heating_outside_temperature_c", "heating_dhw_temperature_c", "heating_dhw_target_c",
             "heating_room_temperature_c", "heating_pump_percent", "heating_pressure_bar", "heating_burner_starts_total", "heating_burner_hours_total",
             "heating_gas_consumption_m3", "heating_gas_consumption_m3_total", "heating_heat_production_kwh", "heating_heat_production_kwh_total",

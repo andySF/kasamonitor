@@ -142,6 +142,16 @@ public sealed class HeatingPollWorker : BackgroundService
         }
     }
 
+    /// <summary>How far back the purpose of the current burner run is looked for (the run so far and the reading before it).</summary>
+    internal static readonly TimeSpan BurnerPurposeLookback = TimeSpan.FromHours(12);
+
+    /// <summary>
+    /// The purpose of the burner at the latest stored reading (<c>heating_burner_purpose_info</c>): the rule of
+    /// <see cref="BurnerTimeline"/> on the recent readings, so the current run is classified as it goes.
+    /// </summary>
+    private static async Task<BurnerPurpose?> BurnerPurposeAsync(IHeatingRepository repo, Guid deviceId, DateTimeOffset now, CancellationToken ct) =>
+        BurnerTimeline.Current(await repo.ListReadingsAsync(deviceId, now - BurnerPurposeLookback, now, ct));
+
     /// <summary>After a restart: the stored device, its last raw dump and totals, so the page has data before the first poll.</summary>
     public async Task LoadStoredAsync(CancellationToken ct)
     {
@@ -164,7 +174,8 @@ public sealed class HeatingPollWorker : BackgroundService
             catch (JsonException) { }
         }
         _state.Publish(new HeatingLive(device, snapshot, await repo.GetTotalsAsync(device.Id, BoilerClock.DayOf(_clock(), boilerTz), ct),
-            device.LastSeenUtc, device.LastError, LastPollOk: false, await repo.ListPeriodsAsync(device.Id, ct)));
+            device.LastSeenUtc, device.LastError, LastPollOk: false, await repo.ListPeriodsAsync(device.Id, ct),
+            await BurnerPurposeAsync(repo, device.Id, _clock(), ct)));
         // Only now: a failure above is retried at the next cycle.
         _loaded = true;
     }
@@ -201,12 +212,14 @@ public sealed class HeatingPollWorker : BackgroundService
             var snapshot = HeatingFeatureParser.Parse(json, now);
 
             HeatingEnergyTotals totals;
+            BurnerPurpose? purpose;
             var periods = HeatingEnergyBuilder.Periods(device.Id, snapshot, s.GasKwhPerM3, s.GasUnit);
             using (var scope = _scopeFactory.CreateScope())
             {
                 var repo = scope.ServiceProvider.GetRequiredService<IHeatingRepository>();
                 await repo.SaveRawAsync(device.Id, now, json, ct);
                 await repo.SaveReadingAsync(HeatingReading.From(device.Id, snapshot, s.GasKwhPerM3, s.GasUnit), ct);
+                purpose = await BurnerPurposeAsync(repo, device.Id, now, ct);
                 await WriteDaysAsync(repo, device.Id, snapshot, HeatingEnergyBuilder.Days(device.Id, snapshot, boilerTz, s.GasKwhPerM3, s.GasUnit),
                     now, boilerTz, ct);
                 await RepairOnceADayAsync(repo, device.Id, now, boilerTz, ct);
@@ -225,7 +238,7 @@ public sealed class HeatingPollWorker : BackgroundService
             }
             device = device with { LastSeenUtc = now, LastError = null };
             _state.SetStatus(null);
-            _state.Publish(new HeatingLive(device, snapshot, totals, now, null, LastPollOk: true, periods));
+            _state.Publish(new HeatingLive(device, snapshot, totals, now, null, LastPollOk: true, periods, purpose));
             _log.LogDebug("Heating read: {Features} features, {Unmapped} unmapped, burner {Burner}", snapshot.FeatureCount, snapshot.Unmapped.Count, snapshot.BurnerActive);
             return HeatingPollResult.Read;
         }

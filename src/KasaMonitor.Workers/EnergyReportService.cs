@@ -132,10 +132,7 @@ public sealed class EnergyReportService
         var today = ReportPeriod.Containing(ReportGranularity.Day, BoilerClock.DayOf(now, tz));
         var report = await GetHeatingReportAsync(deviceId, today, ct);
         var yesterday = today.Previous();
-        var localNow = TimeZoneInfo.ConvertTime(now, tz).DateTime;
-        var sameLocal = yesterday.Start.ToDateTime(TimeOnly.FromDateTime(localNow));
-        while (tz.IsInvalidTime(sameLocal)) sameLocal = sameLocal.AddMinutes(30);
-        var sameUtc = new DateTimeOffset(sameLocal, tz.GetUtcOffset(sameLocal));
+        var sameUtc = KasaMonitor.Core.Home.LocalClock.SameTimeOnUtc(now, tz, yesterday.Start);
 
         IReadOnlyList<HeatingCounterReading> readings;
         using (var scope = _scopeFactory.CreateScope())

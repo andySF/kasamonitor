@@ -19,7 +19,10 @@ public sealed record SubMeterTotal(Guid PlugId, string Alias, double? Kwh);
 /// within the measurement margin (max(15 W × hours, 3 % of the house)), plugs above the meter beyond it, or plugs above
 /// the meter on a bucket whose meter data is partial (<see cref="RestKind.PartialData"/>, not a clamp problem).
 /// <see cref="PartialBuckets"/>: the main meter's live minutes cover less than 90 % of the bucket (elapsed part for the
-/// current one) — set only when the stream has minutes in it.
+/// current one) — set only when the stream has minutes in it. <see cref="PlugTotals"/>: each counted plug's energy of
+/// the period, over the same buckets as <see cref="PlugsTotalKwh"/> (a week, month or year counts a plug only on the
+/// buckets the main meter has data for, so plugs and meter cover the same days; the home page's "Aparate" and Sankey). <see cref="PreviousBuckets"/> /
+/// <see cref="PreviousHouseKwh"/>: the bars of the previous period (read by the same queries: no second report needed).
 /// </summary>
 public sealed record HouseReport(
     ReportPeriod Period,
@@ -38,7 +41,10 @@ public sealed record HouseReport(
     DateOnly? FirstHouseDay,
     RestKind? RestTotalKind = null,
     IReadOnlyList<bool>? PartialBuckets = null,
-    bool IsCurrent = false)
+    bool IsCurrent = false,
+    IReadOnlyList<SubMeterTotal>? PlugTotals = null,
+    IReadOnlyList<ReportBucket>? PreviousBuckets = null,
+    IReadOnlyList<double?>? PreviousHouseKwh = null)
 {
     /// <summary>Some bucket (or the total) has the plugs above the meter beyond the margin: "verifică poziția clemei".</summary>
     public bool RestClamped => RestTotalKind == RestKind.Negative || RestKinds.Any(k => k == RestKind.Negative);
@@ -141,10 +147,22 @@ public static class HouseReportBuilder
             .Select(s => new SubMeterTotal(s.Id, s.Alias, values.Total(s.Id, period)))
             .ToList();
 
+        var previousPeriod = period.Previous();
+        var previousBuckets = previousPeriod.Buckets(input.Tz);
+        var previousHouse = previousBuckets
+            .Select(b => byHour ? values.Hour(mainId, b) : values.Bucket(mainId, previousPeriod, b))
+            .ToList();
+
+        var plugTotals = input.Plugs
+            .Select(p => new SubMeterTotal(p.Id, p.Alias, byHour
+                ? values.Day(p.Id, period.Start)
+                : ReportMath.SumOrNull(buckets.Select((b, i) => house[i] is null ? null : values.Bucket(p.Id, period, b)))))
+            .ToList();
+
         var isCurrent = input.NowUtc >= period.StartUtc(input.Tz) && input.NowUtc < period.EndUtc(input.Tz);
         return new HouseReport(period, buckets, input.Main.Alias, house, plugs, rest, kinds,
             houseTotal, plugsTotal, restTotal, previousTotal, ReportMath.DeltaPct(houseTotal, previousTotal), subs, input.FirstHouseDay,
-            totalKind, partial, isCurrent);
+            totalKind, partial, isCurrent, plugTotals, previousBuckets, previousHouse);
     }
 
     private static (double? Value, RestKind Kind) Rest(double house, double plugs, double hours, bool partial)

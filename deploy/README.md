@@ -33,10 +33,10 @@ stack has no repository directory. Keep `network_mode: host`.
 ## Local build & push to Docker Hub
 
 ```powershell
-docker build -t duobit/kasamonitor:latest -t duobit/kasamonitor:0.8.7 -f deploy/Dockerfile .
+docker build -t duobit/kasamonitor:latest -t duobit/kasamonitor:0.9.0 -f deploy/Dockerfile .
 docker login
 docker push duobit/kasamonitor:latest
-docker push duobit/kasamonitor:0.8.7
+docker push duobit/kasamonitor:0.9.0
 ```
 
 ## Configuration
@@ -61,6 +61,7 @@ the environment variables are only initial values (full list in `../README.md`).
 | `GOVEE_API_KEY_FILE` / `KasaMonitor__GoveeApiKeyFile` | `/run/secrets/govee-api.key` | file with the Govee API key, read at startup (see below) |
 | `KasaMonitor__GoveeApiKey` | — | alternative to the file; avoid (visible in `docker inspect`) |
 | `KasaMonitor__ClimateLatitude` / `KasaMonitor__ClimateLongitude` | — | initial location for the outdoor temperature (Open-Meteo); better: `/settings` |
+| `KasaMonitor__GrafanaUrl` | — | Grafana dashboard linked from the home page footer (better: `/settings` → Altele); empty = no link |
 
 ### Miele client secret
 

@@ -5,10 +5,21 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <base href="/" />
+    @* Theme before the first paint: the saved choice (localStorage), else the system preference; Bootstrap follows. *@
+    <script>
+        // The single owner of the theme rule; kasa.js (toggle, system changes, enhanced navigation) reuses window.kasaThemeBoot.
+        window.kasaThemeBoot = {
+            saved: function () { try { var t = localStorage.getItem('kasa-theme'); return t === 'light' || t === 'dark' ? t : null; } catch (e) { return null; } },
+            system: function () { return window.matchMedia && matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'; },
+            apply: function (t) { document.documentElement.setAttribute('data-theme', t); document.documentElement.setAttribute('data-bs-theme', t); }
+        };
+        window.kasaThemeBoot.apply(window.kasaThemeBoot.saved() || window.kasaThemeBoot.system());
+    </script>
     <ResourcePreloader />
     <link rel="stylesheet" href="@Assets["lib/bootstrap/dist/css/bootstrap.min.css"]" />
     <link rel="stylesheet" href="@Assets["lib/bootstrap-icons/bootstrap-icons.min.css"]" />
     <link rel="stylesheet" href="@Assets["app.css"]" />
+    <link rel="stylesheet" href="@Assets["css/home.css"]" />
     <link rel="stylesheet" href="@Assets["KasaMonitor.Web.styles.css"]" />
     <ImportMap />
     <link rel="icon" type="image/png" href="favicon.png" />

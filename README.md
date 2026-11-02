@@ -7,7 +7,7 @@ plugs and energy meters (e.g. Shelly EM Gen3, local JSON-RPC; the only write is 
 with SQLite, a web UI on port 8910 and a Prometheus `/metrics` endpoint. An optional Prometheus + Grafana stack
 with a ready-made dashboard and alert rules is included.
 
-Version: **0.8.7** (`Directory.Build.props`). Docker image: `duobit/kasamonitor`.
+Version: **0.9.0** (`Directory.Build.props`). Docker image: `duobit/kasamonitor`.
 
 ## Quick start
 
@@ -26,6 +26,12 @@ TP-Link (Tapo app) account in `/settings` and press **Scanează acum** on `/plug
 
 ## Features
 
+- **Home page „Acasă”** (`/`): the house at a glance — live power in bubbles (plugs, detected appliances, standby, the
+  undetected rest), energy and cost of electricity and gas for a day / week / month / year with the comparison, bars per
+  hour with the typical day, appliances, where the energy went (Sankey), today vs yesterday at the same time, the month
+  with a bill estimate, the boiler, Miele and temperatures. Light and dark theme. See [Home page](#home-page-acasă).
+- **Plugs page „Prize”** (`/prize`, the former Dashboard): one card per plug with power, voltage, today / month,
+  device details and the relay.
 - **Automatic discovery** every N minutes: UDP broadcast on 9999 (Kasa legacy) and the TP-Link discovery probe
   on UDP 20002 (Tapo / newer Kasa). New plugs are added automatically (setting "Adaugă automat").
 - **Scan now** (`/plugs`, "Scanează acum"): runs discovery immediately and lists each plug as new / added / known /
@@ -40,7 +46,7 @@ TP-Link (Tapo app) account in `/settings` and press **Scanează acum** on `/plug
   protocol such as TPAP. For TPAP the UI shows the usual fix: in the Tapo app, device settings → *Third-Party
   Compatibility* off and on again, then restart the plug; it normally comes back on KLAP.
 
-- **Device details** (Dashboard, "Details" on a plug card): settings read from the plug on demand (cached 60 s) —
+- **Device details** (`/prize`, "Details" on a plug card): settings read from the plug on demand (cached 60 s) —
   relay, uptime, default state after power loss, LED, auto-off / countdown, power protection, Wi-Fi signal, firmware,
   device time, cloud, schedules. Read-only; see `docs/device-api-capabilities.md` for everything the local APIs offer.
 - **Roles** (`/plugs`): every channel is a *plug* (counts in the totals), the *main meter* of the house (one per
@@ -62,12 +68,12 @@ TP-Link (Tapo app) account in `/settings` and press **Scanează acum** on `/plug
 - **Appliance detection (NILM)** (`/consumatori`, menu „Consumatori”): switch-on/off events of the appliances found in
   the main meter's 1-second power, grouped into signatures (one per appliance), labelled automatically from the plugs,
   by you, or by a nightly ML.NET classifier; runs, energy per day, „unidentified” energy; cards „Acum pornite” and
-  „Azi” on the Dashboard and `/contor`. See [Appliance detection (NILM)](#appliance-detection-nilm).
+  „Azi” on the „Prize” page and `/contor`. See [Appliance detection (NILM)](#appliance-detection-nilm).
 - **Reports** (ViCare-style): a „Casă” section on `/history` (main meter split into measured plugs and the rest of
   the house) and „Rapoarte” on `/centrala` (gas, boiler electricity, heat produced), per day (hours), week, month
   (days) or year (months), with ◀ ▶ navigation, the change against the previous period and the cost. See
   [Reports](#reports-history-casă-and-centrala-rapoarte).
-- **Version in the menu**: „v0.8.7” at the right of the navigation bar; the tooltip shows the commit and the build time.
+- **Version in the menu**: „v0.9.0” at the right of the navigation bar; the tooltip shows the commit and the build time.
 - **Browser errors in the server log**: JavaScript errors and the Blazor error banner are reported to
   `POST /api/client-error` and logged at Warning (category `KasaMonitor.ClientErrors`), so `docker logs` shows them.
 - **HTTP API for the appliance detection** (`/api/nilm/*`, LAN only): list, sheet, label, merge, add to, hide, regroup,
@@ -90,6 +96,7 @@ not been saved from `/settings`.
 | TP-Link user | `KasaMonitor__TapoUsername` | — | Tapo app account e-mail |
 | TP-Link password | `KasaMonitor__TapoPassword` | — | stored encrypted (ASP.NET DataProtection), shown masked; used for KLAP and AES |
 | Tariff per kWh | `KasaMonitor__TariffRonPerKwh` | `1.30` | web UI cost; read at startup |
+| Grafana (link) | `KasaMonitor__GrafanaUrl` | — | optional; address of a Grafana dashboard linked from the footer of the home page (`http`/`https`); empty = no link |
 | Poll interval (s) | `KasaMonitor__PollIntervalSeconds` | `10` | read at startup |
 | Shelly discovery | `KasaMonitor__ShellyDiscoveryEnabled` | `true` | mDNS `_shelly._tcp.local` + the probe hosts below |
 | Shelly password | `KasaMonitor__ShellyPassword` | — | optional; admin password of Shelly devices with authentication on (digest auth, user `admin`); stored encrypted like the TP-Link password |
@@ -248,6 +255,13 @@ Withdrawn or unsupported plugs have no series. Renaming a plug removes the serie
 The gas boiler has its own `heating_*` family, see [Gas boiler (Viessmann ViCare)](#gas-boiler-viessmann-vicare); the
 temperature and humidity sensors the `climate_*` family, see [Climate](#climate).
 
+Home page (see [Home page](#home-page-acasă)), computed once per minute; a value that is not known has no series:
+
+| Metric | Type | Unit | Labels | Meaning |
+|---|---|---|---|---|
+| `kasa_house_standby_w` | gauge | W | — | standby / always-on floor: median of (main meter − plugs) between 01:00 and 05:00 over the last 7 nights; 0 when it is 5 W or less (not measurable) |
+| `kasa_bill_estimate_ron` | gauge | RON | `kind` = `electricity`, `gas`, `total` | bill estimate of the current month: used so far + mean per elapsed day × days left |
+
 Appliance detection (see [Appliance detection (NILM)](#appliance-detection-nilm)):
 
 | Metric | Type | Unit | Labels | Meaning |
@@ -368,7 +382,7 @@ the official component schema without having been tested:
   day, and records dated more than 5 minutes in the future are ignored.
 - **Meters vs. plugs** — decided by the channel's **role** (see below), not by the model: new `em1`/`em` channels
   start as sub-meters, `switch`/`pm1` channels as plugs.
-- **Reversed clamp** — the Dashboard card shows „inversat?” when a Shelly channel reads below −10 W (simple rule on
+- **Reversed clamp** — the „Prize” page card shows „inversat?” when a Shelly channel reads below −10 W (simple rule on
   the current reading, accepted instead of "negative for a while"); fix the clamp direction (`reverse`) in the Shelly
   app if it is not real export.
 - **Writes** — reads use only `Shelly.Get*`, `EM1.GetStatus`/`PM1.GetStatus`/`Switch.GetStatus`/`EM.GetStatus`,
@@ -382,8 +396,8 @@ See `docs/device-api-capabilities.md` for what is shown, what exists and is not 
 **Roles** (`Plugs.Role`, `/plugs` → column *Rol*, icons plug / house / meter): *plug* (`0`, default for Kasa, Tapo
 and Shelly `switch`/`pm1`), *main meter* (`1`, the channel that measures the house supply; at most one, also enforced
 by a partial unique index; setting a new one turns the previous one into a sub-meter; button „Setează ca contor
-general”) and *sub-meter* (`2`, default for Shelly `em1`/`em` channels). Only plugs count in totals: Dashboard
-header, History „Toate” (stacked bars; the house is a separate „Casă” line, never added to the plugs), Grafana totals
+general”) and *sub-meter* (`2`, default for Shelly `em1`/`em` channels). Only plugs count in totals: „Prize”
+header, Istoric „Toate” (stacked bars; the house is a separate „Casă” line, never added to the plugs), Grafana totals
 (`role="plug"`). Upgrading from 0.3.0 marks the existing Shelly meter channels (`S3EM…`, `SPEM…`, apps `EMG3`,
 `ProEM`, `Pro3EM`) as sub-meters; other `em1`/`em` devices already in the database (another model code) stay plugs:
 set their role on `/plugs`. Choose the main meter once on `/plugs`. Roles cannot be changed on withdrawn rows.
@@ -432,10 +446,10 @@ the stream is older than 5 s), rest of the house (see below), voltage (red outsi
 factor, frequency, relay; live chart of the last 10 minutes (main meter, plus an optional plug chosen in „Suprapune o
 priză”, from the same stream; only the new point is pushed to ApexCharts each time, the whole 10-minute window once a
 minute); today per minute (min/avg/max from the aggregates); energy per day for 30 days (from `DailyEnergy`) with
-cost; the sub-meters; the last 20 relay commands. Without a main meter it links to `/plugs`. The Dashboard shows a
+cost; the sub-meters; the last 20 relay commands. Without a main meter it links to `/plugs`. The „Prize” page shows a
 „Casă” card (house power, rest of the house, relay) above the plugs.
 
-**Rest of the house** (Dashboard „Casă” card, `/contor`) is computed from averages aligned on the **last whole
+**Rest of the house** („Prize” page „Casă” card, `/contor`) is computed from averages aligned on the **last whole
 minute**, not from the latest instantaneous values (the meter arrives every second, the plugs every 1–10 s, so their
 latest values are from different moments): the main meter's mean over that minute minus Σ the plugs' means over the
 same minute (from their live samples; an online plug without a live sample in that minute counts with its latest
@@ -796,6 +810,91 @@ climate_online == 0                                                  # sensors w
 Not yet verified on hardware: the Shelly H&T Gen3 and the Plus Add-on (implemented from the Gen2+ API docs, tested on
 synthetic answers); the Govee battery capability (H5179 does not report it in the captured answers).
 
+## Home page („Acasă”)
+
+The home page (`/`, menu „Acasă”) follows Home Assistant's Energy dashboard with the „Now” view of Sense. One period
+selector (Azi / Săptămână / Lună / An, ◀ ▶) drives the period cards (Energie, Pe ore, Aparate, Unde s-a dus energia) and
+is kept in the address (`/?p=zi|saptamana|luna|an&d=yyyy-MM-dd`: bookmarks, back after another page, shared links);
+„Acum în casă” and row 3 (today vs yesterday, the current month, the boiler, Miele, the temperatures) stay on the
+present. „Compară cu …” (for today „Compară cu ieri (la aceeași oră)”) shows the previous period (pale bars, Δ) on Energie
+and Pe ore. The former Dashboard (one card per plug) is now „Prize” at `/prize`. Menu (Romanian, routes unchanged): Acasă,
+Prize, Contor, Centrală, Aparate, Climă, Consumatori, Istoric (`/history`), Dispozitive (`/plugs`), Setări (`/settings`),
+Integrare.
+
+Numbers: W whole, kWh with 2 decimals below 10 and 1 above, m³ and lei with 2 decimals, a Δ with the decimals of its
+value (the same rules as /history). A **cost total** (curent + gaz) exists only when every component that should exist
+does (electricity, and gas when a boiler is connected): a missing part is never counted as 0, so there is no Δ of cost
+between a total and gas alone.
+
+- **Acum în casă** (live, 1 s, from the stream of the main meter and the plugs): the main meter as a big number and bubbles
+  whose **area ∝ W**: every plug with all its power (blue; grey = off / offline), the appliances detected from the main
+  meter that have **no plug** (aqua; plug-confirmed signatures are already in the plugs), **„Standby / mereu pornit”**
+  and **„Nedetectat”** (dashed). The parts always add up to max(meter, Σ plugs): standby is at most the rest now,
+  the detected appliances are scaled down together when they would exceed what is left, and the undetected rest is
+  what remains (≥ 0). The bubble positions are recomputed only when the set or the order changes (with a 10 % + 2 W
+  hysteresis) or a value outgrows its slot, so they do not jump every second. A plug drawing ≥ 20 W, a running Miele
+  appliance's plug and a running detected appliance pulse. A name that does not fit goes on two lines; a bubble under
+  22 px gets its label outside. The list below gives W and % of the meter (the 8 largest; the others in the tooltip).
+  Text on a coloured fill keeps a contrast of at least 4.5:1 (white on a darker blue in the light theme, dark text on blue,
+  orange and aqua otherwise).
+- **Standby / mereu pornit** = the night floor of the **rest** of the house: the median of (main − Σ plugs) per minute
+  between 01:00 and 05:00 local time over the last 7 nights (fewer while the history is shorter), from the live minute
+  aggregates. Every plug that counts in the totals is subtracted: a streamed plug by its minutes (a minute counts only when
+  every streamed plug has it, a night only when each covers at least half of it), a plug without live stream by its mean
+  polled power of that night. A plug's own standby stays in the plug (no double counting). Recomputed hourly;
+  `kasa_house_standby_w`. A floor of **5 W or less** is not measurable (at night the sum of the plugs exceeds the
+  meter): no bubble, no row, the note „Standby nemăsurabil: noaptea, suma prizelor depășește contorul.”, and the metric
+  is 0.
+- **Energie** of the period: electricity (kWh, lei at the tariff of `/settings`), gas (m³, ≈ kWh with the calorific
+  factor, lei at the gas price per kWh) and the total, a bar split by source in kWh. For **today** the comparison is with
+  **yesterday up to the same time**, both as Σ of the main meter's live minutes (same source); when either window is
+  covered under 90 % by the stream it says „date parțiale” instead of a Δ. A week / month / year **in progress** is
+  compared with the **same share of the previous one** (up to the same day and time); a past period with the whole
+  previous one; a missing previous value says „fără date pentru …”. Gas follows the **boiler's day** (Central European
+  time, ends at 01:00 Romanian time), as on `/centrala`. When a week / month / year started before the main meter's first
+  day, the cards say „⏳ date parțiale: contor din <data>; nedetectat calculat doar pe zilele acoperite”, and the plugs
+  and „Nedetectat” are counted only on the days the meter covers (the same rule as /history).
+- **Pe ore / Pe zile / Pe luni**: the main meter's energy per bucket, the previous period pale behind it, the **typical
+  day** (mean kWh per local hour over the last 30 days, hours with at least 54 live minutes; day periods) and „acum”.
+- **Aparate**: energy and cost of every plug, every detected appliance without a plug and „Nedetectat”
+  (= meter − plugs − detected, ≥ 0), largest first, with a short note when it fits; a click opens the plug's history or
+  `/consumatori`. Each card title has a „→” to its source page.
+- **Unde s-a dus energia**: a Sankey from the meter to the top 5 plugs + „Alte N prize”, the top 3 detected appliances
+  + „Alți N detectați” and „Nedetectat” (band width ∝ energy, the flows add up to the meter); gas on its own scale to
+  heating / hot water. Detected appliances under 0.01 kWh are counted in „Nedetectat”; the members of „Alte N prize” are
+  written next to it when they fit. When the plugs exceed the meter the note says why, as /history does: within the
+  margin, partial data, or the clamp. Under 900 px the electricity flows are a vertical list with bars; under 1500 px the
+  gas flow goes under the electricity one.
+- **Azi vs ieri** (always today, at the same time), **Luna în curs vs luna trecută** (the previous month up to the same
+  point, and whole) with the **ESTIMARE** of the bill: used so far + (used so far / elapsed days) × days left, electricity
+  and gas, marked „încredere scăzută” under 7 days; `kasa_bill_estimate_ron{kind="electricity|gas|total"}`.
+- **Centrala** (burner with its purpose, supply, hot water, modulation, today's gas per purpose), **Aparate Miele**
+  (the running program with phase, time left and progress, else the last cycle) and **Climă** (temperatures per room
+  and outside, from the [climate service](#climate): „Afară” = the sensors ticked „afară” (Open-Meteo by
+  default), the rooms = the other sensors except the boiler's supply and hot water; a stale value is shown grey). The
+  boiler's values older than 2 poll intervals (`HeatingState.StaleAfterPolls`) or with the boiler offline, and a Miele
+  appliance with the stream down and no read in the last 3 minutes (`MieleState.IsOnline`), are shown grey as „ultima
+  stare cunoscută”, never as present — each card is left out when its source is missing. Before the first 6 hours of a
+  month the estimate says „Estimarea facturii apare după primele 6 ore ale lunii.”
+- Footer: the age of the main meter's latest value, links to the pages and to Grafana (setting „Grafana”).
+
+Performance: every period is computed on the thread pool (never on a browser's circuit: SQLite runs the "async" queries
+synchronously) and shared by all browsers — concurrent requests wait for the same computation. A value is fresh for the
+current day 1 minute, a week / month / year in progress 10 minutes, a past period until the day changes; an expired
+value is still served while one recomputation runs (stale-while-revalidate); at most 32 periods are kept. The current day
+and month are kept warm in the background; each computation is logged at Debug with its duration (category
+`KasaMonitor.Workers.HomeService`, e.g. `Logging__LogLevel__KasaMonitor.Workers.HomeService=Debug`); one house report per
+period gives both its bars and the previous period's; periods come from the hourly live sums, the daily rows and the
+boiler's daily history, never from the raw `LiveSamples`. Only „Acum în casă” and the footer refresh every second.
+
+**Theme.** Light or dark for the whole application: the button in the menu bar switches it (it says which theme is on,
+`aria-pressed`) and the choice is kept in the browser (`localStorage`); without a choice the system setting
+(`prefers-color-scheme`) decides, followed live. The rule has one owner, the inline script in `App.razor` (it sets
+`data-theme` before the first paint); the colours are CSS variables on `:root`, with one dark block
+(`[data-theme="dark"]`): electricity / plugs blue, gas orange, detected appliances aqua, standby and „off” grey.
+Bootstrap follows through `data-bs-theme`; its `table-light`, `text-bg-light` and `bg-light` and the ApexCharts texts,
+grid and tooltips follow the theme too.
+
 ## Reports (`/history` „Casă” and `/centrala` „Rapoarte”)
 
 Both use one period selector, as in the ViCare app: **Zi** (bars per hour), **Săptămână** (Monday–Sunday, per day),
@@ -841,7 +940,7 @@ curs”. Sources (also in the „ⓘ” tooltip):
 - year: the months from stored days, plus one bar „restul anului” = the boiler's `currentYear` minus those months;
 - the boiler's relative values are mapped to calendar periods by the boiler day they were read on (`last7days` is a
   rolling window and is never used as a week).
-The Dashboard „Centrală” card shows today's gas with the change against yesterday **up to the same time** (from the
+The „Centrală” card of the „Prize” page shows today's gas with the change against yesterday **up to the same time** (from the
 stored „today” counters); without counters for yesterday it shows only yesterday's total.
 
 ## Appliance detection (NILM)
@@ -958,9 +1057,9 @@ meter** (`/plugs`) with the live stream on (1 s). Page `/consumatori`, menu „C
    nominal value). Energy per day per signature (a run across midnight is split proportionally), and
    **„Neidentificat”** = house today − Σ plugs − Σ runs of the detected appliances (never below 0). The house energy
    comes from the minute aggregates (only the minutes the stream ran), so Σ plugs (the Kasa/Tapo day counters, like the
-   Dashboard header; Shelly plugs have none and are not subtracted) is scaled to the same covered share of the day.
+   „Prize” header; Shelly plugs have none and are not subtracted) is scaled to the same covered share of the day.
 9. **Cards** „Acum pornite” (detected appliances running now, with W) and „Azi” (top 5 + unidentified) on the
-   Dashboard and `/contor`; metrics `kasa_appliance_*`, `kasa_nilm_*` (see Metrics).
+   „Prize” and `/contor`; metrics `kasa_appliance_*`, `kasa_nilm_*` (see Metrics).
 10. **Retention**: events and finished runs older than 365 days are deleted every night (signatures stay).
 
 **How it learns.** A signature is a **component**, not necessarily a whole appliance: a washing machine is a heater
@@ -1107,15 +1206,15 @@ dotnet test KasaMonitor.sln
 From the repository root, with Docker running and `docker login` done once:
 
 ```powershell
-.\deploy\build-and-push.ps1 -Version 0.8.7          # build :0.8.7 + :latest and push both
-.\deploy\build-and-push.ps1 -Version 0.8.7 -NoPush  # local build only
+.\deploy\build-and-push.ps1 -Version 0.9.0          # build :0.9.0 + :latest and push both
+.\deploy\build-and-push.ps1 -Version 0.9.0 -NoPush  # local build only
 ```
 
 or manually:
 
 ```bash
-docker build -t duobit/kasamonitor:0.8.7 -t duobit/kasamonitor:latest -f deploy/Dockerfile .
-docker push duobit/kasamonitor:0.8.7
+docker build -t duobit/kasamonitor:0.9.0 -t duobit/kasamonitor:latest -f deploy/Dockerfile .
+docker push duobit/kasamonitor:0.9.0
 docker push duobit/kasamonitor:latest
 ```
 

@@ -67,6 +67,55 @@
     if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', watchBanner);
     else watchBanner();
 
+    // Theme (light / dark): data-theme + data-bs-theme on <html>, the explicit choice saved in localStorage; without a
+    // saved choice the system preference is followed live. Re-applied after Blazor's enhanced navigation.
+    var THEME_KEY = 'kasa-theme';
+    var boot = window.kasaThemeBoot;   // defined by the inline script in App.razor (single owner of the rule)
+    function savedTheme() { return boot ? boot.saved() : null; }
+    function systemTheme() { return boot ? boot.system() : 'light'; }
+    // The toggle button says which theme is on (aria-pressed = dark).
+    function syncToggle(t) {
+        var buttons = document.querySelectorAll('[data-theme-toggle]');
+        for (var i = 0; i < buttons.length; i++) {
+            buttons[i].setAttribute('aria-pressed', t === 'dark' ? 'true' : 'false');
+            buttons[i].setAttribute('title', t === 'dark' ? 'Temă întunecată (apasă pentru luminoasă)' : 'Temă luminoasă (apasă pentru întunecată)');
+        }
+    }
+    function applyTheme(t) {
+        if (boot) boot.apply(t);
+        else { document.documentElement.setAttribute('data-theme', t); document.documentElement.setAttribute('data-bs-theme', t); }
+        syncToggle(t);
+    }
+    window.kasaTheme = {
+        current: function () { return document.documentElement.getAttribute('data-theme') || savedTheme() || systemTheme(); },
+        toggle: function () {
+            var next = window.kasaTheme.current() === 'dark' ? 'light' : 'dark';
+            applyTheme(next);
+            try { localStorage.setItem(THEME_KEY, next); } catch (e) { /* private mode: only this page */ }
+            return next;
+        },
+        apply: function () { applyTheme(savedTheme() || systemTheme()); }
+    };
+    try {
+        if (window.matchMedia) {
+            matchMedia('(prefers-color-scheme: dark)').addEventListener('change', function () { if (!savedTheme()) window.kasaTheme.apply(); });
+        }
+    } catch (e) { /* old browsers */ }
+    document.addEventListener('click', function (e) {
+        var b = e.target && e.target.closest ? e.target.closest('[data-theme-toggle]') : null;
+        if (b) { e.preventDefault(); window.kasaTheme.toggle(); }
+    });
+    function hookEnhancedLoad() {
+        if (window.Blazor && window.Blazor.addEventListener) {
+            try { window.Blazor.addEventListener('enhancedload', window.kasaTheme.apply); } catch (e) { /* not a Web App */ }
+            return true;
+        }
+        return false;
+    }
+    if (!hookEnhancedLoad()) document.addEventListener('DOMContentLoaded', hookEnhancedLoad);
+    if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', function () { syncToggle(window.kasaTheme.current()); });
+    else syncToggle(window.kasaTheme.current());
+
     // navigator.clipboard exists only on https:// or localhost; fall back to execCommand and never throw.
     window.kasaCopy = function (text) {
         try {

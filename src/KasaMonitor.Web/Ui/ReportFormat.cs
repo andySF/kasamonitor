@@ -6,12 +6,14 @@ namespace KasaMonitor.Web.Ui;
 /// <summary>Romanian texts of the period reports (/history "Casă", /centrala "Rapoarte"): period titles, bar labels, Δ %, rest of the house.</summary>
 public static class ReportFormat
 {
-    // Explicit names: the container runs with invariant globalization (no ro-RO culture data).
-    private static readonly string[] Months =
-        { "ianuarie", "februarie", "martie", "aprilie", "mai", "iunie", "iulie", "august", "septembrie", "octombrie", "noiembrie", "decembrie" };
-    private static readonly string[] MonthsShort = { "ian", "feb", "mar", "apr", "mai", "iun", "iul", "aug", "sep", "oct", "nov", "dec" };
-    private static readonly string[] Days = { "duminică", "luni", "marți", "miercuri", "joi", "vineri", "sâmbătă" };
-    private static readonly string[] DaysShort = { "dum", "lun", "mar", "mie", "joi", "vin", "sâm" };
+    // Explicit names (RoNames): the container runs with invariant globalization (no ro-RO culture data).
+    private static IReadOnlyList<string> Months => RoNames.Months;
+    private static IReadOnlyList<string> MonthsShort => RoNames.MonthsShort;
+    private static IReadOnlyList<string> Days => RoNames.Days;
+    private static IReadOnlyList<string> DaysShort => RoNames.DaysShort;
+
+    /// <summary>A change under this many percent is shown as „=” (no colour): the same threshold on every page.</summary>
+    public const double FlatPct = 0.05;
 
     /// <summary>
     /// The note of the boiler reports: "zi = după ceasul centralei (CET), se încheie la 01:00 ora României" (the end of the
@@ -34,12 +36,7 @@ public static class ReportFormat
     };
 
     /// <summary>"pe ore" / "pe zile" / "pe luni".</summary>
-    public static string BucketsName(ReportGranularity kind) => kind switch
-    {
-        ReportGranularity.Day => "pe ore",
-        ReportGranularity.Year => "pe luni",
-        _ => "pe zile",
-    };
+    public static string BucketsName(ReportGranularity kind) => PeriodNames.For(kind).Buckets;
 
     public static string Date(DateOnly d) => $"{d.Day} {Months[d.Month - 1]} {d.Year}";
 
@@ -57,13 +54,7 @@ public static class ReportFormat
     };
 
     /// <summary>"față de ieri" / "față de săptămâna trecută" / … (the previous period).</summary>
-    public static string VersusPrevious(ReportGranularity kind) => kind switch
-    {
-        ReportGranularity.Day => "față de ziua precedentă",
-        ReportGranularity.Week => "față de săptămâna precedentă",
-        ReportGranularity.Month => "față de luna precedentă",
-        _ => "față de anul precedent",
-    };
+    public static string VersusPrevious(ReportGranularity kind) => PeriodNames.For(kind).Versus;
 
     /// <summary>Bar label: "07:00" (the second 03:00 of the autumn DST day: "03:00*"), "lun 26", "26", "nov".</summary>
     public static string BucketLabel(ReportBucket b, ReportGranularity kind) => kind switch
@@ -94,7 +85,7 @@ public static class ReportFormat
         if (pct is not { } p) return null;
         var abs = Math.Abs(p);
         var text = HeatingFormat.Number(abs, abs < 10 ? 1 : 0) + " %";
-        return Math.Abs(p) < 0.05 ? "= " + text : (p > 0 ? "▲ " : "▼ ") + text;
+        return Math.Abs(p) < FlatPct ? "= " + text : (p > 0 ? "▲ " : "▼ ") + text;
     }
 
     /// <summary>Consumption up = red, down = green.</summary>

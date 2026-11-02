@@ -1,4 +1,4 @@
-@page "/"
+@page "/prize"
 @rendermode InteractiveServer
 @using KasaMonitor.Workers
 @using KasaMonitor.Web.Ui
@@ -11,10 +11,10 @@
 @inject HouseRestService HouseRest
 @implements IDisposable
 
-<PageTitle>KasaMonitor — Dashboard</PageTitle>
+<PageTitle>KasaMonitor — Prize</PageTitle>
 
 <div class="d-flex flex-wrap align-items-center justify-content-between gap-3 mb-3">
-    <h1 class="h3 mb-0"><i class="bi bi-speedometer2 me-2"></i>Dashboard</h1>
+    <h1 class="h3 mb-0"><i class="bi bi-speedometer2 me-2"></i>Prize</h1>
     <div class="d-flex flex-wrap gap-2">
         <div class="card px-3 py-2 text-center">
             <div class="small text-secondary" title="Suma prizelor (rol „priză”); contoarele (contor general, sub-contoare) nu intră în total">Putere acum</div>
@@ -82,7 +82,7 @@ else
                 <div class="card h-100 border-start border-4 @(s.IsOnline ? "border-success" : "border-danger")">
                     <div class="card-body pb-2">
                         <div class="d-flex justify-content-between align-items-start">
-                            <a class="h5 card-title text-decoration-none text-body mb-1" href="/history?plugId=@s.PlugId" title="History">@s.Alias</a>
+                            <a class="h5 card-title text-decoration-none text-body mb-1" href="/history?plugId=@s.PlugId" title="Istoric">@s.Alias</a>
                             <span class="badge @(s.IsOnline ? "text-bg-success" : "text-bg-danger")">@(s.IsOnline ? "online" : "offline")</span>
                         </div>
                         <div class="mb-2">
@@ -193,7 +193,7 @@ else
     private const long ReversedBelowMw = -10_000;
 
     private const string DayCountersNote =
-        "Suma contoarelor de azi / din lună raportate de prize (Kasa, Tapo). Prizele Shelly nu au astfel de contoare în dispozitiv și nu sunt incluse aici (istoricul lor zilnic e în History); contoarele (rol contor general / sub-contor) nu intră în totaluri.";
+        "Suma contoarelor de azi / din lună raportate de prize (Kasa, Tapo). Prizele Shelly nu au astfel de contoare în dispozitiv și nu sunt incluse aici (istoricul lor zilnic e în Istoric); contoarele (rol contor general / sub-contor) nu intră în totaluri.";
 
     /// <summary>A 1-second sample of the main meter older than this is ignored (the 10 s poll is shown instead).</summary>
     private static readonly TimeSpan LiveMaxAge = TimeSpan.FromSeconds(5);

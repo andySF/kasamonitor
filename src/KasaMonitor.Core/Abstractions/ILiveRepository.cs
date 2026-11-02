@@ -18,6 +18,9 @@ public interface ILiveRepository
 
     Task<IReadOnlyList<LiveMinuteAggregate>> ListMinutesAsync(Guid plugId, DateTimeOffset fromUtc, DateTimeOffset toUtc, CancellationToken ct);
 
+    /// <summary>The minute aggregates of several plugs in [from, to] in one query (<c>PlugId IN (...)</c> + range on the key), by plug and minute.</summary>
+    Task<IReadOnlyList<LiveMinuteAggregate>> ListMinutesAsync(IReadOnlyCollection<Guid> plugIds, DateTimeOffset fromUtc, DateTimeOffset toUtc, CancellationToken ct);
+
     /// <summary>
     /// Σ energy and count of the minute aggregates per plug and UTC hour, for the given plugs, in one grouped query
     /// (minutes in [from, to); <c>PlugId IN (...)</c> + range on the primary key (PlugId, MinuteTs)).

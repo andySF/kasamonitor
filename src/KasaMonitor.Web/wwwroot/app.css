@@ -1,9 +1,164 @@
+/* ---------- Theme (0.9.0): tokens on :root, light by default, dark from prefers-color-scheme or data-theme ----------
+   The palette is the one validated for the home page sketch (dataviz validator, both themes): electricity / plugs blue,
+   gas orange, detected appliances (NILM) aqua, standby and "off" grey. data-theme is ALWAYS set on <html> by the inline
+   script in App.razor (saved choice in localStorage, else the system preference), so the dark tokens live in one block
+   ([data-theme="dark"]); data-bs-theme follows it for Bootstrap. Text on a coloured fill uses the --on-* tokens and the
+   darker --c-electric-fill (contrast >= 4.5:1, WCAG AA, computed in the 0.9.0 report). */
+:root {
+    color-scheme: light;
+    --page: #f1f1ee;
+    --surface: #fcfcfb;
+    --ink: #0b0b0b;
+    --ink-2: #52514e;
+    --ink-3: #6f6d68;
+    --grid: #e1e0d9;
+    --axis: #c3c2b7;
+    --border: rgba(11, 11, 11, 0.10);
+    --hover: rgba(11, 11, 11, 0.05);
+    --c-electric: #2a78d6;
+    --c-electric-pale: rgba(42, 120, 214, 0.45);
+    --c-electric-fill: #1d63c0;
+    --on-electric: #ffffff;
+    --on-gas: #0b0b0b;
+    --on-nilm: #0b0b0b;
+    --c-gas: #eb6834;
+    --c-nilm: #1baf7a;
+    --c-standby: #d6d5ce;
+    --c-off: #a8a69e;
+    --c-rest: #898781;
+    --good: #006300;
+    --bad: #c22f2f;
+    --status-on: #0ca30c;
+    --link: #006bb7;
+    --brand: #198754;
+    --estimate-bg: rgba(42, 120, 214, 0.06);
+    --shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+}
+
+:root[data-theme="dark"] {
+    color-scheme: dark;
+    --page: #0d0d0d;
+    --surface: #1a1a19;
+    --ink: #f0efec;
+    --ink-2: #c3c2b7;
+    --ink-3: #9a988f;
+    --grid: #2c2c2a;
+    --axis: #383835;
+    --border: rgba(255, 255, 255, 0.10);
+    --hover: rgba(255, 255, 255, 0.06);
+    --c-electric: #3987e5;
+    --c-electric-pale: rgba(57, 135, 229, 0.45);
+    --c-electric-fill: #3987e5;
+    --on-electric: #0b0b0b;
+    --on-gas: #0b0b0b;
+    --on-nilm: #0b0b0b;
+    --c-gas: #d95926;
+    --c-nilm: #199e70;
+    --c-standby: #4a4a46;
+    --c-off: #6b6a64;
+    --c-rest: #898781;
+    --good: #0ca30c;
+    --bad: #e66767;
+    --status-on: #0ca30c;
+    --link: #6ea8fe;
+    --brand: #4ade80;
+    --estimate-bg: rgba(57, 135, 229, 0.10);
+    --shadow: none;
+}
+
+/* Existing pages on the theme: page tint behind Bootstrap cards, cards on the surface colour, tables inside cards transparent. */
+body {
+    background: var(--page);
+}
+
+.card {
+    --bs-card-bg: var(--surface);
+}
+
+.card .table {
+    --bs-table-bg: transparent;
+}
+
+.navbar .nav-link.active {
+    color: var(--brand) !important;
+    font-weight: 600;
+}
+
+/* 11 menu entries + the theme button + the version fit on one line from 1280 px. */
+.navbar .navbar-nav .nav-link {
+    padding-left: .4rem;
+    padding-right: .4rem;
+}
+
+.theme-toggle {
+    border: 1px solid var(--border);
+    background: transparent;
+    color: var(--bs-body-color);
+    border-radius: 8px;
+    width: 32px;
+    height: 32px;
+    display: inline-grid;
+    place-items: center;
+}
+
+.theme-toggle:hover {
+    background: var(--hover);
+}
+
+/* Bootstrap's „light” helpers keep fixed light colours in the dark theme (bright bars, black text): follow the theme. */
+[data-bs-theme="dark"] .table-light {
+    --bs-table-bg: var(--page);
+    --bs-table-color: var(--ink);
+    --bs-table-border-color: var(--border);
+    --bs-table-striped-bg: var(--hover);
+    --bs-table-hover-bg: var(--hover);
+}
+
+[data-bs-theme="dark"] .text-bg-light {
+    background-color: var(--hover) !important;
+    color: var(--ink) !important;
+}
+
+[data-bs-theme="dark"] .bg-light {
+    background-color: var(--surface) !important;
+}
+
+/* ApexCharts draws its texts with fixed dark colours: follow the theme instead. */
+[data-bs-theme="dark"] .apexcharts-text,
+[data-bs-theme="dark"] .apexcharts-legend-text,
+[data-bs-theme="dark"] .apexcharts-title-text {
+    fill: var(--ink-2) !important;
+    color: var(--ink-2) !important;
+}
+
+[data-bs-theme="dark"] .apexcharts-gridline,
+[data-bs-theme="dark"] .apexcharts-grid line {
+    stroke: var(--grid);
+}
+
+[data-bs-theme="dark"] .apexcharts-tooltip.apexcharts-theme-light {
+    background: var(--surface);
+    color: var(--ink);
+    border-color: var(--border);
+}
+
+[data-bs-theme="dark"] .apexcharts-tooltip.apexcharts-theme-light .apexcharts-tooltip-title {
+    background: var(--page);
+    border-color: var(--border);
+}
+
+[data-bs-theme="dark"] .apexcharts-xaxistooltip,
+[data-bs-theme="dark"] .apexcharts-menu {
+    background: var(--surface);
+    color: var(--ink);
+}
+
 html, body {
     font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
 }
 
 a, .btn-link {
-    color: #006bb7;
+    color: var(--link);
 }
 
 .btn-primary {

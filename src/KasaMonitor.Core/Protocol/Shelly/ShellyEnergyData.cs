@@ -111,13 +111,9 @@ public static class ShellyEnergyData
 
     public static DateOnly LocalDay(DateTimeOffset at, TimeZoneInfo tz) => DateOnly.FromDateTime(TimeZoneInfo.ConvertTime(at, tz).DateTime);
 
-    public static DateTimeOffset LocalMidnightUtc(DateOnly day, TimeZoneInfo tz)
-    {
-        var local = day.ToDateTime(TimeOnly.MinValue, DateTimeKind.Unspecified);
-        // A midnight skipped by a DST change does not exist: take the first valid instant after it.
-        while (tz.IsInvalidTime(local)) local = local.AddMinutes(30);
-        return new DateTimeOffset(local, tz.GetUtcOffset(local));
-    }
+    /// <summary>A midnight skipped by a DST change does not exist: the first valid instant after it (<see cref="KasaMonitor.Core.Home.LocalClock.ToUtc"/>).</summary>
+    public static DateTimeOffset LocalMidnightUtc(DateOnly day, TimeZoneInfo tz) =>
+        KasaMonitor.Core.Home.LocalClock.ToUtc(day.ToDateTime(TimeOnly.MinValue), tz);
 
     private static double Value(JsonElement row, int index)
     {

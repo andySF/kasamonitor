@@ -7,7 +7,7 @@ using KasaMonitor.Core.Protocol.Tapo;
 namespace KasaMonitor.Workers;
 
 /// <summary>
-/// Reads a plug's settings for the Dashboard details card on demand (never from the 10 s polling), with a 60 s cache
+/// Reads a plug's settings for the details card of the „Prize” page on demand (never from the 10 s polling), with a 60 s cache
 /// per plug. Failures come back as a <see cref="DeviceDetails"/> with only an error, so the UI can show them gently.
 /// </summary>
 public sealed class DeviceDetailsService

@@ -82,7 +82,8 @@ builder.Services.AddSingleton(new KasaSettingsDefaults(
     NilmEnabled: builder.Configuration.GetValue("KasaMonitor:NilmEnabled", true),
     MinEventDeltaW: builder.Configuration.GetValue("KasaMonitor:MinEventDeltaW", KasaSettingsDefaults.DefaultMinEventDeltaW),
     ClusterWindowDays: builder.Configuration.GetValue("KasaMonitor:ClusterWindowDays", KasaSettingsDefaults.DefaultClusterWindowDays),
-    MlEnabled: builder.Configuration.GetValue("KasaMonitor:MlEnabled", true)));
+    MlEnabled: builder.Configuration.GetValue("KasaMonitor:MlEnabled", true),
+    GrafanaUrl: builder.Configuration["KasaMonitor:GrafanaUrl"] ?? ""));
 
 var pollIntervalSec = builder.Configuration.GetValue("KasaMonitor:PollIntervalSeconds", 10);
 
@@ -251,6 +252,19 @@ builder.Services.AddSingleton(sp => new KasaMonitor.Workers.Nilm.NilmService(
     groundTruth: sp.GetRequiredService<MieleGroundTruth>()));
 builder.Services.AddHostedService(sp => sp.GetRequiredService<KasaMonitor.Workers.Nilm.NilmService>());
 
+// Home page „Acasă” (/): period aggregates cached per minute, standby floor and bill estimate (also on /metrics).
+builder.Services.AddSingleton(sp => new HomeService(
+    sp.GetRequiredService<IServiceScopeFactory>(),
+    sp.GetRequiredService<EnergyReportService>(),
+    sp.GetRequiredService<IKasaSettingsService>(),
+    sp.GetRequiredService<HeatingState>(),
+    sp.GetRequiredService<IHeatingSettingsService>(),
+    sp.GetRequiredService<KasaMonitor.Workers.Nilm.NilmService>(),
+    sp.GetRequiredService<ILogger<HomeService>>()));
+builder.Services.AddHostedService(sp => sp.GetRequiredService<HomeService>());
+// „Climă” card of the home page: the climate service (Afară = Open-Meteo, rooms = the other sensors).
+builder.Services.AddSingleton<KasaMonitor.Core.Home.IClimateOverview>(sp => new ClimateOverview(sp.GetRequiredService<ClimateState>()));
+
 // The only write to a device: Shelly Switch.Set, after a confirmation in the UI (setting AllowRelayControl).
 builder.Services.AddSingleton(sp => new RelayControlService(
     sp.GetRequiredService<IShellyClient>(),
@@ -275,6 +289,7 @@ HeatingMetrics.Register(app.Services.GetRequiredService<HeatingState>());
 NilmMetrics.Register(app.Services.GetRequiredService<KasaMonitor.Workers.Nilm.NilmService>());
 MieleMetrics.Register(app.Services.GetRequiredService<MieleState>());
 ClimateMetrics.Register(app.Services.GetRequiredService<ClimateState>());
+HomeMetrics.Register(app.Services.GetRequiredService<HomeService>());
 
 using (var scope = app.Services.CreateScope())
 {

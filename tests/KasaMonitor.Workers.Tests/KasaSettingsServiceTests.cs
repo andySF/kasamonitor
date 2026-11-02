@@ -26,6 +26,28 @@ public class KasaSettingsServiceTests
     }
 
     [Fact]
+    public async Task GrafanaUrl_DefaultFromConfiguration_SavedValueWins_EmptyMeansNoLink_InvalidRefused()
+    {
+        using var f = new TestDbFactory();
+        var svc = TestSettings.Create(new TestScopeFactory(f.CreateContext), new KasaSettingsDefaults(GrafanaUrl: "http://grafana.local:3000/d/x"));
+        (await svc.GetAsync(CancellationToken.None)).GrafanaUrl.Should().Be("http://grafana.local:3000/d/x");
+
+        var keep = new KasaSettingsUpdate(true, 5, "", true, "", null, false);
+        await svc.SaveAsync(keep with { GrafanaUrl = " https://g.example/d/kasa " }, CancellationToken.None);
+        (await svc.GetAsync(CancellationToken.None)).GrafanaUrl.Should().Be("https://g.example/d/kasa");
+
+        await svc.SaveAsync(keep, CancellationToken.None);
+        (await svc.GetAsync(CancellationToken.None)).GrafanaUrl.Should().Be("https://g.example/d/kasa", "null keeps the stored value");
+
+        await svc.SaveAsync(keep with { GrafanaUrl = "" }, CancellationToken.None);
+        (await svc.GetAsync(CancellationToken.None)).GrafanaUrl.Should().BeEmpty("empty = no link");
+
+        var bad = () => svc.SaveAsync(keep with { GrafanaUrl = "grafana:3000" }, CancellationToken.None);
+        await bad.Should().ThrowAsync<FormatException>();
+        KasaSettingsService.ValidateGrafanaUrl("javascript:alert(1)").Should().NotBeNull();
+    }
+
+    [Fact]
     public async Task SavedValues_WinOverDefaults_AndPasswordIsStoredProtected()
     {
         using var f = new TestDbFactory();

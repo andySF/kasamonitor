@@ -6,7 +6,7 @@ using Microsoft.Extensions.DependencyInjection;
 namespace KasaMonitor.Workers;
 
 /// <summary>
-/// "Restul casei" now (Dashboard „Casă” card, /contor): the main meter vs the plugs over the last whole minute, from
+/// "Restul casei" now („Prize” page „Casă” card, /contor): the main meter vs the plugs over the last whole minute, from
 /// the live stream (<see cref="HouseBalance.LastWholeMinute"/>) or, without a live sample of the main meter in that
 /// minute (stream off, channel not streamed, WebSocket down, first minute after start), from the means of the 10 s
 /// polled samples of the same minute (<see cref="HouseBalance.FromPolledMinute"/>). Computed once per minute and shared

@@ -1,0 +1,41 @@
+@using KasaMonitor.Core.Home
+@using KasaMonitor.Web.Ui
+@inject IClimateOverview Climate
+@implements IDisposable
+
+@* „Climă” of the home page: temperatures per room and outside (IClimateOverview over the climate service). Left out
+   when no sensor has a value. *@
+@if (Climate.Readings(DateTimeOffset.UtcNow) is { Count: > 0 } readings)
+{
+    var now = DateTimeOffset.UtcNow;
+    <section class="hcard" aria-labelledby="h-clima">
+        <div class="card-h">
+            <h2 id="h-clima"><a class="plain" href="/clima">Climă</a></h2>
+            <span class="sub">temperaturi acum</span>
+        </div>
+        <ul class="clima-list">
+            @foreach (var r in readings)
+            {
+                var age = r.AgeSeconds < double.MaxValue ? UiFormat.RelativeRo(now.AddSeconds(-r.AgeSeconds), now) : "fără citire";
+                <li class="@(r.Stale ? "stale" : "")" title="@($"{r.Name} · citit {age}" + (r.Stale ? " · valoare veche" : ""))">
+                    <span class="nm">@r.Room <small class="muted">@(r.Name != r.Room ? "· " + r.Name : "")</small></span>
+                    <span class="t num">@HeatingFormat.Temp(r.TemperatureC)</span>
+                    <span class="muted num">@(r.HumidityPercent is { } h ? HeatingFormat.Number(h, 0) + " %" : "")</span>
+                </li>
+            }
+        </ul>
+        @if (readings.Any(r => r.Stale))
+        {
+            <div class="foot-note">Gri = valoare veche (sursa nu a mai trimis la timp).</div>
+        }
+    </section>
+}
+
+@code {
+    private System.Threading.Timer? _timer;
+
+    protected override void OnInitialized() =>
+        _timer = new System.Threading.Timer(_ => InvokeAsync(StateHasChanged), null, 30_000, 30_000);
+
+    public void Dispose() => _timer?.Dispose();
+}

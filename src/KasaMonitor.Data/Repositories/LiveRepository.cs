@@ -83,6 +83,19 @@ public sealed class LiveRepository : ILiveRepository
         return rows.Select(r => new PlugHourWh(r.PlugId, DateTimeOffset.FromUnixTimeSeconds(r.Hour * 3600), r.Wh, r.Minutes)).ToList();
     }
 
+    public async Task<IReadOnlyList<LiveMinuteAggregate>> ListMinutesAsync(IReadOnlyCollection<Guid> plugIds, DateTimeOffset fromUtc, DateTimeOffset toUtc, CancellationToken ct)
+    {
+        if (plugIds.Count == 0) return Array.Empty<LiveMinuteAggregate>();
+        long from = fromUtc.ToUnixTimeSeconds(), to = toUtc.ToUnixTimeSeconds();
+        var ids = plugIds.ToList();
+        return await _db.LiveMinuteAggregates.AsNoTracking()
+            .Where(m => ids.Contains(m.PlugId) && m.MinuteTs >= from && m.MinuteTs <= to)
+            .OrderBy(m => m.PlugId).ThenBy(m => m.MinuteTs)
+            .Select(m => new LiveMinuteAggregate(m.PlugId, DateTimeOffset.FromUnixTimeSeconds(m.MinuteTs), m.MinW, m.AvgW, m.MaxW,
+                m.AvgVoltageV, m.EnergyWh, m.SampleCount, m.CoveredSeconds))
+            .ToListAsync(ct);
+    }
+
     public async Task<IReadOnlyList<LiveMinuteAggregate>> ListMinutesAsync(Guid plugId, DateTimeOffset fromUtc, DateTimeOffset toUtc, CancellationToken ct)
     {
         long from = fromUtc.ToUnixTimeSeconds(), to = toUtc.ToUnixTimeSeconds();

@@ -242,7 +242,11 @@ else
                         <label class="form-label" for="poll">Interval interogare (secunde)</label>
                         <input class="form-control" id="poll" @bind="_pollSec" type="number" min="5" max="300" />
                     </div>
-                    <div class="form-text">Tariful se aplică imediat (costurile din Dashboard și History); intervalul de interogare se citește la pornire din variabilele de mediu.</div>
+                    <div class="mb-1 mt-3">
+                        <label class="form-label" for="grafanaUrl">Grafana (link din subsolul paginii Acasă)</label>
+                        <input class="form-control" id="grafanaUrl" @bind="_grafanaUrl" placeholder="http://192.168.1.10:3000/d/kasamonitor" />
+                    </div>
+                    <div class="form-text">Tariful se aplică imediat (costurile din Acasă, Prize și Istoric); intervalul de interogare se citește la pornire din variabilele de mediu. Grafana: gol = fără link.</div>
                 </div>
             </div>
         </div>
@@ -327,6 +331,7 @@ else
     private int _minEventW;
     private int _clusterDays;
     private bool _mlEnabled;
+    private string _grafanaUrl = "";
     private System.Threading.Timer? _statusTimer;
     private RetentionPlan? _pendingPlan;
     private RetentionPlan? _pendingLivePlan;
@@ -384,6 +389,7 @@ else
         _minEventW = s.MinEventDeltaW;
         _clusterDays = s.ClusterWindowDays;
         _mlEnabled = s.MlEnabled;
+        _grafanaUrl = s.GrafanaUrl;
     }
 
     private async Task SaveAsync()
@@ -480,7 +486,8 @@ else
                 NilmEnabled: _nilmEnabled,
                 MinEventDeltaW: _minEventW,
                 ClusterWindowDays: _clusterDays,
-                MlEnabled: _mlEnabled), CancellationToken.None);
+                MlEnabled: _mlEnabled,
+                GrafanaUrl: _grafanaUrl), CancellationToken.None);
             await RemoteWriter.RefreshSettingsAsync(CancellationToken.None);
         }
         catch (FormatException ex)

@@ -1,0 +1,488 @@
+@page "/"
+@rendermode InteractiveServer
+@using KasaMonitor.Core.Costing
+@using KasaMonitor.Core.Home
+@using KasaMonitor.Core.Metering
+@using KasaMonitor.Core.Reports
+@using KasaMonitor.Workers
+@using KasaMonitor.Web.Ui
+@inject HomeService Home
+@inject IKasaSettingsService KasaSettings
+@inject IHeatingSettingsService HeatingSettings
+@inject HeatingState Heating
+@inject TariffCalculator DefaultTariff
+@inject NavigationManager Nav
+@inject ILogger<Acasa> Log
+@implements IDisposable
+
+<PageTitle>KasaMonitor — Acasă</PageTitle>
+
+@* The home page (0.9.0), after the approved sketch: HA Energy skeleton + the Sense "Now" bubbles. One period selector for
+   the period cards (Energie, Pe ore, Aparate, Sankey), kept in the address (?p=&d=); „Acum în casă”, row 3 (today, the
+   current month, the boiler, Miele, climate) stay on the present. Data: HomeService (computed off the circuit, cached). *@
+<div class="home">
+    <div class="topbar">
+        <h1>Acasă</h1>
+        <ReportPeriodPicker Period="_period" PeriodChanged="OnPeriodChangedAsync" Today="_today" DayLabel="Azi" />
+        <label class="switch" title="Afectează cardurile Energie și @PeriodNames.For(_period.Kind).BucketsTitle (perioada anterioară, Δ)">
+            <input type="checkbox" role="switch" aria-checked="@(_compare ? "true" : "false")" checked="@_compare" @onchange="OnCompareChanged" />
+            <span>@HomeFormat.CompareLabel(_period.Kind, IsToday)</span>
+        </label>
+    </div>
+    @if (_error)
+    {
+        <div class="alert alert-warning py-2">Datele perioadei nu au putut fi calculate acum; se reîncearcă în câteva secunde (detaliul e în jurnalul aplicației).</div>
+    }
+
+    @{
+        var d = _data;
+        var isToday = IsToday;
+        var c = HomeComparison.Build(d, isToday, Prices);
+        var names = PeriodNames.For(_period.Kind);
+        var coverage = d?.MeterFrom is { } mf ? $"contor din {ReportFormat.Date(mf)}; nedetectat calculat doar pe zilele acoperite" : null;
+    }
+    <div class="grid">
+        <NowCard />
+
+        <div class="s7 stack">
+            <section class="hcard" aria-labelledby="h-energy">
+                @{
+                    var gasKwh = c.M3 is { } gk ? GasCost.Kwh(gk, Prices.GasKwhPerM3) : 0;
+                    var prevGasKwh = c.PreviousM3 is { } pgk ? GasCost.Kwh(pgk, Prices.GasKwhPerM3) : 0;
+                    var total = (c.Kwh ?? 0) + gasKwh;
+                    var scale = Math.Max(total, (c.PreviousKwh ?? 0) + prevGasKwh);
+                }
+                <div class="card-h">
+                    <h2 id="h-energy">@HomeFormat.EnergyTitle(_period, isToday) <a class="card-link" href="/history" title="Istoric (rapoartele casei)" aria-label="Istoric">→</a></h2>
+                    <span class="sub">@(isToday ? $"până la {DateTime.Now:HH:mm}" : ReportFormat.Title(_period))@(_compare && c.SameTime && !c.Partial ? " · comparat cu ieri la aceeași oră" : "")</span>
+                </div>
+                <div class="tiles">
+                    <div class="tile">
+                        <div class="lbl"><i class="sw bar k-plug"></i>Curent</div>
+                        <div class="val num">@HomeFormat.Kwh(c.Kwh) <small>kWh</small></div>
+                        <div class="meta">@HomeFormat.Lei(c.ElectricityRon) · @HomeFormat.PerKwh(Prices.TariffRonPerKwh)</div>
+                        @if (coverage is not null)
+                        {
+                            <div class="meta partial" title="@coverage">⏳ date parțiale: @coverage</div>
+                        }
+                        @if (_compare)
+                        {
+                            @DeltaLine(c.Partial, HomeFormat.Delta(c.CurrentKwh, c.PreviousKwh, v => HomeFormat.Kwh(v), "kWh"), c.Versus, c.PreviousName,
+                                PrevTitle(c, d?.SameTime))
+                        }
+                    </div>
+                    <div class="tile">
+                        <div class="lbl"><i class="sw bar k-gas"></i>Gaz</div>
+                        <div class="val num">@HomeFormat.M3(c.M3) <small>m³</small></div>
+                        <div class="meta" title="Gazul urmează ziua centralei (ora Europei Centrale, se încheie la 01:00 ora României), ca pe /centrala.">@(c.M3 is null ? "fără date de la centrală" : $"≈ {HomeFormat.Kwh(gasKwh)} kWh · {HomeFormat.Lei(c.GasRon)}")@(isToday && c.M3 is not null ? " · zi după ceasul centralei" : "")</div>
+                        @if (_compare && c.M3 is not null)
+                        {
+                            @DeltaLine(false, HomeFormat.Delta(c.M3, c.PreviousM3, v => HomeFormat.M3(v), "m³"), c.Versus, c.PreviousName,
+                                $"{c.PreviousName}: {HomeFormat.M3U(c.PreviousM3)}")
+                        }
+                    </div>
+                    <div class="tile">
+                        <div class="lbl">Cost</div>
+                        <div class="val num">@(c.CostRon is { } cr ? HeatingFormat.Number((double)cr, 2) : "—") <small>lei</small></div>
+                        <div class="meta">@(c.CostRon is null && (c.ElectricityRon is not null || c.GasRon is not null) ? "lipsește o componentă: fără total" : "curent + gaz")</div>
+                        @if (_compare)
+                        {
+                            @DeltaLine(c.Partial, HomeFormat.DeltaLei(c.CurrentCostRon, c.PreviousCostRon), c.Versus, c.PreviousName,
+                                $"{c.PreviousName}: {HomeFormat.Lei(c.PreviousCostRon)} (doar cu ambele componente)")
+                        }
+                    </div>
+                </div>
+                @if (scale > 0)
+                {
+                    <div class="segrow" style="margin-top:4px">
+                        <span class="t">@(isToday ? "Azi" : "Perioada")</span>
+                        <div class="segbar">
+                            @if ((c.Kwh ?? 0) > 0)
+                            {
+                                var share = (c.Kwh ?? 0) / Math.Max(1e-9, total) * 100;
+                                <div class="k-plug on-color" style="flex:0 0 calc(@HomeSvg.N((c.Kwh ?? 0) / scale * 100)% - 2px)" title="Curent: @HomeFormat.KwhU(c.Kwh) · @HomeFormat.Lei(c.ElectricityRon) · @HeatingFormat.Number(share, 0) %">@(share >= MinSegmentLabelPct ? $"Curent {HomeFormat.Kwh(c.Kwh)} kWh · {HeatingFormat.Number(share, 0)} %" : "")</div>
+                            }
+                            @if (gasKwh > 0)
+                            {
+                                var share = gasKwh / Math.Max(1e-9, total) * 100;
+                                <div class="k-gas on-color" style="flex:0 0 calc(@HomeSvg.N(gasKwh / scale * 100)% - 2px)" title="Gaz: @HomeFormat.M3U(c.M3) ≈ @HomeFormat.Kwh(gasKwh) kWh · @HomeFormat.Lei(c.GasRon) · @HeatingFormat.Number(share, 0) %">@(share >= MinSegmentLabelPct ? $"Gaz ≈ {HomeFormat.Kwh(gasKwh)} kWh · {HeatingFormat.Number(share, 0)} %" : "")</div>
+                            }
+                        </div>
+                    </div>
+                    @if (_compare && (c.PreviousKwh ?? 0) + prevGasKwh > 0)
+                    {
+                        <div class="segrow">
+                            <span class="t">@(c.SameTime ? "Ieri" : "Precedentă")</span>
+                            <div class="segbar thin">
+                                <div class="k-plug" style="flex:0 0 calc(@HomeSvg.N((c.PreviousKwh ?? 0) / scale * 100)% - 2px)" title="Curent: @HomeFormat.KwhU(c.PreviousKwh)"></div>
+                                <div class="k-gas" style="flex:0 0 calc(@HomeSvg.N(prevGasKwh / scale * 100)% - 2px)" title="Gaz: @HomeFormat.M3U(c.PreviousM3)"></div>
+                            </div>
+                        </div>
+                    }
+                }
+            </section>
+
+            <div class="pair">
+                <section class="hcard" aria-labelledby="h-hourly">
+                    <div class="card-h"><h2 id="h-hourly">@names.BucketsTitle · curent <a class="card-link" href="/contor" title="Contor" aria-label="Contor">→</a></h2><span class="sub">kWh @names.Buckets</span></div>
+                    @if (d?.House is { } house)
+                    {
+                        <HourlyChart Buckets="house.Buckets" Values="house.HouseKwh" PreviousBuckets="house.PreviousBuckets" Previous="house.PreviousHouseKwh"
+                                     ShowPrevious="_compare" Profile="d.Profile" Kind="_period.Kind" NowPosition="NowPosition(house)" Tariff="Prices.TariffRonPerKwh"
+                                     PreviousName="@c.PreviousName" />
+                        <div class="legend" style="margin-top:4px">
+                            <span><i class="sw bar k-plug"></i>@(isToday ? "azi" : "perioada")</span>
+                            @if (_compare) { <span><i class="sw bar k-pale"></i>@c.PreviousName</span> }
+                            @if (_period.Kind == ReportGranularity.Day && d.Profile is not null) { <span><i class="sw line"></i>profil tipic (30 de zile)</span> }
+                        </div>
+                    }
+                    else
+                    {
+                        <div class="empty">@(d is null ? "Se încarcă…" : "Fără contor general.")</div>
+                    }
+                </section>
+
+                <section class="hcard" aria-labelledby="h-dev">
+                    <div class="card-h"><h2 id="h-dev">Aparate · @(isToday ? "azi" : ReportFormat.KindName(_period.Kind).ToLowerInvariant()) <a class="card-link" href="/prize" title="Prize" aria-label="Prize">→</a></h2><span class="sub">kWh · lei</span></div>
+                    @if (d?.Flows is { } flows)
+                    {
+                        <DevicesChart Rows="flows.Rows" MeterKwh="flows.MeterKwh" Tariff="Prices.TariffRonPerKwh" />
+                        <div class="legend" style="margin-top:4px">
+                            <span><i class="sw bar k-plug"></i>priză</span>
+                            <span><i class="sw bar k-nilm"></i>detectat, fără priză</span>
+                            <span><i class="sw dashed"></i>nedetectat</span>
+                        </div>
+                        @if (coverage is not null)
+                        {
+                            <div class="foot-note">⏳ @coverage.</div>
+                        }
+                    }
+                    else
+                    {
+                        <div class="empty">@(d is null ? "Se încarcă…" : "Fără energie măsurată de contor în perioada aleasă.")</div>
+                    }
+                </section>
+            </div>
+        </div>
+    </div>
+
+    <div class="grid">
+        <section class="hcard s12" aria-labelledby="h-sankey">
+            <div class="card-h"><h2 id="h-sankey">@HomeFormat.FlowsTitle(_period, isToday) <a class="card-link" href="/consumatori" title="Consumatori" aria-label="Consumatori">→</a></h2><span class="sub">lățimea benzii ∝ energia</span></div>
+            <SankeyChart Flows="d?.Flows" Partial="@(coverage is not null || d?.House?.RestTotalKind == RestKind.PartialData)" Tariff="Prices.TariffRonPerKwh"
+                         GasM3="d?.Gas?.TotalM3" HeatingM3="d?.Gas?.HeatingM3" DhwM3="d?.Gas?.DhwM3" KwhPerM3="Prices.GasKwhPerM3" GasPricePerKwh="Prices.GasPricePerKwh" />
+            @if (FlowsNote(d, coverage) is { } note)
+            {
+                <div class="foot-note">@note</div>
+            }
+        </section>
+    </div>
+
+    <p class="row3-note">Azi și luna curentă: nu depind de perioada aleasă.</p>
+    <div class="grid r3">
+        <section class="hcard" aria-labelledby="h-vs">
+            @{
+                var st = _todayData?.SameTime;
+                var gasCmp = st?.Gas;
+                var tEl = st?.TodayKwh;
+                // Both from the live minutes; with partial coverage (a gap in the stream) there is no fair comparison.
+                var yEl = st?.Partial == true ? null : st?.YesterdaySameTimeKwh;
+                var tGas = gasCmp?.TodayM3;
+                var yGas = gasCmp?.YesterdaySameTimeM3;
+            }
+            <div class="card-h"><h2 id="h-vs">Azi vs ieri <a class="card-link" href="/contor" title="Contor" aria-label="Contor">→</a></h2><span class="sub">la aceeași oră (@DateTime.Now.ToString("HH:mm"))</span></div>
+            @if (st is null)
+            {
+                <div class="empty">@(_todayData is null ? "Se încarcă…" : "Fără contor general.")</div>
+            }
+            else
+            {
+                <table class="cmp">
+                    <thead><tr><th></th><th title="Curentul: suma minutelor din fluxul live (aceeași sursă ca ieri)">Azi (flux live)</th><th>Ieri</th><th>Diferență</th></tr></thead>
+                    <tbody>
+                        <tr title="Ieri toată ziua: @HomeFormat.KwhU(st.YesterdayKwh)">
+                            <td><i class="sw bar k-plug"></i>Curent</td><td>@HomeFormat.KwhU(tEl)</td><td>@HomeFormat.KwhU(yEl)</td>
+                            <td>@DeltaCell(HomeFormat.Delta(tEl, yEl, v => HomeFormat.Kwh(v), "kWh"))</td>
+                        </tr>
+                        <tr title="Ieri toată ziua: @HomeFormat.M3U(gasCmp?.YesterdayM3)">
+                            <td><i class="sw bar k-gas"></i>Gaz</td><td>@HomeFormat.M3U(tGas)</td><td>@HomeFormat.M3U(yGas)</td>
+                            <td>@DeltaCell(HomeFormat.Delta(tGas, yGas, v => HomeFormat.M3(v), "m³"))</td>
+                        </tr>
+                        <tr>
+                            <td>Cost curent</td><td>@HomeFormat.Lei(Prices.Electricity(tEl))</td><td>@HomeFormat.Lei(Prices.Electricity(yEl))</td>
+                            <td>@DeltaCell(HomeFormat.DeltaLei(Prices.Electricity(tEl), Prices.Electricity(yEl)))</td>
+                        </tr>
+                        <tr>
+                            <td>Cost gaz</td><td>@HomeFormat.Lei(Prices.Gas(tGas))</td><td>@HomeFormat.Lei(Prices.Gas(yGas))</td>
+                            <td>@DeltaCell(HomeFormat.DeltaLei(Prices.Gas(tGas), Prices.Gas(yGas)))</td>
+                        </tr>
+                        <tr>
+                            <td><b>Cost total</b></td><td><b>@HomeFormat.Lei(Prices.Total(tEl, tGas))</b></td><td>@HomeFormat.Lei(Prices.Total(yEl, yGas))</td>
+                            <td>@DeltaCell(HomeFormat.DeltaLei(Prices.Total(tEl, tGas), Prices.Total(yEl, yGas)))</td>
+                        </tr>
+                    </tbody>
+                </table>
+                <div class="foot-note">
+                    @(st.Partial ? "Curent: date parțiale (fluxul live acoperă sub 90 % din azi sau din ieri), fără comparație. " : "")▼ verde = mai puțin decât ieri până la aceeași oră (curentul din fluxul live, gazul după ziua centralei). Un total lipsește când îi lipsește o componentă. Ieri întreg: @HomeFormat.KwhU(st.YesterdayKwh), @HomeFormat.M3U(gasCmp?.YesterdayM3).
+                </div>
+            }
+        </section>
+
+        <section class="hcard" aria-labelledby="h-month">
+            @{
+                var md = _monthData;
+                var month = md?.Period ?? ReportPeriod.Containing(ReportGranularity.Month, _today);
+                var daysSoFar = _today.Day;
+                var prevMonth = month.Previous();
+                var mEl = md?.House?.HouseTotalKwh;
+                var mGas = md?.Gas?.TotalM3;
+                // The previous month up to the same point (day N at the same share of the day), not its first N whole days.
+                var pFirstEl = md?.PreviousSameFractionKwh;
+                var pFirstGas = md?.PreviousSameFractionGasM3;
+                var pEl = md?.House?.PreviousHouseTotalKwh;
+                var pGas = md?.Gas?.PreviousTotalM3;
+            }
+            <div class="card-h">
+                <h2 id="h-month">@Cap(RoNames.Month(month.Start.Month)) vs @RoNames.Month(prevMonth.Start.Month) <a class="card-link" href="/history" title="Istoric" aria-label="Istoric">→</a></h2>
+                <span class="sub">ziua @daysSoFar din @month.DayCount</span>
+            </div>
+            <table class="cmp">
+                <thead><tr><th></th><th>@HomeFormat.FirstDays(month.Start, daysSoFar)</th><th title="Luna trecută până în același punct (ziua @daysSoFar, aceeași oră)">@HomeFormat.FirstDays(prevMonth.Start, daysSoFar)</th><th>@Cap(RoNames.Month(prevMonth.Start.Month)) întreg</th></tr></thead>
+                <tbody>
+                    <tr><td><i class="sw bar k-plug"></i>Curent</td><td>@HomeFormat.KwhU(mEl)</td><td>@HomeFormat.KwhU(pFirstEl)</td><td>@HomeFormat.KwhU(pEl)</td></tr>
+                    <tr><td><i class="sw bar k-gas"></i>Gaz</td><td>@HomeFormat.M3U(mGas)</td><td>@HomeFormat.M3U(pFirstGas)</td><td>@HomeFormat.M3U(pGas)</td></tr>
+                    <tr title="Costul apare doar când există ambele componente (curent și gaz)"><td>Cost</td><td>@HomeFormat.Lei(Prices.Total(mEl, mGas))</td><td>@HomeFormat.Lei(Prices.Total(pFirstEl, pFirstGas))</td><td>@HomeFormat.Lei(Prices.Total(pEl, pGas))</td></tr>
+                </tbody>
+            </table>
+            @if (_bill is { } bill)
+            {
+                <div class="estimate" title="Regula: consumat până acum + (consumat / zile trecute) × zilele rămase">
+                    <span class="badge-est">Estimare</span>
+                    <span class="sec est-sub">factura pe @RoNames.Month(month.Start.Month)@(bill.LowConfidence ? ", încredere scăzută" : ""), dacă restul lunii seamănă cu zilele trecute</span>
+                    <div class="est-grid">
+                        <div><div class="v num">@(bill.Electricity is { } be ? "≈ " + HomeFormat.KwhU(be.Projected) : "—")</div><div class="m">curent · @(bill.ElectricityRon is { } er ? "≈ " + EnergyFormat.Lei(er) : "—")</div></div>
+                        <div><div class="v num">@(bill.Gas is { } bg ? "≈ " + HomeFormat.M3U(bg.Projected) : "—")</div><div class="m">gaz · @(bill.GasRon is { } gr ? "≈ " + EnergyFormat.Lei(gr) : "—")</div></div>
+                        <div><div class="v num">@(bill.TotalRon is { } tr ? "≈ " + EnergyFormat.Lei(tr) : "—")</div><div class="m">total estimat@(bill.TotalRon is null ? " (lipsește o componentă)" : "")</div></div>
+                    </div>
+                    <div class="foot-note">
+                        @if (bill.Electricity is { } be2)
+                        {
+                            <span>Calcul: @HomeFormat.KwhU(be2.SoFar) + @HomeFormat.KwhU(be2.PerDay)/zi × @HeatingFormat.Number(be2.DaysLeft, 2) zile rămase. </span>
+                        }
+                        @(bill.LowConfidence ? $"Încredere scăzută: {HeatingFormat.Number(bill.Electricity?.ElapsedDays ?? bill.Gas?.ElapsedDays ?? 0, 1)} zile din {month.DayCount}." : "")
+                    </div>
+                </div>
+            }
+            else if (md?.House?.HouseTotalKwh is not null || md?.Gas?.TotalM3 is not null)
+            {
+                <div class="foot-note">Estimarea facturii apare după primele 6 ore ale lunii.</div>
+            }
+        </section>
+
+        <BoilerCard GasToday="_todayData?.Gas" />
+        <MieleCard />
+        <ClimateCard />
+    </div>
+
+    <HomeFooter GrafanaUrl="@_grafanaUrl" />
+</div>
+
+@code {
+    /// <summary>A share of the segmented bar below this gets no text (it would be cut to a letter); the value stays in its tooltip.</summary>
+    private const double MinSegmentLabelPct = 12;
+    private static readonly TimeSpan RefreshEvery = TimeSpan.FromSeconds(60);
+
+    [SupplyParameterFromQuery(Name = "p")] public string? QueryKind { get; set; }
+    [SupplyParameterFromQuery(Name = "d")] public string? QueryDay { get; set; }
+
+    private ReportPeriod _period;
+    private DateOnly _today;
+    private bool _compare = true;
+    private HomePeriod? _data;
+    private HomePeriod? _todayData;
+    private HomePeriod? _monthData;
+    private BillEstimate? _bill;
+    private bool _error;
+    private EnergyPrices Prices = new(1.30m, KasaMonitor.Core.Heating.ViessmannApi.DefaultKwhPerM3, 0, false);
+    private string _grafanaUrl = "";
+    private System.Threading.Timer? _timer;
+    private int _version;
+
+    private bool IsToday => _period.Kind == ReportGranularity.Day && _period.Start == _today;
+
+    private static readonly IReadOnlyDictionary<string, ReportGranularity> Kinds = new Dictionary<string, ReportGranularity>
+    {
+        ["zi"] = ReportGranularity.Day, ["saptamana"] = ReportGranularity.Week, ["luna"] = ReportGranularity.Month, ["an"] = ReportGranularity.Year,
+    };
+
+    protected override async Task OnInitializedAsync()
+    {
+        _today = Home.Today();
+        _period = FromQuery();
+        Prices = Prices with { TariffRonPerKwh = DefaultTariff.RonPerKwh };
+        await LoadSettingsAsync();
+        await LoadAsync();
+        _timer = new System.Threading.Timer(_ => InvokeAsync(async () =>
+        {
+            try
+            {
+                await LoadSettingsAsync();
+                await LoadAsync();
+                StateHasChanged();
+            }
+            catch (Exception ex) { Log.LogWarning(ex, "Home page refresh failed"); }
+        }), null, RefreshEvery, RefreshEvery);
+    }
+
+    /// <summary>The address changed (◀ ▶, a shared link, back/forward): follow the period in it.</summary>
+    protected override async Task OnParametersSetAsync()
+    {
+        if (_timer is null) return;   // the first time OnInitializedAsync did it
+        var p = FromQuery();
+        if (p == _period) return;
+        _period = p;
+        _data = null;
+        await LoadAsync();
+    }
+
+    /// <summary>The period of the address (?p=zi|saptamana|luna|an&amp;d=yyyy-MM-dd); today when absent, invalid or in the future.</summary>
+    private ReportPeriod FromQuery()
+    {
+        var kind = QueryKind is { } k && Kinds.TryGetValue(k, out var g) ? g : ReportGranularity.Day;
+        var day = QueryDay is { } s && DateOnly.TryParseExact(s, "yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture,
+            System.Globalization.DateTimeStyles.None, out var parsed) && parsed <= _today ? parsed : _today;
+        return ReportPeriod.Containing(kind, day);
+    }
+
+    private static string Query(ReportPeriod p, DateOnly today)
+    {
+        if (p.Kind == ReportGranularity.Day && p.Start == today) return "/";
+        var kind = Kinds.First(kv => kv.Value == p.Kind).Key;
+        return $"/?p={kind}&d={p.Start:yyyy-MM-dd}";
+    }
+
+    private async Task LoadSettingsAsync()
+    {
+        try
+        {
+            // The settings are read off the circuit's thread (SQLite runs the "async" queries synchronously).
+            var (k, h) = await Task.Run(async () => (await KasaSettings.GetAsync(CancellationToken.None), await HeatingSettings.GetAsync(CancellationToken.None)));
+            Prices = new EnergyPrices(k.TariffRonPerKwh, h.GasKwhPerM3, h.GasPricePerKwh, Heating.Current is not null);
+            _grafanaUrl = k.GrafanaUrl;
+        }
+        catch (Exception ex)
+        {
+            Log.LogWarning(ex, "Home page settings could not be read; the previous values stay");
+        }
+    }
+
+    private async Task LoadAsync()
+    {
+        var version = ++_version;
+        var newToday = Home.Today();
+        if (newToday != _today)
+        {
+            // Midnight: a page left on „Azi” follows the new day.
+            if (IsToday) _period = ReportPeriod.Containing(ReportGranularity.Day, newToday);
+            _today = newToday;
+        }
+        try
+        {
+            // HomeService computes on the thread pool and shares the computations: the four requests run in parallel.
+            var data = Home.GetAsync(_period, CancellationToken.None);
+            var today = Home.GetAsync(ReportPeriod.Containing(ReportGranularity.Day, _today), CancellationToken.None);
+            var month = Home.GetAsync(ReportPeriod.Containing(ReportGranularity.Month, _today), CancellationToken.None);
+            var bill = Home.Metrics.Bill is { } b ? Task.FromResult<BillEstimate?>(b) : Home.GetBillAsync(CancellationToken.None);
+            await Task.WhenAll(data, today, month, bill);
+            if (version != _version) return;
+            (_data, _todayData, _monthData, _bill, _error) = (data.Result, today.Result, month.Result, bill.Result, false);
+        }
+        catch (Exception ex)
+        {
+            Log.LogWarning(ex, "Home page data of {Kind} {Start} could not be computed", _period.Kind, _period.Start);
+            if (version == _version) _error = true;
+        }
+    }
+
+    private Task OnPeriodChangedAsync(ReportPeriod p)
+    {
+        // The address carries the period (bookmarks, back after visiting another page); OnParametersSetAsync loads it.
+        Nav.NavigateTo(Query(p, _today), new NavigationOptions { ReplaceHistoryEntry = false });
+        return Task.CompletedTask;
+    }
+
+    private void OnCompareChanged(ChangeEventArgs e) => _compare = e.Value is true || e.Value is string s && bool.TryParse(s, out var b) && b;
+
+    /// <summary>Position of „acum” in buckets (<see cref="SameFraction.Position"/>); null outside the current period.</summary>
+    private static double? NowPosition(HouseReport house) =>
+        house.IsCurrent && SameFraction.Position(house.Buckets, DateTimeOffset.UtcNow) is { } p ? p.Index + p.Fraction : null;
+
+    private static string Cap(string s) => s.Length == 0 ? s : char.ToUpperInvariant(s[0]) + s[1..];
+
+    private static string PrevTitle(EnergyComparison c, HomeSameTime? same) => same is not null
+        ? $"Azi (flux live): {HomeFormat.KwhU(same.TodayKwh)} · ieri până la aceeași oră: {HomeFormat.KwhU(c.PreviousKwh)} · ieri toată ziua: {HomeFormat.KwhU(same.YesterdayKwh)}"
+        : c.WholePreviousKwh is { } w
+            ? $"{c.PreviousName} până în același punct: {HomeFormat.KwhU(c.PreviousKwh)} · întreagă: {HomeFormat.KwhU(w)}"
+            : $"{c.PreviousName}: {HomeFormat.KwhU(c.PreviousKwh)}";
+
+    /// <summary>
+    /// The note under the Sankey: partial meter data, plugs above the meter beyond the margin (as on /history), the detected
+    /// appliances scaled down (only when some remain) or not fitting at all.
+    /// </summary>
+    private static string? FlowsNote(HomePeriod? d, string? coverage)
+    {
+        if (d?.Flows is not { } f) return null;
+        var notes = new List<string>();
+        if (coverage is not null) notes.Add($"Date parțiale: {coverage}.");
+        if (f.PlugsAboveMeter)
+        {
+            notes.Add(d.House?.RestTotalKind switch
+            {
+                RestKind.WithinMargin => $"Σ prize ≈ contor ({ReportFormat.WithinMarginText}): nedetectat ≈ 0.",
+                RestKind.PartialData => $"Date parțiale: {ReportFormat.PartialText}. Σ prize {HomeFormat.KwhU(f.PlugsKwh)} > contor {HomeFormat.KwhU(f.MeterKwh)}.",
+                RestKind.Negative => $"Σ prize {HomeFormat.KwhU(f.PlugsKwh)} > contor {HomeFormat.KwhU(f.MeterKwh)}: {ReportFormat.NegativeText}.",
+                _ => $"Σ prize {HomeFormat.KwhU(f.PlugsKwh)} > contor {HomeFormat.KwhU(f.MeterKwh)}: nedetectat = 0.",
+            });
+        }
+        if (f.DetectedScaled && f.HasDetected)
+            notes.Add("Energia estimată a consumatorilor detectați depășea restul casei și a fost redusă proporțional.");
+        else if (f.DetectedScaled && f.DetectedEstimatedKwh > 0)
+            notes.Add($"Consumatorii detectați ({HomeFormat.KwhU(f.DetectedEstimatedKwh)} estimat) nu încap: prizele acoperă tot contorul.");
+        return notes.Count == 0 ? null : string.Join(" ", notes);
+    }
+
+    /// <summary>The Δ line of a tile: „date parțiale”, the Δ, or „fără date pentru …” when the previous value is missing.</summary>
+    private static RenderFragment DeltaLine(bool partial, (string Text, string Css)? delta, string versus, string previousName, string title) => builder =>
+    {
+        builder.OpenElement(0, "div");
+        if (partial)
+        {
+            builder.AddAttribute(1, "class", "delta flat");
+            builder.AddAttribute(2, "title", "Fluxul live al contorului acoperă sub 90 % din azi sau din ieri până la aceeași oră: comparația ar înșela.");
+            builder.AddContent(3, "date parțiale, fără comparație");
+        }
+        else if (delta is { } x)
+        {
+            builder.AddAttribute(4, "class", "delta " + x.Css);
+            builder.AddAttribute(5, "title", title);
+            builder.AddContent(6, x.Text + " " + versus);
+        }
+        else
+        {
+            builder.AddAttribute(7, "class", "delta flat");
+            builder.AddContent(8, "fără date pentru " + previousName);
+        }
+        builder.CloseElement();
+    };
+
+    private static RenderFragment DeltaCell((string Text, string Css)? d) => builder =>
+    {
+        if (d is not { } x) { builder.AddContent(0, "—"); return; }
+        builder.OpenElement(1, "span");
+        builder.AddAttribute(2, "class", "delta " + x.Css);
+        builder.AddContent(3, x.Text);
+        builder.CloseElement();
+    };
+
+    public void Dispose() => _timer?.Dispose();
+}

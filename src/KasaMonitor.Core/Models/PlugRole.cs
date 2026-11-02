@@ -65,7 +65,7 @@ public static class PlugRoles
             "Contorul general al casei (unul singur): apare pe pagina Contor și în cardul „Casă”; nu intră în totalurile prizelor, iar „restul casei” = contor − prize.",
         PlugRole.SubMeter =>
             "Un alt canal de contor (un circuit, o fază, o clemă nefolosită): are graficele lui, dar nu intră în totaluri.",
-        _ => "O priză: puterea și energia ei intră în totalurile din Dashboard, History „Toate” și Grafana (role=\"plug\").",
+        _ => "O priză: puterea și energia ei intră în totalurile din Acasă, Prize, Istoric „Toate” și Grafana (role=\"plug\").",
     };
 
     /// <summary>Live stream on by default for the main meter and the plugs, off for sub-meters (e.g. an unused clamp).</summary>

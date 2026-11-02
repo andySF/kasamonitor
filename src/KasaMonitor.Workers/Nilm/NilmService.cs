@@ -1213,6 +1213,25 @@ public sealed class NilmService : BackgroundService
             .ToList(), Interlocked.Read(ref _events), _unidentifiedBase + _unidentifiedToday);
     }
 
+    /// <summary>
+    /// Energy of the detected appliances (not hidden, not measured by a plug: those are already in Σ plugs) over
+    /// [<paramref name="fromUtc"/>, <paramref name="toUtc"/>), from their runs (an open run up to now), largest first; read in
+    /// its own scope without the processing lock (the home page, computed once per minute and cached by the caller).
+    /// </summary>
+    public async Task<IReadOnlyList<ApplianceEnergyRow>> GetDetectedEnergyAsync(DateTimeOffset fromUtc, DateTimeOffset toUtc, CancellationToken ct)
+    {
+        var now = _clock();
+        using var scope = _scopes.CreateScope();
+        var repo = scope.ServiceProvider.GetRequiredService<INilmRepository>();
+        var detected = (await repo.ListSignaturesAsync(ct)).Where(s => !s.Hidden && !s.ConfirmedByPlug).ToDictionary(s => s.Id);
+        if (detected.Count == 0) return Array.Empty<ApplianceEnergyRow>();
+        var runs = await repo.ListRunsAsync(fromUtc, toUtc < now ? toUtc : now, ct);
+        return runs.Where(r => detected.ContainsKey(r.SignatureId))
+            .GroupBy(r => r.SignatureId)
+            .Select(g => { var s = detected[g.Key]; return new ApplianceEnergyRow(s.Id, s.Name, s.Category, s.Icon, g.Sum(r => ApplianceEnergy.InRange(r, fromUtc, toUtc, now))); })
+            .Where(x => x.Wh > 0).OrderByDescending(x => x.Wh).ToList();
+    }
+
     // ------------------------------------------------------------------ /consumatori
 
     /// <summary>

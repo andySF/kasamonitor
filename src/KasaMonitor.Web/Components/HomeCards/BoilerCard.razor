@@ -1,0 +1,74 @@
+@using KasaMonitor.Core.Heating
+@using KasaMonitor.Workers
+@using KasaMonitor.Web.Ui
+@inject HeatingState State
+@implements IDisposable
+
+@* „Centrala” of the home page: burner state with its purpose (BurnerTimeline, as /centrala), supply, hot water,
+   modulation and today's gas per purpose. Left out without a boiler. *@
+@if (State.Current is { } live)
+{
+    var s = live.Snapshot;
+    var now = DateTimeOffset.UtcNow;
+    var online = State.IsOnline(now);
+    // A value older than HeatingState.StaleAfterPolls intervals (or the boiler offline) is the last known state: grey.
+    var stale = State.IsStale(now);
+    var on = s?.BurnerActive == true;
+    <section class="hcard" aria-labelledby="h-boiler">
+        <div class="card-h">
+            <h2 id="h-boiler"><a class="plain" href="/centrala">Centrala</a></h2>
+            <span class="sub">@live.Device.Name@(s is not null ? " · citire " + UiFormat.RelativeRo(s.ReadUtc, now) : "")@(online ? "" : " · offline")</span>
+        </div>
+        @if (stale)
+        {
+            <div class="stale-note">@(online ? "Valori vechi" : "Centrala e offline"): ultima stare cunoscută@(s is not null ? ", " + UiFormat.RelativeRo(s.ReadUtc, now) : "").</div>
+        }
+        <div class="boiler-state @(stale ? "stale" : "")">
+            <span class="state-pill @(on && !stale ? "on" : "off")"><i class="bi @(on ? "bi-fire" : "bi-power")"></i>@(s?.BurnerActive is null ? "Arzător —" : stale ? $"Arzător — (ultima stare: {(on ? "pornit" : "oprit")})" : on ? "Arzător pornit" : "Arzător oprit")</span>
+            @if (on && !stale && Purpose(live.BurnerPurpose) is { } purpose)
+            {
+                <span class="sec">@purpose</span>
+            }
+            @if (s?.ActiveError is { } err)
+            {
+                <span class="badge text-bg-danger"><i class="bi bi-exclamation-triangle me-1"></i>Eroare @err</span>
+            }
+        </div>
+        <div class="kv @(stale ? "stale" : "")">
+            <div><div class="k">Tur</div><div class="v num">@HeatingFormat.Temp(s?.SupplyTempC)</div></div>
+            <div><div class="k">Apă caldă</div><div class="v num">@HeatingFormat.Temp(s?.DhwTempC)</div></div>
+            <div>
+                <div class="k">Modulare</div>
+                <div class="v num">@(s?.ModulationPct is { } m ? HeatingFormat.Number(m, 0) + " %" : "—")</div>
+                <div class="meter" role="meter" aria-valuenow="@HomeSvg.N(s?.ModulationPct ?? 0)" aria-valuemin="0" aria-valuemax="100" aria-label="Modulare arzător"><i style="width:@HomeSvg.N(Math.Clamp(s?.ModulationPct ?? 0, 0, 100))%"></i></div>
+            </div>
+            <div>
+                <div class="k">Gaz azi</div>
+                <div class="v num">@(GasToday is { } g ? HomeFormat.M3(g.TotalM3) + " m³" : "—")</div>
+                @if (GasToday is { } gt)
+                {
+                    <div class="sec" style="font-size:12px">încălzire @HomeFormat.M3(gt.HeatingM3 ?? 0) · apă caldă @HomeFormat.M3(gt.DhwM3 ?? 0)</div>
+                }
+            </div>
+        </div>
+    </section>
+}
+
+@code {
+    /// <summary>Today's gas (boiler day) from the home page's day data.</summary>
+    [Parameter] public HomeGas? GasToday { get; set; }
+
+    protected override void OnInitialized() => State.Changed += OnChanged;
+
+    private void OnChanged() => InvokeAsync(StateHasChanged);
+
+    private static string? Purpose(BurnerPurpose? p) => p switch
+    {
+        BurnerPurpose.Heating => "încălzire",
+        BurnerPurpose.Dhw => "apă caldă",
+        BurnerPurpose.Unknown => "scop necunoscut",
+        _ => null,
+    };
+
+    public void Dispose() => State.Changed -= OnChanged;
+}

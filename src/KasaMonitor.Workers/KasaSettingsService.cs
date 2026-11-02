@@ -52,6 +52,8 @@ public static class SettingKeys
     public const string ClusterWindowDays = "ClusterWindowDays";
     /// <summary>Nightly ML.NET classifier over the labelled events (from plugs or the user); on by default.</summary>
     public const string MlEnabled = "MlEnabled";
+    /// <summary>Address of the Grafana dashboard linked from the home page footer (http/https); empty = no link.</summary>
+    public const string GrafanaUrl = "GrafanaUrl";
     /// <summary>Internal: unix second up to which the main meter's samples went through the event detector.</summary>
     public const string NilmLastProcessedTs = "NilmLastProcessedTs";
     /// <summary>Internal: JSON with the last training of the classifier (time, examples, accuracy, confusion matrix).</summary>
@@ -88,7 +90,8 @@ public sealed record KasaSettingsDefaults(
     bool NilmEnabled = true,
     int MinEventDeltaW = KasaSettingsDefaults.DefaultMinEventDeltaW,
     int ClusterWindowDays = KasaSettingsDefaults.DefaultClusterWindowDays,
-    bool MlEnabled = true)
+    bool MlEnabled = true,
+    string GrafanaUrl = "")
 {
     public const int DefaultLiveBurstTriggerW = 50;
     public const int DefaultMinEventDeltaW = 30;
@@ -122,7 +125,8 @@ public sealed record KasaRuntimeSettings(
     bool NilmEnabled = true,
     int MinEventDeltaW = KasaSettingsDefaults.DefaultMinEventDeltaW,
     int ClusterWindowDays = KasaSettingsDefaults.DefaultClusterWindowDays,
-    bool MlEnabled = true)
+    bool MlEnabled = true,
+    string GrafanaUrl = "")
 {
     public bool HasRemoteWriteAuth => RemoteWriteCredentials is not null;
     public bool HasShellyPassword => ShellyCredentials is not null;
@@ -161,7 +165,8 @@ public sealed record KasaSettingsUpdate(
     bool? NilmEnabled = null,
     int? MinEventDeltaW = null,
     int? ClusterWindowDays = null,
-    bool? MlEnabled = null);
+    bool? MlEnabled = null,
+    string? GrafanaUrl = null);
 
 public interface IKasaSettingsService
 {
@@ -255,6 +260,8 @@ public sealed class KasaSettingsService : IKasaSettingsService
         var minEvent = Math.Clamp(ParseInt(db, SettingKeys.MinEventDeltaW) ?? _defaults.MinEventDeltaW, MinEventDeltaWMin, MinEventDeltaWMax);
         var clusterDays = Math.Clamp(ParseInt(db, SettingKeys.ClusterWindowDays) ?? _defaults.ClusterWindowDays, MinClusterWindowDays, MaxClusterWindowDays);
         var mlOn = ParseBool(db, SettingKeys.MlEnabled) ?? _defaults.MlEnabled;
+        var grafana = (db.TryGetValue(SettingKeys.GrafanaUrl, out var gu) ? gu : _defaults.GrafanaUrl).Trim();
+        if (ValidateGrafanaUrl(grafana) is not null) grafana = "";
 
         return new KasaRuntimeSettings(enabled, interval, broadcastText, addrs, autoAdd,
             user, !string.IsNullOrEmpty(password), creds, retention, tariff,
@@ -273,7 +280,8 @@ public sealed class KasaSettingsService : IKasaSettingsService
             nilmOn,
             minEvent,
             clusterDays,
-            mlOn);
+            mlOn,
+            grafana);
     }
 
     /// <summary>An encrypted value from the database (empty = cleared), else the configuration value.</summary>
@@ -289,6 +297,13 @@ public sealed class KasaSettingsService : IKasaSettingsService
             ? null
             : "Adresa remote write trebuie să fie un URL http(s) complet, ex. http://192.168.1.10:9090/api/v1/write";
 
+    /// <summary>Empty (no link) or an absolute http/https URL; otherwise a Romanian error text.</summary>
+    public static string? ValidateGrafanaUrl(string? url) =>
+        string.IsNullOrWhiteSpace(url)
+        || Uri.TryCreate(url.Trim(), UriKind.Absolute, out var u) && (u.Scheme == Uri.UriSchemeHttp || u.Scheme == Uri.UriSchemeHttps)
+            ? null
+            : "Adresa Grafana trebuie să fie goală sau un URL http(s) complet, ex. http://192.168.1.10:3000/d/kasamonitor";
+
     public async Task SaveAsync(KasaSettingsUpdate update, CancellationToken ct)
     {
         var (_, invalid) = ParseBroadcastNetworks(update.BroadcastNetworks);
@@ -299,6 +314,8 @@ public sealed class KasaSettingsService : IKasaSettingsService
 
         if (update.RemoteWriteEnabled == true && ValidateRemoteWriteUrl(update.RemoteWriteUrl) is { } badUrl)
             throw new FormatException(badUrl);
+        if (ValidateGrafanaUrl(update.GrafanaUrl) is { } badGrafana)
+            throw new FormatException(badGrafana);
 
         using var scope = _scopeFactory.CreateScope();
         var repo = scope.ServiceProvider.GetRequiredService<ISettingsRepository>();
@@ -362,6 +379,8 @@ public sealed class KasaSettingsService : IKasaSettingsService
                 Math.Clamp(clusterDays, MinClusterWindowDays, MaxClusterWindowDays).ToString(CultureInfo.InvariantCulture), ct);
         if (update.MlEnabled is { } mlOn)
             await repo.SetAsync(SettingKeys.MlEnabled, mlOn ? "true" : "false", ct);
+        if (update.GrafanaUrl is { } grafana)
+            await repo.SetAsync(SettingKeys.GrafanaUrl, grafana.Trim(), ct);
     }
 
     /// <summary>Comma-separated IPv4 addresses; returns the valid ones and the rejected tokens.</summary>

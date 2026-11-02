@@ -213,6 +213,27 @@
         </p>
     }
 
+    <h3>Pagina Acasă: standby și estimarea facturii</h3>
+    <table class="table table-sm align-middle int-table">
+        <thead><tr><th>Metrică</th><th>Tip</th><th>Unitate</th><th>Etichete</th><th>Descriere</th></tr></thead>
+        <tbody>
+            @foreach (var m in HomeMetrics.Catalog)
+            {
+                <tr>
+                    <td><code>@m.Name</code></td>
+                    <td>@m.Type</td>
+                    <td>@m.Unit</td>
+                    <td>@(m == HomeMetrics.BillInfo ? string.Join(", ", HomeMetrics.BillLabels) + " = electricity | gas | total" : "—")</td>
+                    <td>@m.Help</td>
+                </tr>
+            }
+        </tbody>
+    </table>
+    <p class="note">
+        Calculate o dată pe minut (aceleași valori ca pe pagina <a href="/">Acasă</a>). O valoare necunoscută nu are serie: standby-ul apare după prima
+        noapte cu flux live (01:00–05:00), estimarea după primele 6 ore ale lunii; gazul doar cu centrala conectată.
+    </p>
+
     <h3>Prize care NU apar în metrici</h3>
     @if (_hidden is null) { <p><em>Se încarcă…</em></p> }
     else if (_hidden.Count == 0) { <p class="muted">Niciuna: toate prizele din bază sunt active.</p> }

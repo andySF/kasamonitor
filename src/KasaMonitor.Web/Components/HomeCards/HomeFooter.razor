@@ -1,0 +1,44 @@
+@using KasaMonitor.Web.Ui
+@inject IPlugStateBroadcaster States
+@inject ILiveStreamBroadcaster Stream
+@implements IDisposable
+
+@* Footer of the home page: the age of the main meter's latest live value, links to the pages and to Grafana (setting
+   GrafanaUrl; empty = no link). *@
+<footer>
+    <span>Ultima actualizare: <b>@Ago()</b></span>
+    <span class="links">
+        <a href="/prize">Prize</a>
+        <a href="/contor">Contor</a>
+        <a href="/history">Istoric</a>
+        <a href="/centrala">Centrală</a>
+        <a href="/aparate">Aparate</a>
+        <a href="/clima">Climă</a>
+        <a href="/consumatori">Consumatori</a>
+        @if (!string.IsNullOrWhiteSpace(GrafanaUrl))
+        {
+            <a href="@GrafanaUrl" target="_blank" rel="noopener" title="Grafana">Grafana ↗</a>
+        }
+    </span>
+</footer>
+
+@code {
+    [Parameter] public string? GrafanaUrl { get; set; }
+
+    private System.Threading.Timer? _timer;
+
+    protected override void OnInitialized() =>
+        _timer = new System.Threading.Timer(_ => InvokeAsync(StateHasChanged), null, 1000, 1000);
+
+    private string Ago()
+    {
+        var now = DateTimeOffset.UtcNow;
+        var main = States.Snapshot().Values.FirstOrDefault(s => s.Role == PlugRole.MainMeter);
+        if (main is null) return "fără contor general";
+        var latest = Stream.Latest(main.PlugId)?.TsUtc;
+        var at = latest is { } l && l > main.LastSampleUtc ? l : main.LastSampleUtc;
+        return at == default ? "—" : UiFormat.RelativeRo(at, now);
+    }
+
+    public void Dispose() => _timer?.Dispose();
+}

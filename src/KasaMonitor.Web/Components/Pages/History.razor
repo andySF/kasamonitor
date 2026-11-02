@@ -5,8 +5,8 @@
 @inject NavigationManager Nav
 @inject KasaMonitor.Workers.IKasaSettingsService KasaSettings
 
-<PageTitle>KasaMonitor — History</PageTitle>
-<h1 class="h3 mb-3"><i class="bi bi-bar-chart me-2"></i>History</h1>
+<PageTitle>KasaMonitor — Istoric</PageTitle>
+<h1 class="h3 mb-3"><i class="bi bi-bar-chart me-2"></i>Istoric</h1>
 
 <HouseReportCard />
 
@@ -164,7 +164,7 @@ else
 
     protected override async Task OnInitializedAsync()
     {
-        // Same tariff as the Dashboard: the value saved in /settings, falling back to the startup value.
+        // Same tariff as the „Prize” page: the value saved in /settings, falling back to the startup value.
         Tariff = new KasaMonitor.Core.Costing.TariffCalculator((await KasaSettings.GetAsync(CancellationToken.None)).TariffRonPerKwh);
         using var scope = ScopeFactory.CreateScope();
         var repo = scope.ServiceProvider.GetRequiredService<IPlugRepository>();

@@ -1,0 +1,111 @@
+@using KasaMonitor.Core.Reports
+@using KasaMonitor.Web.Ui
+
+@* „Pe ore / Pe zile / Pe luni” of the home page: bars of the period (electricity, main meter), the previous period pale
+   behind them, the typical day profile (30 days, day periods only) as a line and the „acum” marker. Hand-drawn SVG. *@
+<svg class="chart" style="max-width:@HomeSvg.N(W * MaxScale)px" viewBox="0 0 @HomeSvg.N(W) @HomeSvg.N(H)" role="img" aria-label="Consum de curent @ReportFormat.BucketsName(Kind)">
+    @{
+        var n = Buckets.Count;
+        var previous = HomeSvg.AlignPrevious(Buckets, PreviousBuckets, Previous, Kind);
+        var max = new[] { Values.Max(v => v ?? 0), ShowPrevious ? previous.Max(v => v ?? 0) : 0, Profile?.Max(v => v ?? 0) ?? 0 }.Max();
+        var yMax = HomeSvg.NiceMax(max * 1.05);
+        var tickDecimals = HomeSvg.AxisDecimals(yMax / 4);
+        var peak = Enumerable.Range(0, n).Where(i => Values[i] is > 0).OrderByDescending(i => Values[i]).FirstOrDefault(-1);
+        var plotW = W - L - R;
+        var plotH = H - T - B;
+        var slot = n > 0 ? plotW / n : plotW;
+        var bw = Math.Min(24, slot * 0.78);
+        var bwT = Math.Min(16, slot * 0.52);
+        var baseY = T + plotH;
+        double Y(double v) => T + plotH - v / yMax * plotH;
+        var labelEvery = Kind switch { ReportGranularity.Day => 3, ReportGranularity.Month => 5, _ => 1 };
+    }
+    @for (var t = 0; t <= 4; t++)
+    {
+        var v = yMax * t / 4;
+        <g>
+            <line class="@(t == 0 ? "baseline" : "gridline")" x1="@HomeSvg.N(L)" x2="@HomeSvg.N(W - R)" y1="@HomeSvg.N(Y(v))" y2="@HomeSvg.N(Y(v))" />
+            <text class="tick num" x="@HomeSvg.N(L - 6)" y="@HomeSvg.N(Y(v) + 4)" text-anchor="end">@HeatingFormat.Number(v, tickDecimals)</text>
+        </g>
+    }
+    @for (var i = 0; i < n; i++)
+    {
+        var b = Buckets[i];
+        var cx = L + slot * i + slot / 2;
+        var cur = Values[i];
+        var prev = previous[i];
+        var prof = Profile is not null && Kind == ReportGranularity.Day ? Profile[b.LocalStart.Hour] : null;
+        if (i % labelEvery == 0)
+        {
+            <g><text class="tick num" x="@HomeSvg.N(cx)" y="@HomeSvg.N(H - 6)" text-anchor="middle">@ReportFormat.BucketLabel(b, Kind)</text></g>
+        }
+        <g class="hour">
+            <title>@Tooltip(b, cur, prev, prof)</title>
+            <rect class="bar-bg" x="@HomeSvg.N(cx - slot / 2)" y="@HomeSvg.N(T)" width="@HomeSvg.N(slot)" height="@HomeSvg.N(plotH)" />
+            @if (ShowPrevious && prev is { } pv && pv > 0)
+            {
+                <path class="k-pale" d="@HomeSvg.TopRoundedBar(cx - bw / 2, Y(pv), bw, baseY)" />
+            }
+            @if (cur is { } c && c > 0)
+            {
+                <path class="k-plug" d="@HomeSvg.TopRoundedBar(cx - bwT / 2, Y(c), bwT, baseY)" />
+            }
+        </g>
+    }
+    @if (Profile is not null && Kind == ReportGranularity.Day && n > 0)
+    {
+        var pts = string.Join(" ", Enumerable.Range(0, n)
+            .Where(i => Profile[Buckets[i].LocalStart.Hour] is not null)
+            .Select(i => HomeSvg.N(L + slot * i + slot / 2) + "," + HomeSvg.N(Y(Profile[Buckets[i].LocalStart.Hour]!.Value))));
+        <polyline class="profile" points="@pts" pointer-events="none" />
+    }
+    @if (peak >= 0 && Values[peak] is { } pk)
+    {
+        // Selective direct label: the period's peak (as in the sketch).
+        var px = L + slot * peak + slot / 2;
+        <g pointer-events="none"><text class="tick peak" x="@HomeSvg.N(px)" y="@HomeSvg.N(Math.Max(T + 10, Y(pk) - 5))" text-anchor="@(peak > n * 0.7 ? "end" : "middle")">@HomeFormat.KwhU(pk)</text></g>
+    }
+    @if (NowPosition is { } np && n > 0)
+    {
+        var nx = L + slot * np;
+        <g pointer-events="none">
+            <line class="now-line" x1="@HomeSvg.N(nx)" x2="@HomeSvg.N(nx)" y1="@HomeSvg.N(T)" y2="@HomeSvg.N(baseY)" />
+            <text class="tick" x="@HomeSvg.N(nx + 4)" y="@HomeSvg.N(T + 10)">acum</text>
+        </g>
+    }
+</svg>
+
+@code {
+    private const double W = 520;
+    private const double H = 220;
+    private const double L = 34;
+    private const double R = 8;
+    private const double T = 8;
+    private const double B = 22;
+    /// <summary>The chart grows at most this much over its viewBox (the text stays readable, not huge).</summary>
+    private const double MaxScale = 1.35;
+
+
+    [Parameter, EditorRequired] public IReadOnlyList<ReportBucket> Buckets { get; set; } = Array.Empty<ReportBucket>();
+    [Parameter, EditorRequired] public IReadOnlyList<double?> Values { get; set; } = Array.Empty<double?>();
+    [Parameter] public IReadOnlyList<double?>? Previous { get; set; }
+    /// <summary>The previous period's buckets (a day's pale bars are matched by local hour, not by index).</summary>
+    [Parameter] public IReadOnlyList<ReportBucket>? PreviousBuckets { get; set; }
+    [Parameter] public bool ShowPrevious { get; set; }
+    /// <summary>Typical kWh per local hour of the day (24 values), shown on day periods.</summary>
+    [Parameter] public IReadOnlyList<double?>? Profile { get; set; }
+    [Parameter] public ReportGranularity Kind { get; set; }
+    /// <summary>Position of „acum” in buckets from the left (e.g. 18.67 at 18:40 on a day); null outside the current period.</summary>
+    [Parameter] public double? NowPosition { get; set; }
+    [Parameter] public decimal Tariff { get; set; }
+    [Parameter] public string PreviousName { get; set; } = "perioada precedentă";
+
+    private string Tooltip(ReportBucket b, double? cur, double? prev, double? prof)
+    {
+        var lines = new List<string> { ReportFormat.BucketRow(b, Kind) };
+        lines.Add(cur is { } c ? $"Curent: {HomeFormat.KwhU(c)} · {EnergyFormat.Lei(KasaMonitor.Core.Costing.ElectricityCost.Ron(c, Tariff))}" : "Curent: fără date");
+        if (ShowPrevious) lines.Add($"{PreviousName}: {(prev is { } p ? HomeFormat.KwhU(p) : "fără date")}");
+        if (prof is { } q) lines.Add($"Profil tipic (30 de zile): {HomeFormat.KwhU(q)}");
+        return string.Join("\n", lines);
+    }
+}

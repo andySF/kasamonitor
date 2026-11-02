@@ -1,6 +1,6 @@
 namespace KasaMonitor.Core.Models;
 
-/// <summary>One read-only value shown in the device details card (Dashboard).</summary>
+/// <summary>One read-only value shown in the device details card (Prize).</summary>
 public sealed record DeviceDetailItem(string Section, string Label, string Value);
 
 /// <summary>

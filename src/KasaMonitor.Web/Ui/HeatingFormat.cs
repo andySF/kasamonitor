@@ -3,7 +3,7 @@ using KasaMonitor.Core.Heating;
 
 namespace KasaMonitor.Web.Ui;
 
-/// <summary>Romanian texts and numbers of the Centrală page and the Dashboard card.</summary>
+/// <summary>Romanian texts and numbers of the Centrală page and the „Prize” card.</summary>
 public static class HeatingFormat
 {
     private static readonly NumberFormatInfo Ro = new() { NumberDecimalSeparator = ",", NumberGroupSeparator = ".", NegativeSign = "-" };
@@ -16,7 +16,7 @@ public static class HeatingFormat
     public static string M3(double? m3) => m3 is null ? "—" : Number(m3, 2) + " m³";
 
     /// <summary>Gas cost: m³ × kWh/m³ × RON/kWh.</summary>
-    public static decimal GasCost(double m3, double kwhPerM3, decimal pricePerKwh) => (decimal)(m3 * kwhPerM3) * pricePerKwh;
+    public static decimal GasCost(double m3, double kwhPerM3, decimal pricePerKwh) => KasaMonitor.Core.Costing.GasCost.Ron(m3, kwhPerM3, pricePerKwh);
 
     public static string Mode(string? mode) => mode switch
     {

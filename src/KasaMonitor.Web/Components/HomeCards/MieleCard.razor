@@ -1,0 +1,69 @@
+@using KasaMonitor.Core.Miele
+@using KasaMonitor.Workers
+@using KasaMonitor.Web.Ui
+@inject MieleState State
+@implements IDisposable
+
+@* „Aparate Miele” of the home page: the running program (phase, time left, progress) of each appliance that runs,
+   otherwise its last cycle. Left out without any Miele appliance. *@
+@if (State.Appliances is { Count: > 0 } appliances)
+{
+    var now = DateTimeOffset.UtcNow;
+    <section class="hcard" aria-labelledby="h-miele">
+        <div class="card-h">
+            <h2 id="h-miele"><a class="plain" href="/aparate">Aparate Miele</a></h2>
+            <span class="sub">@(State.StreamConnected ? "conectat (live)" : "neconectat")</span>
+        </div>
+        @foreach (var a in appliances)
+        {
+            var v = a.Values;
+            // Without the stream (and no read in the last minutes) the state is the last known one: grey, no „gata pe la”.
+            var stale = !State.IsOnline(a, now);
+            var at = a.StateUtc ?? State.LastReadUtc;
+            <div class="mb-2 @(stale ? "stale" : "")">
+                <div class="d-flex justify-content-between align-items-baseline gap-2">
+                    <b>@a.Device.Alias</b>
+                    <span class="small sec">@(stale ? (State.StreamConnected ? "offline" : "neconectat") + " · ultima stare: " : "")@(v?.StatusText ?? "—")@(stale && at is { } t ? ", " + UiFormat.RelativeRo(t, now) : "")</span>
+                </div>
+                @if (!stale && (v is { IsRunning: true } || v?.RemainingSec is > 0))
+                {
+                    var pct = Progress(v!);
+                    <div class="small">
+                        @(v!.ProgramIdText ?? "program")@(v.PhaseText is { } ph ? " · " + ph : "")
+                        @if (v.RemainingSec is { } rem)
+                        {
+                            <span class="sec"> · rămas <b>@UiFormat.DurationRo(rem)</b>@(rem > 0 ? ", gata pe la " + DateTime.Now.AddSeconds(rem).ToString("HH:mm") : "")</span>
+                        }
+                    </div>
+                    <div class="meter blue" role="progressbar" aria-valuenow="@pct" aria-valuemin="0" aria-valuemax="100"><i style="width:@(pct)%"></i></div>
+                }
+                else if (a.LastCycle is { } c)
+                {
+                    <div class="small sec">
+                        Ultimul ciclu: @(c.Program ?? "program necunoscut"), @UiFormat.RelativeRo(c.EndUtc ?? c.LastRunningUtc, now)
+                        @if ((c.EnergyKwh ?? c.ApiEnergyKwh) is { } kwh) { <span> · @HomeFormat.Kwh(kwh) kWh</span> }
+                        @if (c.PlugEnergyWh is { } pw) { <span> · priză @HomeFormat.Kwh(pw / 1000.0) kWh</span> }
+                    </div>
+                }
+                else
+                {
+                    <div class="small sec">Niciun ciclu încă.</div>
+                }
+            </div>
+        }
+    </section>
+}
+
+@code {
+    protected override void OnInitialized() => State.Changed += OnChanged;
+
+    private void OnChanged() => InvokeAsync(StateHasChanged);
+
+    private static int Progress(MieleStateValues v)
+    {
+        var total = (v.ElapsedSec ?? 0) + (v.RemainingSec ?? 0);
+        return total <= 0 ? 0 : (int)Math.Round(100.0 * (v.ElapsedSec ?? 0) / total);
+    }
+
+    public void Dispose() => State.Changed -= OnChanged;
+}

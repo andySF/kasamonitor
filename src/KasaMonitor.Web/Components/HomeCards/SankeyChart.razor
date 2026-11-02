@@ -1,0 +1,143 @@
+@using KasaMonitor.Core.Costing
+@using KasaMonitor.Core.Home
+@using KasaMonitor.Web.Ui
+
+@* „Unde s-a dus energia”: 2-column Sankey (meter → top plugs + „Alte prize”, detected appliances, „Nedetectat”), band
+   width ∝ energy; gas on its own scale (m³) → heating / hot water. Hand-drawn SVG; under 900 px the electricity flows are a
+   vertical list with bars (bands would be unreadable on a phone). *@
+<div class="sankey-wrap">
+    <div>
+        <p class="mini-h">Curent · kWh</p>
+        @if (Flows is not { } f || f.SourceKwh <= 0)
+        {
+            <div class="empty">Fără energie măsurată de contor în perioada aleasă.</div>
+        }
+        else
+        {
+            var g = HomeSvg.Sankey(f.Flows, f.SourceKwh, H);
+            var source = Partial ? "Contor (parțial)" : "Contor";
+            <svg class="chart sankey-svg" style="max-width:@HomeSvg.N(W)px" viewBox="0 0 @HomeSvg.N(W) @HomeSvg.N(H)" role="group" aria-label="Flux de energie electrică: contor către prize și consumatori">
+                <g>
+                    <title>@($"Contor general{(Partial ? " (date parțiale)" : "")}\n{HomeFormat.KwhU(f.MeterKwh)} · {EnergyFormat.Lei(ElectricityCost.Ron(f.MeterKwh, Tariff))}" + (f.PlugsAboveMeter ? "\nΣ prize peste contor: nodul are înălțimea prizelor" : ""))</title>
+                    <rect class="k-plug" x="@HomeSvg.N(X0 - NodeW)" y="@HomeSvg.N(g.SourceY)" width="@NodeW" height="@HomeSvg.N(Math.Max(1, g.SourceH))" rx="3" />
+                    <text class="node-lbl" x="@HomeSvg.N(X0 - NodeW - 8)" y="@HomeSvg.N(g.SourceY + g.SourceH / 2 - 3)" text-anchor="end" font-weight="600">@source</text>
+                    <text class="node-sub num" x="@HomeSvg.N(X0 - NodeW - 8)" y="@HomeSvg.N(g.SourceY + g.SourceH / 2 + 14)" text-anchor="end">@HomeFormat.KwhU(f.MeterKwh) · @EnergyFormat.Lei(ElectricityCost.Ron(f.MeterKwh, Tariff))</text>
+                </g>
+                @foreach (var node in g.Nodes)
+                {
+                    var d = node.Item;
+                    var cls = d.Kind switch { FlowKind.Detected => "k-nilm", FlowKind.Undetected => "k-off", _ => "k-plug" };
+                    var approx = d.Kind == FlowKind.Undetected ? "≈ " : "";
+                    var value = $"{approx}{HomeFormat.KwhU(d.Kwh)} · {EnergyFormat.Lei(ElectricityCost.Ron(d.Kwh, Tariff))}";
+                    var members = Members(d);
+                    <a href="@(d.Href ?? "/history")" class="plain">
+                        <g>
+                            <title>@($"{d.Name}\n{value} · {HeatingFormat.Number(f.SourceKwh > 0 ? d.Kwh / f.SourceKwh * 100 : 0, 0)} %" + (members is null ? "" : "\n" + members))</title>
+                            @if (node.H > 0.5)
+                            {
+                                <path class="link @cls" d="@HomeSvg.Ribbon(X0, node.SourceY, node.SourceY + node.H, X1, node.Y, node.Y + node.H)" />
+                                <rect class="@cls" x="@HomeSvg.N(X1)" y="@HomeSvg.N(node.Y)" width="@NodeW" height="@HomeSvg.N(node.H)" rx="@HomeSvg.N(Math.Min(3, node.H / 2))" />
+                            }
+                            else
+                            {
+                                <line class="zero-node" x1="@HomeSvg.N(X1)" x2="@HomeSvg.N(X1 + NodeW)" y1="@HomeSvg.N(node.Y + 1)" y2="@HomeSvg.N(node.Y + 1)" />
+                                <rect x="@HomeSvg.N(X1 - 4)" y="@HomeSvg.N(node.Y - 6)" width="@HomeSvg.N(W - X1)" height="14" fill="transparent" />
+                            }
+                            <text class="node-lbl" x="@HomeSvg.N(X1 + NodeW + 8)" y="@HomeSvg.N(node.Y + Math.Max(node.H, 2) / 2 + 4)">@HomeFormat.Trim(d.Name, 26)  <tspan class="node-sub num">@value</tspan>@if (members is not null && d.Name.Length + value.Length + members.Length <= MaxInlineChars) { <tspan class="node-sub"> · @members</tspan> }</text>
+                        </g>
+                    </a>
+                }
+            </svg>
+            <ul class="sankey-list" aria-label="Unde s-a dus energia, listă">
+                <li class="src"><span class="nm">@source</span><span class="bar"><i class="k-plug" style="width:100%"></i></span><span class="v num">@HomeFormat.KwhU(f.MeterKwh)</span></li>
+                @foreach (var d in f.Flows)
+                {
+                    var pct = f.SourceKwh > 0 ? d.Kwh / f.SourceKwh * 100 : 0;
+                    var cls = d.Kind switch { FlowKind.Detected => "k-nilm", FlowKind.Undetected => "k-off", _ => "k-plug" };
+                    <li title="@(Members(d) ?? d.Name)">
+                        <a class="nm" href="@(d.Href ?? "/history")">@d.Name</a>
+                        <span class="bar"><i class="@cls" style="width:@HomeSvg.N(Math.Clamp(pct, 0, 100))%"></i></span>
+                        <span class="v num">@(d.Kind == FlowKind.Undetected ? "≈ " : "")@HomeFormat.KwhU(d.Kwh)</span>
+                    </li>
+                }
+            </ul>
+        }
+    </div>
+    <div>
+        <p class="mini-h">Gaz · m³ (scară separată)</p>
+        @if (GasM3 is not { } gas || gas <= 0)
+        {
+            <div class="empty">@(GasM3 is null ? "Fără date de la centrală." : "Fără consum de gaz în perioada aleasă.")</div>
+        }
+        else
+        {
+            var parts = new List<(string Name, double M3)> { ("Încălzire", HeatingM3 ?? 0), ("Apă caldă", DhwM3 ?? 0) };
+            var unsplit = gas - parts.Sum(p => p.M3);
+            if (unsplit > 0.005) parts.Add(("Nerepartizat", unsplit));
+            var k = GasBandH / gas;
+            var leftH = gas * k;
+            var ly = (H - 22 - leftH) / 2;
+            var yL = ly;
+            var yR = ly - (parts.Count - 1) * GasGap / 2;
+            <svg class="chart" style="max-width:@HomeSvg.N(GW * 1.2)px" viewBox="0 0 @HomeSvg.N(GW) @HomeSvg.N(H)" role="group" aria-label="Flux gaz: încălzire și apă caldă">
+                <g>
+                    <title>@($"Gaz\n{HomeFormat.M3U(gas)} ≈ {HomeFormat.KwhU(GasCost.Kwh(gas, KwhPerM3))} · {EnergyFormat.Lei(GasCost.Ron(gas, KwhPerM3, GasPricePerKwh))}")</title>
+                    <rect class="k-gas" x="@HomeSvg.N(GX0 - NodeW)" y="@HomeSvg.N(ly)" width="@NodeW" height="@HomeSvg.N(leftH)" rx="3" />
+                    <text class="node-lbl" x="@HomeSvg.N(GX0 - NodeW - 6)" y="@HomeSvg.N(ly + leftH / 2 - 3)" text-anchor="end" font-weight="600">Gaz</text>
+                    <text class="node-sub num" x="@HomeSvg.N(GX0 - NodeW - 6)" y="@HomeSvg.N(ly + leftH / 2 + 14)" text-anchor="end">@HomeFormat.M3U(gas)</text>
+                </g>
+                @foreach (var (name, m3) in parts)
+                {
+                    var h = m3 * k;
+                    <a href="/centrala" class="plain">
+                        <g>
+                            <title>@($"{name}\n{HomeFormat.M3U(m3)} · {EnergyFormat.Lei(GasCost.Ron(m3, KwhPerM3, GasPricePerKwh))}")</title>
+                            @if (h > 0.5)
+                            {
+                                <path class="link k-gas" d="@HomeSvg.Ribbon(GX0, yL, yL + h, GX1, yR, yR + h)" />
+                                <rect class="k-gas" x="@HomeSvg.N(GX1)" y="@HomeSvg.N(yR)" width="@NodeW" height="@HomeSvg.N(h)" rx="3" />
+                            }
+                            else
+                            {
+                                <line class="zero-node" x1="@HomeSvg.N(GX1)" x2="@HomeSvg.N(GX1 + NodeW)" y1="@HomeSvg.N(yR + 1)" y2="@HomeSvg.N(yR + 1)" />
+                            }
+                            <text class="node-lbl" x="@HomeSvg.N(GX1 + NodeW + 6)" y="@HomeSvg.N(yR + Math.Max(h, 2) / 2 + 4)">@name <tspan class="node-sub num">@HomeFormat.M3U(m3)</tspan></text>
+                        </g>
+                    </a>
+                    yL += h;
+                    yR += Math.Max(h, 2) + GasGap;
+                }
+                <text class="node-sub" x="0" y="@HomeSvg.N(H - 4)">≈ @HeatingFormat.Number(KwhPerM3, 2) kWh/m³ · @HomeFormat.PerKwh(GasPricePerKwh, 3)</text>
+            </svg>
+        }
+    </div>
+</div>
+
+@code {
+    private const double W = 900;
+    private const double H = 190;
+    private const double NodeW = 12;
+    private const double X0 = 150;
+    private const double X1 = 470;
+    private const double GW = 320;
+    private const double GX0 = 70;
+    private const double GX1 = 150;
+    private const double GasBandH = 110;
+    private const double GasGap = 10;
+    /// <summary>A group's members are written after its value only when the whole label fits in this many characters.</summary>
+    private const int MaxInlineChars = 64;
+
+    [Parameter] public EnergyFlows? Flows { get; set; }
+    /// <summary>The meter covers only part of the period (or its stream has gaps): the source node says „parțial”.</summary>
+    [Parameter] public bool Partial { get; set; }
+    [Parameter] public decimal Tariff { get; set; }
+    [Parameter] public double? GasM3 { get; set; }
+    [Parameter] public double? HeatingM3 { get; set; }
+    [Parameter] public double? DhwM3 { get; set; }
+    [Parameter] public double KwhPerM3 { get; set; } = KasaMonitor.Core.Heating.ViessmannApi.DefaultKwhPerM3;
+    [Parameter] public decimal GasPricePerKwh { get; set; }
+
+    /// <summary>The members of a group („Bucatarie 0,14 kWh · TV 0,26 kWh”), null for a single consumer.</summary>
+    private static string? Members(FlowItem d) =>
+        d.Children is { Count: > 0 } kids ? string.Join(" · ", kids.Select(k => $"{k.Name} {HomeFormat.KwhU(k.Kwh)}")) : d.Detail;
+}

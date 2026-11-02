@@ -1,0 +1,270 @@
+@using KasaMonitor.Core.Home
+@using KasaMonitor.Core.Metering
+@using KasaMonitor.Workers
+@using KasaMonitor.Workers.Nilm
+@using KasaMonitor.Web.Ui
+@inject IPlugStateBroadcaster States
+@inject ILiveStreamBroadcaster Stream
+@inject HomeService Home
+@inject NilmService Nilm
+@inject MieleState Miele
+@inject ILogger<NowCard> Log
+@implements IDisposable
+
+@* „Acum în casă”: always live (1 s), independent of the period selector. Bubbles with area ∝ W, positions recomputed only
+   when the set or the order of the parts changes or a value outgrows its slot (BubbleLayout). *@
+<section class="hcard s5" aria-labelledby="h-now">
+    <div class="card-h">
+        <h2 id="h-now">Acum în casă <a class="card-link" href="/contor" title="Contor" aria-label="Contor">→</a></h2>
+        <span class="sub"><span class="live-dot @(_fresh ? "" : "stale")"></span>live · contor general, flux 1 s</span>
+    </div>
+    @if (_breakdown is not { } b)
+    {
+        <div class="empty">Se încarcă…</div>
+    }
+    else
+    {
+        <div class="hero">
+            <a class="plain" href="/contor" title="Pagina Contor"><span class="v num">@HomeFormat.W(b.MeterW)</span></a><span class="u">W</span>
+            <span class="sec" style="font-size:13px">@(b.MeterW is null ? "contorul general nu are o citire acum" : "casă total, contor")</span>
+        </div>
+        <svg class="bubbles" viewBox="0 0 @HomeSvg.N(Width) @HomeSvg.N(Height)" role="group" aria-label="Bule: puterea acum pe consumatori; valorile sunt și în lista de dedesubt">
+            @if (_layout is { } layout)
+            {
+                @foreach (var placed in layout.Bubbles)
+                {
+                    if (!_parts.TryGetValue(placed.Key, out var part)) continue;
+                    var r = layout.Radius(part.Watts);
+                    var label = Short(part);
+                    var value = (part.Kind == NowKind.Rest ? "≈ " : "") + HomeFormat.W(part.Watts) + " W";
+                    <a href="@(part.Href ?? (part.Kind == NowKind.Standby ? "/contor" : "/consumatori"))" class="plain">
+                        <g class="bubble @KindClass(part.Kind)">
+                            <title>@Tip(part, b.MeterW)</title>
+                            @if (part.Active && part.Watts > 0)
+                            {
+                                <circle class="pulse" cx="@HomeSvg.N(placed.X)" cy="@HomeSvg.N(placed.Y)" r="@HomeSvg.N(r)" />
+                            }
+                            <circle class="b @FillClass(part.Kind)" cx="@HomeSvg.N(placed.X)" cy="@HomeSvg.N(placed.Y)" r="@HomeSvg.N(Math.Max(r, 2))" />
+                            <circle cx="@HomeSvg.N(placed.X)" cy="@HomeSvg.N(placed.Y)" r="@HomeSvg.N(Math.Max(r + 4, 12))" fill="transparent" />
+                            @if (!placed.Side && (r < MinInsideR || r < MinTwoLineR && label.Length > Math.Max(4, (int)(2 * r / (13 * CharWidth)))))
+                            {
+                                <g><text class="out" x="@HomeSvg.N(placed.X + r + 6)" y="@HomeSvg.N(placed.Y + 4)">@HomeFormat.Trim(label, SideChars) · @value</text></g>
+                            }
+                            else if (!placed.Side)
+                            {
+                                var fs = r > BigR ? 14 : 13;
+                                var chars = Math.Max(4, (int)(2 * r / (fs * CharWidth)));
+                                var lines = NameLines(label, chars);
+                                var top = placed.Y - 2 - (lines.Count - 1) * fs / 2;
+                                <g>
+                                    @for (var li = 0; li < lines.Count; li++)
+                                    {
+                                        <g><text class="in" x="@HomeSvg.N(placed.X)" y="@HomeSvg.N(top + li * fs)" font-size="@HomeSvg.N(lines.Count > 1 ? fs - 1 : fs)">@lines[li]</text></g>
+                                    }
+                                    <text class="in" x="@HomeSvg.N(placed.X)" y="@HomeSvg.N(top + (lines.Count - 1) * fs + fs + 2)" font-size="@HomeSvg.N(fs + 2)" font-weight="600">@value</text>
+                                </g>
+                            }
+                            else
+                            {
+                                <g><text class="out" x="@HomeSvg.N(layout.LabelX)" y="@HomeSvg.N(placed.Y + 4)">@HomeFormat.Trim(label, SideChars) · @value</text></g>
+                            }
+                        </g>
+                    </a>
+                }
+            }
+        </svg>
+        <div class="legend" style="margin:2px 0 6px">
+            <span><i class="sw k-plug"></i>priză măsurată</span>
+            <span><i class="sw k-nilm"></i>consumator detectat (NILM)</span>
+            <span><i class="sw k-standby"></i>standby / mereu pornit</span>
+            <span><i class="sw k-off"></i>oprit</span>
+            <span><i class="sw dashed"></i>nedetectat</span>
+        </div>
+        <ul class="nowlist" aria-label="Puterea acum, listă">
+            @foreach (var part in b.Parts.OrderByDescending(p => p.Watts).ThenBy(p => p.Name, StringComparer.CurrentCultureIgnoreCase).Take(MaxListRows))
+            {
+                var pct = b.MeterW is { } m && m > 0 ? part.Watts / m * 100 : (double?)null;
+                <li title="@Tip(part, b.MeterW)">
+                    @if (part.Kind == NowKind.Rest) { <i class="sw dashed"></i> } else { <i class="sw @FillClass(part.Kind)"></i> }
+                    <span class="nm">@part.Name@if (part.Note is { } note && part.Kind is not (NowKind.Rest or NowKind.Standby)) { <small> · @note</small> }</span>
+                    <span class="w num">@(part.Kind == NowKind.Rest ? "≈ " : "")@HomeFormat.W(part.Watts) W</span>
+                    <span class="mini"><i style="width:@HomeSvg.N(Math.Clamp(pct ?? 0, 0, 100))%"></i></span>
+                    <span class="pct num">@(pct is { } p ? HeatingFormat.Number(p, 0) + " %" : "—")</span>
+                </li>
+            }
+        </ul>
+        @if (b.Parts.Count > MaxListRows)
+        {
+            <div class="foot-note" title="@string.Join(" · ", b.Parts.OrderByDescending(p => p.Watts).Skip(MaxListRows).Select(p => $"{p.Name} {HomeFormat.W(p.Watts)} W"))">+ @(b.Parts.Count - MaxListRows) mai mici (în bule și în tooltip)</div>
+        }
+        @if (FootNote(b) is { } fn)
+        {
+            <div class="foot-note">@fn</div>
+        }
+    }
+</section>
+
+@code {
+    private const double Width = 520;
+    private const double Height = 250;
+    /// <summary>A plug drawing at least this much is shown as running (pulse).</summary>
+    private const double ActiveW = 20;
+    /// <summary>A plug drawing less than this (or with the relay off, or offline) is „oprit”.</summary>
+    private const double OffBelowW = 0.5;
+    /// <summary>A bubble smaller than this has its label outside (the text would not fit at 12 px or more).</summary>
+    private const double MinInsideR = 22;
+    /// <summary>A name that does not fit on one line goes outside a bubble smaller than this (no cut names, no three lines).</summary>
+    private const double MinTwoLineR = 40;
+    /// <summary>A bubble larger than this gets the bigger font.</summary>
+    private const double BigR = 55;
+    /// <summary>Average glyph width as a share of the font size (Helvetica): how many characters fit across a bubble.</summary>
+    private const double CharWidth = 0.58;
+    private const int SideChars = 22;
+    /// <summary>The list under the bubbles stops after this many rows (rows 1 and 2 of the page fit on a 1080 px screen).</summary>
+    private const int MaxListRows = 8;
+    private static readonly TimeSpan MainMaxAge = TimeSpan.FromSeconds(5);
+    private static readonly TimeSpan PlugMaxAge = TimeSpan.FromSeconds(15);
+
+    private NowBreakdown? _breakdown;
+    private Dictionary<string, NowPart> _parts = new();
+    private BubbleLayoutResult? _layout;
+    private bool _fresh;
+    private double? _standbyW;
+    private int _ticks;
+    private System.Threading.Timer? _timer;
+
+    protected override void OnInitialized()
+    {
+        _standbyW = Home.Standby?.Watts;
+        Recompute();
+        _ = LoadStandbyAsync();
+        _timer = new System.Threading.Timer(_ => InvokeAsync(() =>
+        {
+            try
+            {
+                if (++_ticks % 60 == 0) _ = LoadStandbyAsync();
+                Recompute();
+                StateHasChanged();
+            }
+            catch (Exception ex)
+            {
+                // Logged at most once a minute; the card keeps its last state.
+                if (_ticks % 60 == 1) Log.LogWarning(ex, "„Acum în casă” could not be recomputed");
+            }
+        }), null, 1000, 1000);
+    }
+
+    private async Task LoadStandbyAsync()
+    {
+        try
+        {
+            var s = await Home.GetStandbyAsync(CancellationToken.None);
+            await InvokeAsync(() => { _standbyW = s?.Watts; Recompute(); StateHasChanged(); });
+        }
+        catch (Exception ex)
+        {
+            // The standby bubble is left out until the floor is known.
+            Log.LogWarning(ex, "The standby floor could not be computed");
+        }
+    }
+
+    private void Recompute()
+    {
+        var now = DateTimeOffset.UtcNow;
+        var states = States.Snapshot().Values.ToList();
+        var main = states.FirstOrDefault(s => s.Role == PlugRole.MainMeter);
+        var streamed = main is null ? null : Stream.Latest(main.PlugId);
+        var meterW = main is null ? null : HouseBalance.MainW(main, streamed, now, MainMaxAge);
+        _fresh = streamed is not null && now - streamed.TsUtc <= MainMaxAge;
+
+        var miele = Miele.Appliances.Where(a => a.Device.PlugId is not null).ToList();
+        var plugs = new List<NowPart>();
+        foreach (var s in states.Where(s => PlugRoles.CountsInTotals(s.Role)))
+        {
+            var w = s.IsOnline ? HouseBalance.MainW(s, Stream.Latest(s.PlugId), now, PlugMaxAge) ?? 0 : 0;
+            var relayOff = s.LastReading?.RelayOn == false || Stream.Relay(s.PlugId) is { On: false };
+            var running = miele.FirstOrDefault(a => a.Device.PlugId == s.PlugId && a.Values?.IsRunning == true);
+            var note = !s.IsOnline ? "offline"
+                : running is not null ? $"{running.Device.Alias} · {running.Values?.PhaseText ?? "pornită"}"
+                : relayOff ? "oprit" : null;
+            var kind = !s.IsOnline || relayOff || w < OffBelowW ? NowKind.Off : NowKind.Plug;
+            plugs.Add(new NowPart(s.PlugId.ToString(), s.Alias, kind, w, note, kind == NowKind.Plug && (w >= ActiveW || running is not null),
+                "/history?plugId=" + s.PlugId));
+        }
+
+        var summary = Nilm.Summary;
+        var detected = summary.Enabled
+            ? summary.Active.GroupBy(a => a.SignatureId).Select(g => new NowPart("sig-" + g.Key, g.First().Name, NowKind.Detected, g.Sum(a => a.PowerW),
+                "detectat, fără priză", true, "/consumatori"))
+            : Enumerable.Empty<NowPart>();
+
+        var b = NowBreakdownRule.Build(meterW, plugs, detected, main is null ? null : _standbyW);
+        _breakdown = b;
+        _parts = b.Parts.ToDictionary(p => p.Key);
+        var watts = b.Parts.ToDictionary(p => p.Key, p => p.Watts);
+        var order = BubbleLayout.Order(_layout?.Order, watts);
+        if (_layout is null || !order.SequenceEqual(_layout.Order) || !_layout.Fits(watts))
+            _layout = BubbleLayout.Layout(order, watts, Width, Height);
+    }
+
+    private static string KindClass(NowKind k) => k switch
+    {
+        NowKind.Detected => "detected",
+        NowKind.Standby => "standby",
+        NowKind.Off => "off",
+        NowKind.Rest => "rest",
+        _ => "plug",
+    };
+
+    private static string FillClass(NowKind k) => k switch
+    {
+        NowKind.Detected => "k-nilm",
+        NowKind.Standby => "k-standby",
+        NowKind.Off => "k-off",
+        NowKind.Rest => "",
+        _ => "k-plug",
+    };
+
+    /// <summary>The bubble's label: by kind (never by the displayed name, which may be reworded).</summary>
+    private static string Short(NowPart p) => p.Kind switch
+    {
+        NowKind.Standby => "Standby",
+        NowKind.Rest => "Nedetectat",
+        _ => p.Name,
+    };
+
+    /// <summary>A name on one line when it fits, else on two (split at the space nearest the middle), each cut to fit.</summary>
+    private static IReadOnlyList<string> NameLines(string name, int chars)
+    {
+        if (name.Length <= chars) return new[] { name };
+        var spaces = Enumerable.Range(0, name.Length).Where(i => name[i] == ' ').ToList();
+        if (spaces.Count == 0) return new[] { HomeFormat.Trim(name, chars) };
+        var cut = spaces.OrderBy(i => Math.Abs(i - name.Length / 2)).First();
+        return new[] { HomeFormat.Trim(name[..cut], chars), HomeFormat.Trim(name[(cut + 1)..], chars) };
+    }
+
+    private static string Tip(NowPart p, double? meterW)
+    {
+        var lines = new List<string> { p.Name, $"{(p.Kind == NowKind.Rest ? "≈ " : "")}{HomeFormat.W(p.Watts)} W" +
+            (meterW is { } m && m > 0 ? $" · {HeatingFormat.Number(p.Watts / m * 100, 0)} % din casă" : "") };
+        if (p.Note is { } n) lines.Add(n);
+        return string.Join("\n", lines);
+    }
+
+    private string? FootNote(NowBreakdown b)
+    {
+        var notes = new List<string>();
+        if (b.MeterW is null) notes.Add("Fără contor general (sau fără citire): se văd doar prizele.");
+        if (b.PlugsAboveMeter)
+            notes.Add($"Σ prize {HomeFormat.W(b.PlugsW)} W peste contor {HomeFormat.W(b.MeterW)} W (în toleranța măsurării sau clema contorului): restul e 0.");
+        if (b.DetectedScaled) notes.Add("Consumatorii detectați depășesc restul casei: puterile lor estimate sunt reduse proporțional.");
+        if (b.MeterW is not null && _standbyW is null)
+            notes.Add("Standby-ul apare după prima noapte cu date (01:00–05:00).");
+        else if (b.MeterW is not null && _standbyW is <= NowBreakdownRule.MinStandbyW)
+            notes.Add("Standby nemăsurabil: noaptea, suma prizelor depășește contorul.");
+        notes.Add("Procentele sunt din contor.");
+        return string.Join(" ", notes);
+    }
+
+    public void Dispose() => _timer?.Dispose();
+}

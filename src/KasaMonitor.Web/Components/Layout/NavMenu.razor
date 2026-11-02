@@ -1,20 +1,20 @@
 <nav class="navbar navbar-expand bg-body-tertiary border-bottom px-3 flex-wrap">
     <a class="navbar-brand d-flex align-items-center gap-2" href="/"><i class="bi bi-plug-fill text-success"></i> KasaMonitor</a>
     <div class="navbar-nav gap-1 flex-wrap">
-        <NavLink class="nav-link" href="/" Match="NavLinkMatch.All"><i class="bi bi-speedometer2 me-1"></i>Dashboard</NavLink>
+        <NavLink class="nav-link" href="/" Match="NavLinkMatch.All"><i class="bi bi-house-heart me-1"></i>Acasă</NavLink>
+        <NavLink class="nav-link" href="/prize"><i class="bi bi-speedometer2 me-1"></i>Prize</NavLink>
         <NavLink class="nav-link" href="/contor"><i class="bi bi-house-door me-1"></i>Contor</NavLink>
         <NavLink class="nav-link" href="/centrala"><i class="bi bi-fire me-1"></i>Centrală</NavLink>
-        <NavLink class="nav-link" href="/clima"><i class="bi bi-thermometer-half me-1"></i>Climă</NavLink>
         <NavLink class="nav-link" href="/aparate"><i class="bi bi-water me-1"></i>Aparate</NavLink>
+        <NavLink class="nav-link" href="/clima"><i class="bi bi-thermometer-half me-1"></i>Climă</NavLink>
         <NavLink class="nav-link" href="/consumatori"><i class="bi bi-lightbulb me-1"></i>Consumatori</NavLink>
-        <NavLink class="nav-link" href="/history"><i class="bi bi-bar-chart me-1"></i>History</NavLink>
-        <NavLink class="nav-link" href="/plugs"><i class="bi bi-outlet me-1"></i>Plugs</NavLink>
-        <NavLink class="nav-link" href="/settings"><i class="bi bi-gear me-1"></i>Settings</NavLink>
+        <NavLink class="nav-link" href="/history"><i class="bi bi-bar-chart me-1"></i>Istoric</NavLink>
+        <NavLink class="nav-link" href="/plugs"><i class="bi bi-outlet me-1"></i>Dispozitive</NavLink>
+        <NavLink class="nav-link" href="/settings"><i class="bi bi-gear me-1"></i>Setări</NavLink>
         <NavLink class="nav-link" href="/integration"><i class="bi bi-diagram-3 me-1"></i>Integrare</NavLink>
     </div>
-    <span class="ms-auto small text-body-secondary text-nowrap app-version" title="@KasaMonitor.Web.Ui.AppVersion.Title">@KasaMonitor.Web.Ui.AppVersion.Short</span>
+    <span class="ms-auto d-flex align-items-center gap-2">
+        <button type="button" class="theme-toggle" data-theme-toggle title="Comută tema luminoasă / întunecată" aria-label="Temă întunecată" aria-pressed="false"><i class="bi bi-circle-half"></i></button>
+        <span class="small text-body-secondary text-nowrap app-version" title="@KasaMonitor.Web.Ui.AppVersion.Title">@KasaMonitor.Web.Ui.AppVersion.Short</span>
+    </span>
 </nav>
-
-<style>
-    .navbar .nav-link.active { color: var(--bs-success); font-weight: 600; }
-</style>

@@ -73,6 +73,16 @@ public sealed class HeatingState
         Raise();
     }
 
+    /// <summary>A snapshot older than this many poll intervals is the last known state, not the present one.</summary>
+    public const int StaleAfterPolls = 2;
+
+    /// <summary>
+    /// The latest values are not the present state: the boiler is offline (<see cref="IsOnline"/>), there is no snapshot, or
+    /// the snapshot is older than <see cref="StaleAfterPolls"/> poll intervals. The home page shows them grey.
+    /// </summary>
+    public bool IsStale(DateTimeOffset now) =>
+        !IsOnline(now) || Current?.Snapshot is not { } s || now - s.ReadUtc > TimeSpan.FromSeconds(StaleAfterPolls * Math.Max(PollIntervalSeconds, 1));
+
     /// <summary>Online = the last poll succeeded and is not older than three intervals.</summary>
     public bool IsOnline(DateTimeOffset now)
     {

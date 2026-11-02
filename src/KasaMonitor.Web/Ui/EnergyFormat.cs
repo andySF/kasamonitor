@@ -4,7 +4,7 @@ using KasaMonitor.Core.Models;
 
 namespace KasaMonitor.Web.Ui;
 
-/// <summary>Energy and cost texts for the Dashboard, in ro-RO format: "Azi: 0,46 kWh · 0,51 lei".</summary>
+/// <summary>Energy and cost texts for the „Prize” page, in ro-RO format: "Azi: 0,46 kWh · 0,51 lei".</summary>
 public static class EnergyFormat
 {
     // ro-RO number format (decimal comma, dot for thousands), built explicitly so it does not depend on ICU data

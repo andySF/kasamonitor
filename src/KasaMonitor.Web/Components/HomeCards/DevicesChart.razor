@@ -1,0 +1,82 @@
+@using KasaMonitor.Core.Costing
+@using KasaMonitor.Core.Home
+@using KasaMonitor.Web.Ui
+
+@* „Aparate” of the home page: horizontal bars sorted by energy (plugs, detected appliances without a plug, „Nedetectat”
+   last), kWh and lei of the period, the short note of a row when it fits; a click opens the source page. *@
+@if (Rows.Count == 0)
+{
+    <div class="empty">Fără date pentru perioada aleasă.</div>
+}
+else
+{
+    var shown = Shown();
+    var height = Top + shown.Count * RowH + 2;
+    var max = Math.Max(1e-9, shown.Max(r => r.Kwh));
+    var bx = NameW + 8;
+    var bwMax = Math.Max(40, W - bx - ValW);
+    <svg class="chart" style="max-width:@HomeSvg.N(W * MaxScale)px" viewBox="0 0 @HomeSvg.N(W) @HomeSvg.N(height)" role="group" aria-label="Energie pe aparate, sortată descrescător">
+        @for (var i = 0; i < shown.Count; i++)
+        {
+            var d = shown[i];
+            var y = Top + i * RowH;
+            var w = d.Kwh / max * bwMax;
+            var approx = d.Kind == FlowKind.Undetected ? "≈ " : "";
+            var value = $"{approx}{HomeFormat.KwhU(d.Kwh)} · {EnergyFormat.Lei(ElectricityCost.Ron(d.Kwh, Tariff))}";
+            var note = Note(d);
+            <a href="@(d.Href ?? "/history")" class="plain">
+                <g class="dev-row">
+                    <title>@($"{d.Name}\n{value}" + (MeterKwh > 0 ? $" · {HeatingFormat.Number(d.Kwh / MeterKwh * 100, 0)} % din contor" : "") + (note is null ? "" : "\n" + note))</title>
+                    <rect class="bar-bg" x="0" y="@HomeSvg.N(y)" width="@HomeSvg.N(W)" height="@HomeSvg.N(RowH)" />
+                    <text class="dev-name" x="0" y="@HomeSvg.N(y + 15)">@HomeFormat.Trim(d.Name, 22)</text>
+                    @if (d.Kind == FlowKind.Undetected)
+                    {
+                        <rect class="rest-bar" x="@HomeSvg.N(bx)" y="@HomeSvg.N(y + 5)" width="@HomeSvg.N(Math.Max(w, 1))" height="12" rx="2" />
+                    }
+                    else if (w > 0)
+                    {
+                        <path class="@(d.Kind == FlowKind.Detected ? "k-nilm" : "k-plug")" d="@HomeSvg.RightRoundedBar(bx, y + 5, w, 12)" />
+                    }
+                    <text class="dev-val num" x="@HomeSvg.N(bx + w + 6)" y="@HomeSvg.N(y + 15)">@value@if (note is not null && value.Length + note.Length <= MaxValueWithNote) { <tspan class="dev-note"> · @note</tspan> }</text>
+                </g>
+            </a>
+        }
+    </svg>
+    @if (Rows.Count > shown.Count)
+    {
+        <div class="foot-note">+ @(Rows.Count - shown.Count) consumatori mai mici (în tooltip-urile Sankey-ului și pe paginile lor).</div>
+    }
+}
+
+@code {
+    private const double W = 520;
+    private const double RowH = 23;
+    private const double Top = 2;
+    private const double NameW = 170;
+    /// <summary>Room for „1.242,32 kWh · 1.379,00 lei” (a year).</summary>
+    private const double ValW = 190;
+    private const int MaxRows = 12;
+    private const double MaxScale = 1.3;
+    /// <summary>A row's note is written after its value only when both fit in this many characters (else it stays in the tooltip).</summary>
+    private const int MaxValueWithNote = 34;
+
+    [Parameter, EditorRequired] public IReadOnlyList<FlowItem> Rows { get; set; } = Array.Empty<FlowItem>();
+    [Parameter] public double MeterKwh { get; set; }
+    [Parameter] public decimal Tariff { get; set; }
+
+    /// <summary>The largest rows (at most <see cref="MaxRows"/>), „Nedetectat” always last.</summary>
+    private List<FlowItem> Shown()
+    {
+        var rest = Rows.Where(r => r.Kind == FlowKind.Undetected).ToList();
+        return Rows.Where(r => r.Kind != FlowKind.Undetected).Take(MaxRows - rest.Count).Concat(rest).ToList();
+    }
+
+    /// <summary>The short note of a row: „fără priză” for a detected appliance, „oprit” for a plug with no energy.</summary>
+    private static string? Note(FlowItem d) => d.Kind switch
+    {
+        FlowKind.Detected => "fără priză",
+        FlowKind.Plug when d.Kwh < 0.005 => "oprit",
+        FlowKind.Undetected => "contor − prize − detectați",
+        _ => null,
+    };
+}

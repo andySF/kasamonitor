@@ -6,12 +6,12 @@
     <div class="btn-group btn-group-sm" role="group" aria-label="Perioadă">
         @foreach (var kind in Kinds)
         {
-            <button type="button" class="btn @(Period.Kind == kind ? "btn-primary" : "btn-outline-primary")" @onclick="() => SelectKind(kind)">@ReportFormat.KindName(kind)</button>
+            <button type="button" class="btn @(Period.Kind == kind ? "btn-primary" : "btn-outline-primary")" @onclick="() => SelectKind(kind)">@(kind == ReportGranularity.Day && DayLabel is { } dl ? dl : ReportFormat.KindName(kind))</button>
         }
     </div>
     <div class="btn-group btn-group-sm" role="group" aria-label="Navigare">
-        <button type="button" class="btn btn-outline-secondary" title="Perioada anterioară" @onclick="() => Go(Period.Previous())"><i class="bi bi-chevron-left"></i></button>
-        <button type="button" class="btn btn-outline-secondary" title="Perioada următoare" disabled="@IsCurrent" @onclick="() => Go(Period.Next())"><i class="bi bi-chevron-right"></i></button>
+        <button type="button" class="btn btn-outline-secondary" title="Perioada anterioară" aria-label="Perioada anterioară" @onclick="() => Go(Period.Previous())"><i class="bi bi-chevron-left"></i></button>
+        <button type="button" class="btn btn-outline-secondary" title="Perioada următoare" aria-label="Perioada următoare" disabled="@IsCurrent" @onclick="() => Go(Period.Next())"><i class="bi bi-chevron-right"></i></button>
     </div>
     <span class="fw-semibold">@ReportFormat.Title(Period)</span>
     @if (!IsCurrent)
@@ -26,6 +26,8 @@
     [Parameter, EditorRequired] public ReportPeriod Period { get; set; }
     [Parameter] public EventCallback<ReportPeriod> PeriodChanged { get; set; }
     [Parameter, EditorRequired] public DateOnly Today { get; set; }
+    /// <summary>Text of the day button instead of „Zi” (the home page: „Azi”).</summary>
+    [Parameter] public string? DayLabel { get; set; }
 
     /// <summary>The period holds today (or lies after it): there is nothing after it to show.</summary>
     private bool IsCurrent => Period.EndExclusive > Today;

@@ -1,0 +1,1 @@
+{"source": "din documentație (Home Assistant MQTT), neverificat pe hardware", "topic": "sensorBedroom/state", "retain": false, "payload": {"temperature": 23.1, "humidity": 51}}

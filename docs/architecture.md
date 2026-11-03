@@ -114,6 +114,10 @@ grouping them on tabs needs no migration.
 | `ClimateSensors` | One row per sensor of any source: name, room, outdoor flag, archived, battery |
 | `ClimateReadings` | Temperature/humidity readings, written on change or every 30 minutes |
 | `ClimateDaily` | Min / time-weighted mean / max per sensor and local day, used by the history page |
+| `EntityPrefs` | 0.11: per-entity display choices of the generated device page (shown, history, metrics, name, decimals) |
+| `GenericDevices`, `GenericEntities` | 0.11: devices added from MQTT Discovery and their entities (description + raw discovery payload) |
+| `GenericReadings` | 0.11: generic values on change (integer key, `WITHOUT ROWID`), purged after 90 days |
+| `GenericHourly` | 0.11: hourly min / time-weighted mean / max / last / count / counted delta per generic entity, kept |
 
 Retention (see README [Data retention](../README.md#data-retention)): events, signatures, runs, climate, Miele and
 minute aggregates are kept without limit; only `LiveSamples` is purged by default (30 days).
@@ -136,6 +140,7 @@ minute aggregates are kept without limit; only `LiveSamples` is purged by defaul
 | `HomeService` | Recomputes today and the current month every minute for the home page and its metrics |
 | `PrometheusRemoteWriter` | Optional: batches live samples and pushes them (flush 1 s, buffer up to 5 min) |
 | `KasaMetrics` | Refreshes the `/metrics` families from the states |
+| `MqttDiscoveryWorker` | 0.11: one broker connection (reconnect 5 → 60 s, re-subscribe), one consumer channel; `GenericRecorder` flushes values every 5 s, rolls hours up every 10 min, purges daily |
 
 Workers never talk to pages directly: they write the database and update an in-memory state; pages and metrics read
 the state. One bad source cannot stop another (each source has its own try/backoff).
@@ -163,6 +168,14 @@ discovery scan and the plugs' live states, `ClimateState`, `HeatingState`, `Miel
 or stored. `DeviceCatalog` projects the existing tables into one list of `DeviceRow`s with keys `plug:{id}`,
 `miele:{id}`, `heating:{id}`, `climate:{id}`, and `/dispozitive` opens one expanded row per device as the single
 place where it is configured.
+
+### Entities and the generated page (since 0.11)
+
+Every device can also be seen as a list of **entities** (`Core/Devices/Entities`): kind, data type, device class,
+canonical unit, state class, category. Existing integrations are *projected* by an `IEntitySource` per row-key prefix
+(`plug:`, `climate:`, `heating:`, `miele:`) without touching their tables; generic devices (`dev:`) are stored as entities
+from the start (`GenericRecorder`, MQTT Discovery). `/dispozitive/{key}` draws any device from `EntityViewRules`. A
+generic device enters house-level calculations only through an explicit adapter (0.11: climate → `ClimateRecorder`).
 
 ### Adding an integration
 

@@ -205,3 +205,28 @@
     .home .tiles { grid-template-columns: minmax(0, 1fr); }
     .home .est-grid { grid-template-columns: minmax(0, 1fr); }
 }
+
+/* ---------- generated device page /dispozitive/{key} (0.11): the density of Acasă, four cards a row on a PC ---------- */
+.home.dev-page .dev-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; margin-bottom: 12px; }
+.home.dev-page .dev-head h1 { font-size: 1.5rem; font-weight: 600; margin: 0 6px 0 0; }
+.home.dev-page .dev-actions { margin-left: auto; display: inline-flex; flex-wrap: wrap; gap: 6px; }
+.home .ent-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 12px; margin-bottom: 16px; }
+@media (min-width: 1400px) { .home .ent-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); } }
+.home .ent-card { display: flex; flex-direction: column; gap: 2px; }
+.home .ent-card .val { font-size: 26px; }
+.home .ent-card .val .badge { font-size: 15px; font-weight: 600; }
+.home .ent-card.unavail { opacity: .6; }
+.home svg.spark { width: 100%; height: 40px; display: block; margin-top: 4px; }
+.home svg.spark polyline { fill: none; stroke: var(--c-electric); stroke-width: 1.5; vector-effect: non-scaling-stroke; stroke-linejoin: round; }
+/* Charts two a row on a PC (the axis labels stay ~12 px: the drawings are 900 units wide), one under 1200 px; a counter's
+   30 days take the whole row. */
+.home .ent-charts { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(820px, 100%), 1fr)); gap: 16px; margin-bottom: 16px; }
+.home .ent-charts .wide { grid-column: 1 / -1; }
+.home .ent-charts svg.hist-bars { max-width: none; }
+.home .ent-card .read-error { font-size: 12px; color: var(--ink-3); }
+.home .ent-diag summary { cursor: pointer; }
+.home .ent-diag .table { color: var(--ink); }
+@media (max-width: 640px) {
+    .home .ent-grid, .home .ent-charts { grid-template-columns: minmax(0, 1fr); }
+    .home.dev-page .dev-actions { margin-left: 0; }
+}

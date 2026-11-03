@@ -1,0 +1,58 @@
+@using KasaMonitor.Core.Reports
+@using KasaMonitor.Workers.Mqtt
+@using KasaMonitor.Web.Ui
+
+@* /history „Alte dispozitive” (0.11): the generic devices' entities ticked „Istoric” — a measurement as a line with its min–max
+   band, a counter as bars of what it counted, an on/off as the minutes on per bar. Their power and energy never enter the
+   house totals; the climate of a generic sensor is in „Climă”, not repeated here. *@
+<section class="hcard hist-sec" id="alte" aria-labelledby="h-alte">
+    <div class="card-h">
+        <h2 id="h-alte">Alte dispozitive <a class="card-link" href="@DevicePages.Href(KasaMonitor.Core.Devices.IntegrationKeys.Mqtt)" title="Dispozitivele MQTT" aria-label="Dispozitivele MQTT">→</a></h2>
+        <div class="hist-tools"><CsvLink Href="@CsvHref" /></div>
+    </div>
+    @{
+        var kind = Period.Kind;
+        var labels = Data.Buckets.Select(b => ReportFormat.BucketLabel(b, kind)).ToList();
+        var titles = Data.Buckets.Select(b => ReportFormat.BucketRow(b, kind)).ToList();
+    }
+    <div class="hist-generic">
+        @foreach (var e in Data.Entities)
+        {
+            <div class="hist-generic-item" data-entity="@e.DeviceKey">
+                <h3 class="mini-h"><a class="plain" href="@DevicePages.Device(e.DeviceKey)">@e.Device</a> · @e.Entity
+                    <span class="muted">@(e.Kind switch
+                    {
+                        GenericHistoryKind.Counter => $"Σ {HeatingFormat.Number(e.Period.Delta, e.Decimals)} {e.Unit}",
+                        GenericHistoryKind.Binary => $"pornit {UiFormat.DurationRo(e.Period.OnSeconds)}",
+                        _ => $"medie {HeatingFormat.Number(e.Period.Avg, e.Decimals)} {e.Unit} (min {HeatingFormat.Number(e.Period.Min, e.Decimals)}, max {HeatingFormat.Number(e.Period.Max, e.Decimals)})",
+                    })</span></h3>
+                @switch (e.Kind)
+                {
+                    case GenericHistoryKind.Counter:
+                        <HistoryBars Labels="labels" Titles="titles" W="900" H="170" Unit="@(e.Unit ?? "")" Format="@(v => HeatingFormat.Number(v, e.Decimals))"
+                                     AriaLabel="@($"{e.Device} {e.Entity} pe perioadă")"
+                                     Series="@(new[] { new HistoryBars.BarSeries(e.Entity, "k-plug", e.Buckets.Select(b => b.Delta).ToList()) })" />
+                        break;
+                    case GenericHistoryKind.Binary:
+                        <HistoryBars Labels="labels" Titles="titles" W="900" H="140" Unit="min" Format="@(v => HeatingFormat.Number(v, 0))"
+                                     AriaLabel="@($"{e.Device} {e.Entity}: minute pornit pe perioadă")"
+                                     Series="@(new[] { new HistoryBars.BarSeries("pornit", "k-nilm", e.Buckets.Select(b => b.OnSeconds / 60).ToList()) })" />
+                        break;
+                    default:
+                        <HistoryLines Labels="labels" Titles="titles" W="900" H="170" Unit="@(e.Unit ?? "")" Decimals="e.Decimals" AriaLabel="@($"{e.Device} {e.Entity}")"
+                                      Empty="Fără valori în perioada aleasă."
+                                      Series="@(new[] { new HistoryLines.LineSeries(e.Entity, "ln-p1", e.Buckets.Select(b => b.Avg).ToList(), e.Buckets.Select(b => b.Min).ToList(), e.Buckets.Select(b => b.Max).ToList()) })" />
+                        break;
+                }
+            </div>
+        }
+    </div>
+</section>
+
+@code {
+    [Parameter, EditorRequired] public HistoryGeneric Data { get; set; } = default!;
+    [Parameter, EditorRequired] public ReportPeriod Period { get; set; }
+    [Parameter] public bool Compare { get; set; }
+    [Parameter] public DateTimeOffset Now { get; set; }
+    [Parameter] public string? CsvHref { get; set; }
+}

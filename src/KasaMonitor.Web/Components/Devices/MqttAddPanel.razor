@@ -1,0 +1,93 @@
+@using KasaMonitor.Workers.Mqtt
+@using KasaMonitor.Web.Ui
+@using KasaMonitor.Core.Devices
+@using KasaMonitor.Core.Devices.Generic
+@using KasaMonitor.Core.Mqtt
+@inject MqttState Mqtt
+@inject GenericRecorder Recorder
+@inject MqttDiscoveryWorker Worker
+@implements IDisposable
+
+@* „+ Adaugă” for MQTT (0.11): the devices the broker describes (retained discovery) and not yet added, each with what it
+   would be (the automatic category) and „Adaugă”; nothing is stored before. „Cere republicarea” publishes the birth
+   message so the devices send their description again. *@
+<div class="d-flex flex-wrap align-items-center gap-2 small mb-2">
+    <span class="fw-semibold">Broker:</span>
+    @if (Mqtt.Connected)
+    {
+        <span class="badge text-bg-success">conectat</span><span>@Mqtt.Broker</span>
+    }
+    else
+    {
+        <span class="badge text-bg-secondary">neconectat</span><span class="text-secondary">@(Mqtt.Status ?? "se conectează…")</span>
+    }
+    <a href="@Integration.SettingsUrl">Setări → MQTT</a>
+    <button class="btn btn-outline-secondary btn-sm py-0 ms-auto" @onclick="RepublishAsync" disabled="@(!Mqtt.Connected)"
+            title="Publică „online” pe <prefix>/status: dispozitivele își retrimit descrierea"><i class="bi bi-arrow-repeat me-1"></i>Cere republicarea</button>
+</div>
+@if (_pending.Count == 0)
+{
+    <div class="small text-secondary">@(Mqtt.Connected ? "Niciun dispozitiv nou descris pe broker (Zigbee2MQTT cu homeassistant activat, ESPHome cu MQTT)." : "Lista apare după conectarea la broker.")</div>
+}
+else
+{
+    <table class="table table-sm align-middle mb-1 small mqtt-discovered">
+        <thead><tr><th scope="col">Nume</th><th scope="col">Producător · model</th><th scope="col">Ar fi</th><th scope="col">Entități</th><th scope="col"><span class="visually-hidden">Acțiuni</span></th></tr></thead>
+        <tbody>
+            @foreach (var d in _pending)
+            {
+                var c = GenericClassifier.Classify(d.Entities.Select(e => e.Spec.Describe("dev:0")).ToList());
+                <tr data-external="@d.ExternalId">
+                    <td>@d.Name</td>
+                    <td>@string.Join(" · ", new[] { d.Info?.Manufacturer, d.Info?.Model }.Where(x => !string.IsNullOrWhiteSpace(x)))</td>
+                    <td><i class="bi @DeviceCategories.Icon(c.Category) me-1 text-secondary" aria-hidden="true"></i>@c.Label</td>
+                    <td>@UiFormat.Count(d.Entities.Count, "entitate", "entități")@(d.Entities.Count(e => e.Spec.Problem is not null) is > 0 and var bad ? $" ({bad} cu problemă)" : "")</td>
+                    <td class="text-end"><button class="btn btn-outline-success btn-sm" @onclick="() => AddAsync(d)"><i class="bi bi-plus-lg me-1"></i>Adaugă</button></td>
+                </tr>
+            }
+        </tbody>
+    </table>
+}
+@if (_message is not null) { <div class="small mt-1" role="status">@_message</div> }
+
+@code {
+    [Parameter, EditorRequired] public IntegrationInfo Integration { get; set; } = default!;
+    [Parameter] public EventCallback OnChanged { get; set; }
+
+    private IReadOnlyList<MqttDeviceSnapshot> _pending = Array.Empty<MqttDeviceSnapshot>();
+    private string? _message;
+
+    protected override async Task OnInitializedAsync()
+    {
+        Mqtt.Changed += OnStateChanged;
+        await Recorder.LoadAsync(CancellationToken.None);
+        Refresh();
+    }
+
+    private void OnStateChanged() => InvokeAsync(() => { Refresh(); StateHasChanged(); });
+
+    private void Refresh() => _pending = MqttDiscovered.NotAdded(Mqtt, Recorder, DateTimeOffset.UtcNow);
+
+    private async Task AddAsync(MqttDeviceSnapshot d)
+    {
+        try
+        {
+            var device = await Worker.AddAsync(d.ExternalId, CancellationToken.None);
+            _message = $"Adăugat: {device.Name} ({DeviceCategories.Name(device.Category)}).";
+            Refresh();
+            await OnChanged.InvokeAsync();
+        }
+        catch (Exception ex)
+        {
+            _message = $"„{d.Name}” nu a putut fi adăugat: {ex.Message}";
+        }
+    }
+
+    private async Task RepublishAsync()
+    {
+        try { _message = Mqtt.RequestRepublish is { } r ? await r(CancellationToken.None) : "Nu e conectat la broker."; }
+        catch (Exception ex) { _message = "Nu s-a putut publica: " + ex.Message; }
+    }
+
+    public void Dispose() => Mqtt.Changed -= OnStateChanged;
+}

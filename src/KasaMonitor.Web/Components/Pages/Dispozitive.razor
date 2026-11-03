@@ -10,6 +10,9 @@
 @inject ClimateState Climate
 @inject IClimateSettingsService ClimateSettings
 @inject ClimateWorker ClimateWorker
+@inject KasaMonitor.Workers.Mqtt.MqttState Mqtt
+@inject KasaMonitor.Workers.Mqtt.GenericRecorder GenericRecorder
+@inject KasaMonitor.Workers.Mqtt.MqttDiscoveryWorker MqttWorker
 @inject IServiceProvider Services
 @implements IDisposable
 
@@ -69,7 +72,7 @@
     </div>
 }
 
-@if (_discovered.Count > 0 || _goveeNew.Count > 0)
+@if (_discovered.Count > 0 || _goveeNew.Count > 0 || _mqttNew.Count > 0)
 {
     <div class="card mb-3">
         <div class="card-header d-flex flex-wrap gap-3 align-items-center small">
@@ -100,6 +103,18 @@
                                 }
                             </td>
                             <td class="text-end"><button class="btn btn-outline-success btn-sm" @onclick="() => AddDiscoveredAsync(i)" title="Adaugă în listă"><i class="bi bi-plus-lg me-1"></i>Adaugă</button></td>
+                        </tr>
+                    }
+                    @foreach (var m in _mqttNew)
+                    {
+                        var c = KasaMonitor.Core.Devices.Generic.GenericClassifier.Classify(m.Entities.Select(e => e.Spec.Describe("dev:0")).ToList());
+                        <tr data-external="@m.ExternalId">
+                            <td>MQTT@(m.Info?.Manufacturer is { } mf ? " · " + mf : "")</td>
+                            <td>@m.Name</td>
+                            <td><span class="badge text-bg-light border">@(m.Info?.Model ?? "—")</span> <span class="small text-secondary">@c.Label · @UiFormat.Count(m.Entities.Count, "entitate", "entități")</span></td>
+                            <td><span class="text-secondary">broker MQTT</span></td>
+                            <td><span class="badge text-bg-primary">descris pe broker</span></td>
+                            <td class="text-end"><button class="btn btn-outline-success btn-sm" @onclick="() => AddMqttAsync(m)" title="Adaugă: valorile lui se salvează și apare în listă"><i class="bi bi-plus-lg me-1"></i>Adaugă</button></td>
                         </tr>
                     }
                     @foreach (var g in _goveeNew)
@@ -193,6 +208,10 @@ else
                                 <span class="fw-semibold">@r.Name</span>
                                 @if (r.NameIsCustom) { <span class="badge text-bg-light border ms-1" title="Nume setat aici, nu cel din dispozitiv">personalizat</span> }
                                 @if (r.LinkedTo is { } linked) { <div class="small text-secondary">@linked</div> }
+                                @if (r.Capabilities is { Count: > 0 } caps)
+                                {
+                                    <div class="device-caps">@foreach (var cap in caps) { <span class="badge text-bg-light border me-1">+ @cap</span> }</div>
+                                }
                             </td>
                             <td class="text-nowrap">@(integration?.Name ?? r.Integration)</td>
                             <td class="text-nowrap"><i class="bi @DeviceCategories.Icon(r.Category) me-1 text-secondary" aria-hidden="true"></i>@DeviceCategories.Name(r.Category)</td>
@@ -212,7 +231,8 @@ else
                             <td class="text-end text-nowrap">
                                 <button type="button" class="btn btn-outline-secondary btn-sm" @onclick="() => Toggle(r.Key)" aria-expanded="@(open ? "true" : "false")" aria-controls="@rowId"
                                         title="Detalii și configurare"><i class="bi @(open ? "bi-chevron-up" : "bi-chevron-down")"></i><span class="visually-hidden">Detalii @r.Name</span></button>
-                                <a class="btn btn-outline-secondary btn-sm" href="@r.DataUrl" title="Datele (istoric, pagina dispozitivului)"><i class="bi bi-bar-chart"></i><span class="visually-hidden">Date @r.Name</span></a>
+                                <a class="btn btn-outline-secondary btn-sm" href="@DevicePages.Device(r.Key)" title="Toate valorile dispozitivului"><i class="bi bi-grid-3x3-gap"></i><span class="visually-hidden">Toate valorile @r.Name</span></a>
+                                <a class="btn btn-outline-secondary btn-sm" href="@r.DataUrl" title="Datele (istoric, pagina integrării)"><i class="bi bi-bar-chart"></i><span class="visually-hidden">Date @r.Name</span></a>
                                 @if (integration is not null)
                                 {
                                     <a class="btn btn-outline-secondary btn-sm" href="@integration.SettingsUrl" title="Setări → @integration.Name"><i class="bi bi-gear"></i><span class="visually-hidden">Setări @integration.Name</span></a>
@@ -244,21 +264,32 @@ else
                         {
                             <tr @key="@(r.Key + ":detail")" class="device-detail" id="@rowId">
                                 <td colspan="8">
-                                    @switch (r.Category)
+                                    @* R1 (0.11): the editor is chosen by the owner of the key (its prefix), never by the category. *@
+                                    @switch (DeviceRow.OwnerOf(r.Key))
                                     {
-                                        case DeviceCategory.Plug or DeviceCategory.Meter when Guid.TryParse(r.Key[DeviceRow.PlugPrefix.Length..], out var plugId):
+                                        case DeviceRowOwner.Plug when DeviceRow.TryGuid(r.Key, DeviceRow.PlugPrefix, out var plugId):
                                             <PlugDeviceEditor PlugId="plugId" Archived="r.IsArchived" OnChanged="ReloadAsync" />
                                             break;
-                                        case DeviceCategory.ClimateSensor or DeviceCategory.Weather when Guid.TryParse(r.Key[DeviceRow.ClimatePrefix.Length..], out var sensorId):
+                                        case DeviceRowOwner.Climate when DeviceRow.TryGuid(r.Key, DeviceRow.ClimatePrefix, out var sensorId):
                                             <ClimateSensorEditor SensorId="sensorId" OnChanged="ReloadAsync" />
                                             break;
-                                        case DeviceCategory.Appliance:
-                                            <MieleDeviceEditor DeviceId="@r.Key[DeviceRow.MielePrefix.Length..]" Archived="r.IsArchived" OnChanged="ReloadAsync" />
+                                        case DeviceRowOwner.Miele when DeviceRow.TryMiele(r.Key, out var mieleId):
+                                            <MieleDeviceEditor DeviceId="@mieleId" Archived="r.IsArchived" OnChanged="ReloadAsync" />
                                             break;
-                                        case DeviceCategory.Boiler:
+                                        case DeviceRowOwner.Heating:
                                             <HeatingDeviceEditor Row="r" />
                                             break;
+                                        case DeviceRowOwner.Generic when DeviceRow.TryGeneric(r.Key, out var genericId):
+                                            <GenericDeviceEditor DeviceId="genericId" OnChanged="ReloadAsync" />
+                                            break;
+                                        default:
+                                            <span class="text-danger small">Dispozitiv necunoscut: @r.Key</span>
+                                            break;
                                     }
+                                    <details class="mt-2 entity-prefs-block">
+                                        <summary class="small fw-semibold">Valorile afișate pe pagina dispozitivului</summary>
+                                        <div class="mt-1"><EntityPrefsEditor DeviceKey="@r.Key" ShowMetrics="@(DeviceRow.OwnerOf(r.Key) == DeviceRowOwner.Generic)" /></div>
+                                    </details>
                                 </td>
                             </tr>
                         }
@@ -283,6 +314,7 @@ else
     private readonly Dictionary<string, IntegrationStatus> _status = new();
     private IReadOnlyList<DiscoveryResultItem> _discovered = Array.Empty<DiscoveryResultItem>();
     private IReadOnlyList<GoveeDevice> _goveeNew = Array.Empty<GoveeDevice>();
+    private IReadOnlyList<KasaMonitor.Core.Mqtt.MqttDeviceSnapshot> _mqttNew = Array.Empty<KasaMonitor.Core.Mqtt.MqttDeviceSnapshot>();
     private bool _loaded;
     private DeviceCategory? _cat;
     private string _firma = "";
@@ -378,6 +410,8 @@ else
             }
             _discovered = Discovery.LastScan?.Items.Where(i => i.PlugId is null).OrderBy(i => i.Plug.Info.Alias, StringComparer.CurrentCultureIgnoreCase).ToList()
                           ?? (IReadOnlyList<DiscoveryResultItem>)Array.Empty<DiscoveryResultItem>();
+            await GenericRecorder.LoadAsync(CancellationToken.None);
+            _mqttNew = KasaMonitor.Workers.Mqtt.MqttDiscovered.NotAdded(Mqtt, GenericRecorder, now);
             var climate = await ClimateSettings.GetAsync(CancellationToken.None);
             _goveeNew = climate.HasGoveeKey && Climate.GoveeDevices is { } devices
                 ? devices.Where(d => d.IsThermometer && !climate.GoveeHomeDevices.Contains(d.Device)).ToList()
@@ -452,6 +486,20 @@ else
         catch (Exception ex)
         {
             _message = $"„{item.Plug.Info.Alias}” nu a putut fi adăugată: {ex.Message}";
+        }
+        await ReloadAsync(withStates: true);
+    }
+
+    private async Task AddMqttAsync(KasaMonitor.Core.Mqtt.MqttDeviceSnapshot m)
+    {
+        try
+        {
+            var device = await MqttWorker.AddAsync(m.ExternalId, CancellationToken.None);
+            _message = $"Adăugat: {device.Name} ({DeviceCategories.Name(device.Category)}).";
+        }
+        catch (Exception ex)
+        {
+            _message = $"„{m.Name}” nu a putut fi adăugat: {ex.Message}";
         }
         await ReloadAsync(withStates: true);
     }

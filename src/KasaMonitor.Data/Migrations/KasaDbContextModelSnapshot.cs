@@ -224,6 +224,267 @@ namespace KasaMonitor.Data.Migrations
                     b.ToTable("DailyEnergy", (string)null);
                 });
 
+            modelBuilder.Entity("KasaMonitor.Data.Entities.EntityPrefEntity", b =>
+                {
+                    b.Property<string>("Key")
+                        .HasMaxLength(450)
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("ClassOverride")
+                        .HasMaxLength(32)
+                        .HasColumnType("TEXT");
+
+                    b.Property<bool>("CommandsEnabled")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<bool?>("InHistory")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<bool?>("InMetrics")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("NameOverride")
+                        .HasMaxLength(200)
+                        .HasColumnType("TEXT");
+
+                    b.Property<int?>("PrecisionOverride")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("UnitOverride")
+                        .HasMaxLength(32)
+                        .HasColumnType("TEXT");
+
+                    b.Property<bool?>("Visible")
+                        .HasColumnType("INTEGER");
+
+                    b.HasKey("Key");
+
+                    b.ToTable("EntityPrefs", (string)null);
+                });
+
+            modelBuilder.Entity("KasaMonitor.Data.Entities.GenericDeviceEntity", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("AutoCategory")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("CategoryOverride")
+                        .HasMaxLength(32)
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("ExternalId")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("Firmware")
+                        .HasMaxLength(200)
+                        .HasColumnType("TEXT");
+
+                    b.Property<long>("FirstSeenUtc")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("Integration")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("TEXT");
+
+                    b.Property<bool>("IsArchived")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<long?>("LastSeenUtc")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("Manufacturer")
+                        .HasMaxLength(200)
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("Model")
+                        .HasMaxLength(200)
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("TEXT");
+
+                    b.Property<bool>("NameIsCustom")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("Room")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("ViaDevice")
+                        .HasMaxLength(200)
+                        .HasColumnType("TEXT");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("Integration", "ExternalId")
+                        .IsUnique();
+
+                    b.ToTable("GenericDevices", (string)null);
+                });
+
+            modelBuilder.Entity("KasaMonitor.Data.Entities.GenericEntityEntity", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("Category")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("Class")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("ClassRaw")
+                        .HasMaxLength(64)
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("Component")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("DataType")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("TEXT");
+
+                    b.Property<long>("DeviceId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("DiscoveryJson")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("ExternalId")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("Integration")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("TEXT");
+
+                    b.Property<bool>("IsRemoved")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("Kind")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("TEXT");
+
+                    b.Property<double?>("LastNumber")
+                        .HasColumnType("REAL");
+
+                    b.Property<string>("LastText")
+                        .HasMaxLength(255)
+                        .HasColumnType("TEXT");
+
+                    b.Property<long?>("LastTs")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("TEXT");
+
+                    b.Property<int?>("Precision")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("Problem")
+                        .HasMaxLength(500)
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("StateClass")
+                        .HasMaxLength(32)
+                        .HasColumnType("TEXT");
+
+                    b.Property<bool>("StateClassInferred")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("Unit")
+                        .HasMaxLength(32)
+                        .HasColumnType("TEXT");
+
+                    b.Property<bool>("Writable")
+                        .HasColumnType("INTEGER");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("DeviceId");
+
+                    b.HasIndex("Integration", "ExternalId")
+                        .IsUnique();
+
+                    b.ToTable("GenericEntities", (string)null);
+                });
+
+            modelBuilder.Entity("KasaMonitor.Data.Entities.GenericHourlyEntity", b =>
+                {
+                    b.Property<long>("EntityId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<long>("HourTs")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<double?>("Avg")
+                        .HasColumnType("REAL");
+
+                    b.Property<int>("Count")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<double?>("Delta")
+                        .HasColumnType("REAL");
+
+                    b.Property<double?>("Last")
+                        .HasColumnType("REAL");
+
+                    b.Property<double?>("Max")
+                        .HasColumnType("REAL");
+
+                    b.Property<double?>("Min")
+                        .HasColumnType("REAL");
+
+                    b.HasKey("EntityId", "HourTs");
+
+                    b.ToTable("GenericHourly", (string)null);
+                });
+
+            modelBuilder.Entity("KasaMonitor.Data.Entities.GenericReadingEntity", b =>
+                {
+                    b.Property<long>("EntityId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<long>("Ts")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("Text")
+                        .HasMaxLength(255)
+                        .HasColumnType("TEXT");
+
+                    b.Property<double?>("Value")
+                        .HasColumnType("REAL");
+
+                    b.HasKey("EntityId", "Ts");
+
+                    b.ToTable("GenericReadings", (string)null);
+                });
+
             modelBuilder.Entity("KasaMonitor.Data.Entities.HeatingDeviceEntity", b =>
                 {
                     b.Property<Guid>("Id")

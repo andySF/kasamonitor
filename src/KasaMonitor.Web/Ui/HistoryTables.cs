@@ -22,8 +22,10 @@ public static class HistorySections
     public const string DegreeDays = "clima-grade-zile";
     public const string Costs = "costuri";
     public const string Events = "evenimente";
+    /// <summary>0.11: the generic devices („Alte dispozitive”).</summary>
+    public const string Generic = "alte-dispozitive";
 
-    public static readonly IReadOnlyList<string> All = new[] { Electricity, Gas, MieleCycles, MielePrograms, Consumers, Detected, Climate, DegreeDays, Costs, Events };
+    public static readonly IReadOnlyList<string> All = new[] { Electricity, Gas, MieleCycles, MielePrograms, Consumers, Detected, Climate, DegreeDays, Costs, Events, Generic };
 }
 
 /// <summary>
@@ -231,6 +233,36 @@ public static class HistoryTables
             }
         }
         return new HistoryTable(new[] { BucketHeader(kind), "Senzor", "Cameră", "T min °C", "T medie °C", "T max °C", "RH min %", "RH medie %", "RH max %", "Notă" },
+            rows, links, keys);
+    }
+
+    /// <summary>
+    /// „Alte dispozitive” (0.11): one row per bar and entity — min / mean / max of a measurement, Σ of a counter, the time on
+    /// of an on/off — in the entity's unit and decimals.
+    /// </summary>
+    public static HistoryTable Generic(KasaMonitor.Workers.Mqtt.HistoryGeneric g, ReportGranularity kind, DateTimeOffset nowUtc, bool compare)
+    {
+        var rows = new List<IReadOnlyList<string>>();
+        var links = new List<string?>();
+        var keys = new List<string>();
+        foreach (var i in Elapsed(g.Buckets, nowUtc))
+        {
+            foreach (var e in g.Entities)
+            {
+                var st = e.Buckets[i];
+                if (st.Hours == 0) continue;
+                var unit = e.Unit ?? "";
+                rows.Add(e.Kind switch
+                {
+                    KasaMonitor.Workers.Mqtt.GenericHistoryKind.Counter => new[] { ReportFormat.BucketRow(g.Buckets[i], kind), e.Device, e.Entity, unit, "", "", "", Num(st.Delta, e.Decimals), "", InProgress(g.Buckets[i], nowUtc) },
+                    KasaMonitor.Workers.Mqtt.GenericHistoryKind.Binary => new[] { ReportFormat.BucketRow(g.Buckets[i], kind), e.Device, e.Entity, "", "", "", "", "", Num(st.OnSeconds / 60, 0), InProgress(g.Buckets[i], nowUtc) },
+                    _ => new[] { ReportFormat.BucketRow(g.Buckets[i], kind), e.Device, e.Entity, unit, Num(st.Min, e.Decimals), Num(st.Avg, e.Decimals), Num(st.Max, e.Decimals), "", "", InProgress(g.Buckets[i], nowUtc) },
+                });
+                links.Add(DrillLink(g.Buckets[i], kind, compare, null));
+                keys.Add(IsoKey(g.Buckets[i], kind));
+            }
+        }
+        return new HistoryTable(new[] { BucketHeader(kind), "Dispozitiv", "Valoare", "Unitate", "Min", "Medie", "Max", "Σ (contor)", "Pornit (min)", "Notă" },
             rows, links, keys);
     }
 

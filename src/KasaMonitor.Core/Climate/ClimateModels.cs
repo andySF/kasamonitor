@@ -11,8 +11,13 @@ public static class ClimateSources
     public const string Shelly = "shelly";
     /// <summary>The outdoor temperature of Open-Meteo (free, no key) for the configured latitude/longitude.</summary>
     public const string OpenMeteo = "openmeteo";
+    /// <summary>
+    /// R4 (0.11): the temperature / humidity / battery of a generic MQTT device, routed here by its adapter. The same string
+    /// as the integration key: the device catalog uses a sensor's source as its integration.
+    /// </summary>
+    public const string Mqtt = Devices.IntegrationKeys.Mqtt;
 
-    public static readonly IReadOnlyList<string> All = new[] { Viessmann, Govee, Shelly, OpenMeteo };
+    public static readonly IReadOnlyList<string> All = new[] { Viessmann, Govee, Shelly, OpenMeteo, Mqtt };
 
     /// <summary>Romanian display name of a source.</summary>
     public static string DisplayName(string source) => source switch
@@ -21,6 +26,7 @@ public static class ClimateSources
         Govee => "Govee",
         Shelly => "Shelly",
         OpenMeteo => "Open-Meteo",
+        Mqtt => "MQTT",
         _ => source,
     };
 }
@@ -59,7 +65,8 @@ public sealed record ClimateSample(
     bool Online = true,
     string DefaultRoom = "",
     bool DefaultOutdoor = false,
-    bool BatteryPowered = false);
+    bool BatteryPowered = false,
+    TimeSpan? ExpectedInterval = null);
 
 /// <summary>
 /// When a reading is stored: the first one, a temperature change of at least 0.1 °C, a humidity change of at least 1 %
@@ -113,13 +120,30 @@ public static class ClimateFreshness
     /// </summary>
     public static readonly TimeSpan ShellyBatteryInterval = TimeSpan.FromHours(2);
 
-    /// <summary>The interval a source delivers at; the boiler's is its poll interval (default 120 s).</summary>
-    public static TimeSpan Expected(string source, bool batteryPowered, int viessmannPollSeconds) => source switch
+    /// <summary>
+    /// R3 (0.11): a generic MQTT sensor reports on change (a stable temperature can stay silent for hours), so without
+    /// <c>expire_after</c> it is expected once an hour; its „online” comes from its availability topic.
+    /// </summary>
+    public static readonly TimeSpan MqttDefaultInterval = TimeSpan.FromHours(1);
+
+    /// <summary>
+    /// The expected interval of an MQTT sensor: half its <c>expire_after</c> (fresh up to the expiry Home Assistant uses,
+    /// at least 1 minute), else <see cref="MqttDefaultInterval"/>.
+    /// </summary>
+    public static TimeSpan MqttInterval(int? expireAfterSeconds) =>
+        expireAfterSeconds is { } s && s > 0 ? TimeSpan.FromSeconds(Math.Max(60, s / 2.0)) : MqttDefaultInterval;
+
+    /// <summary>
+    /// The interval a source delivers at; the boiler's is its poll interval (default 120 s); an MQTT sensor's comes with
+    /// its samples (<paramref name="sourceInterval"/>, from <see cref="MqttInterval"/>).
+    /// </summary>
+    public static TimeSpan Expected(string source, bool batteryPowered, int viessmannPollSeconds, TimeSpan? sourceInterval = null) => source switch
     {
         ClimateSources.Viessmann => TimeSpan.FromSeconds(Math.Max(60, viessmannPollSeconds)),
         ClimateSources.Govee => GoveeInterval,
         ClimateSources.Shelly => batteryPowered ? ShellyBatteryInterval : ShellyInterval,
         ClimateSources.OpenMeteo => OpenMeteoInterval,
+        ClimateSources.Mqtt => sourceInterval ?? MqttDefaultInterval,
         _ => TimeSpan.FromMinutes(10),
     };
 

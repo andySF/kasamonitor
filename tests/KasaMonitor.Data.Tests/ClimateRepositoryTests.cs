@@ -39,7 +39,8 @@ public class ClimateRepositoryTests
         ctx.GetService<Microsoft.EntityFrameworkCore.Migrations.IMigrator>().Migrate("20261102150000_AddPlugAppliance");
         var before = ctx.Database.SqlQueryRaw<string>("SELECT name AS Value FROM sqlite_master WHERE type='table' ORDER BY name").ToList();
 
-        ctx.Database.Migrate();
+        // Up to AddClimateDaily only (later migrations add their own tables).
+        ctx.GetService<Microsoft.EntityFrameworkCore.Migrations.IMigrator>().Migrate("20261102155409_AddClimateDaily");
 
         var after = ctx.Database.SqlQueryRaw<string>("SELECT name AS Value FROM sqlite_master WHERE type='table' ORDER BY name").ToList();
         after.Except(before).Should().BeEquivalentTo("ClimateDaily");

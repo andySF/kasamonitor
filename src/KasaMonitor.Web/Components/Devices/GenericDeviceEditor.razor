@@ -1,0 +1,111 @@
+@using KasaMonitor.Workers.Mqtt
+@using KasaMonitor.Web.Ui
+@using KasaMonitor.Core.Abstractions
+@using KasaMonitor.Core.Devices
+@using KasaMonitor.Core.Devices.Generic
+@inject GenericRecorder Recorder
+
+@* The expanded row of a generic device (0.11): name (empty = the device's own), room, category (automatic or one of the
+   allowed overrides: never „Priză”, which needs a dedicated adapter), what it said about itself and the raw discovery
+   payloads (diagnostic). *@
+@if (_device is not { } d)
+{
+    <span class="text-secondary small">Dispozitivul nu mai există.</span>
+}
+else
+{
+    var c = Recorder.Classification(d.Id);
+    <div class="row g-2 align-items-end small">
+        <div class="col-md-4">
+            <label class="form-label mb-0" for="gName-@d.Id">Nume</label>
+            <input class="form-control form-control-sm" id="gName-@d.Id" @bind="_name" placeholder="numele dat de dispozitiv" />
+        </div>
+        <div class="col-md-3">
+            <label class="form-label mb-0" for="gRoom-@d.Id">Cameră</label>
+            <input class="form-control form-control-sm" id="gRoom-@d.Id" @bind="_room" />
+        </div>
+        <div class="col-md-3">
+            <label class="form-label mb-0" for="gCat-@d.Id">Categorie</label>
+            <select class="form-select form-select-sm" id="gCat-@d.Id" @bind="_category">
+                <option value="">automat (@DeviceCategories.Name(d.AutoCategory))</option>
+                @foreach (var cat in GenericClassifier.AllowedOverrides)
+                {
+                    <option value="@DeviceCategories.Slug(cat)">@DeviceCategories.Name(cat)</option>
+                }
+            </select>
+        </div>
+        <div class="col-md-2">
+            <button class="btn btn-outline-primary btn-sm" @onclick="SaveAsync"><i class="bi bi-save me-1"></i>Salvează dispozitivul</button>
+        </div>
+    </div>
+    <div class="small text-secondary mt-2">
+        @Integrations.NameOf(d.Integration) · <code>@d.ExternalId</code>
+        @if (d.Manufacturer is { } mf) { <span> · @mf</span> }
+        @if (d.Model is { } model) { <span> · @model</span> }
+        @if (d.Firmware is { } fw) { <span> · firmware @fw</span> }
+        · @c.Label@(c.Capabilities.Count > 0 ? " (+ " + string.Join(", ", c.Capabilities) + ")" : "")
+        @if (c.TemperatureKey is not null) { <span> · temperatura apare și în <a href="/clima">Climă</a></span> }
+        · doar citire (fără comenzi din KasaMonitor); puterea și energia nu intră în totalurile casei.
+    </div>
+    @if (_message is not null) { <div class="small text-success mt-1" role="status">@_message</div> }
+    @if (_error is not null) { <div class="small text-danger mt-1">@_error</div> }
+    <details class="mt-2 small">
+        <summary>Descrierea primită (discovery, @_entities.Count entități)</summary>
+        <ul class="mb-0 mt-1 generic-discovery">
+            @foreach (var e in _entities)
+            {
+                <li>
+                    <b>@e.Description.Name</b> <span class="text-secondary">(@e.Component, <code>@e.ExternalId</code>@(e.IsRemoved ? ", eliminată de dispozitiv" : ""))</span>
+                    @if (e.Description.Problem is { } p) { <span class="text-warning-emphasis"> — @p</span> }
+                    <pre class="mb-1 small text-wrap"><code>@e.DiscoveryJson</code></pre>
+                </li>
+            }
+        </ul>
+    </details>
+}
+
+@code {
+    [Parameter, EditorRequired] public long DeviceId { get; set; }
+    [Parameter] public EventCallback OnChanged { get; set; }
+
+    private GenericDevice? _device;
+    private IReadOnlyList<GenericEntityRow> _entities = Array.Empty<GenericEntityRow>();
+    private string _name = "";
+    private string _room = "";
+    private string _category = "";
+    private string? _message;
+    private string? _error;
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (_device?.Id == DeviceId) return;
+        await Recorder.LoadAsync(CancellationToken.None);
+        Load();
+    }
+
+    private void Load()
+    {
+        _device = Recorder.Device(DeviceId);
+        _entities = Recorder.EntitiesOf(DeviceId);
+        _name = _device is { NameIsCustom: true } ? _device.Name : "";
+        _room = _device?.Room ?? "";
+        _category = _device?.CategoryOverride is { } c ? DeviceCategories.Slug(c) : "";
+    }
+
+    private async Task SaveAsync()
+    {
+        _message = null;
+        _error = null;
+        try
+        {
+            var d = await Recorder.UpdateDeviceAsync(DeviceId, _name, _room, DeviceCategories.FromSlug(_category), CancellationToken.None);
+            Load();
+            _message = $"Salvat: {d.Name}, {DeviceCategories.Name(d.Category)}.";
+            await OnChanged.InvokeAsync();
+        }
+        catch (Exception ex) when (ex is ArgumentException or KeyNotFoundException)
+        {
+            _error = ex.Message;
+        }
+    }
+}

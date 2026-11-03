@@ -1,0 +1,7 @@
+{"source": "din documentație (Zigbee2MQTT / Home Assistant), neverificat pe hardware", "topic": "zigbee2mqtt/bridge/state", "retain": true, "payload": {"state": "online"}}
+{"source": "din documentație (Zigbee2MQTT / Home Assistant), neverificat pe hardware", "topic": "zigbee2mqtt/Dormitor senzor/availability", "retain": true, "payload": {"state": "online"}}
+{"source": "din documentație (Zigbee2MQTT / Home Assistant), neverificat pe hardware", "topic": "zigbee2mqtt/Priza birou/availability", "retain": true, "payload": {"state": "online"}}
+{"source": "din documentație (Zigbee2MQTT / Home Assistant), neverificat pe hardware", "topic": "zigbee2mqtt/Usa intrare/availability", "retain": true, "payload": {"state": "online"}}
+{"source": "din documentație (Zigbee2MQTT / Home Assistant), neverificat pe hardware", "topic": "zigbee2mqtt/Dormitor senzor", "retain": false, "payload": {"temperature": 21.37, "humidity": 48.2, "pressure": 1012.4, "battery": 91, "voltage": 2985, "linkquality": 120}}
+{"source": "din documentație (Zigbee2MQTT / Home Assistant), neverificat pe hardware", "topic": "zigbee2mqtt/Priza birou", "retain": false, "payload": {"state": "ON", "power": 63.4, "energy": 12.34, "voltage": 231.2, "current": 0.29, "linkquality": 80}}
+{"source": "din documentație (Zigbee2MQTT / Home Assistant), neverificat pe hardware", "topic": "zigbee2mqtt/Usa intrare", "retain": false, "payload": {"contact": false, "battery": 100, "linkquality": 90}}

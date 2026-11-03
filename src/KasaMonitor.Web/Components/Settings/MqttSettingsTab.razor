@@ -1,0 +1,206 @@
+@using KasaMonitor.Workers.Mqtt
+@using KasaMonitor.Web.Ui
+@using KasaMonitor.Core.Devices
+@inject IMqttSettingsService MqttSettings
+@inject MqttState Mqtt
+@inherits SettingsTabBase
+@implements IDisposable
+
+@* /settings/mqtt (0.11): the broker, the discovery prefix, „adaugă automat”, the retention of the raw generic readings and
+   the /metrics series limit. The password is never shown nor stored: it comes from a mounted file or the environment
+   (the Miele / Govee model). Below: the connection, what the broker describes and the problems (templates outside the
+   subset, payloads without unique_id). *@
+<IntegrationStatusLine Integration="@(Integrations.Get(IntegrationKeys.Mqtt)!)" />
+@if (_s is null)
+{
+    <p class="text-secondary"><span class="spinner-border spinner-border-sm me-2"></span>Se încarcă…</p>
+}
+else
+{
+    var now = DateTimeOffset.UtcNow;
+    <div class="row g-3">
+        <div class="col-xl-6">
+            <div class="card h-100">
+                <div class="card-header fw-semibold"><i class="bi bi-diagram-2 me-2"></i>Broker MQTT (Home Assistant Discovery)</div>
+                <div class="card-body">
+                    <div class="form-check form-switch mb-2">
+                        <input class="form-check-input" type="checkbox" role="switch" id="mEnabled" @bind="_enabled" />
+                        <label class="form-check-label" for="mEnabled">Citește dispozitivele de pe broker</label>
+                    </div>
+                    <div class="row g-2 mb-2">
+                        <div class="col-sm-8">
+                            <label class="form-label" for="mHost">Broker (nume sau adresă)</label>
+                            <input class="form-control" id="mHost" @bind="_host" placeholder="ex. 192.168.1.4" autocomplete="off" />
+                        </div>
+                        <div class="col-sm-4">
+                            <label class="form-label" for="mPort">Port</label>
+                            <input class="form-control" id="mPort" type="number" min="1" max="65535" @bind="_port" />
+                        </div>
+                    </div>
+                    <div class="row g-2 mb-2">
+                        <div class="col-sm-6">
+                            <label class="form-label" for="mUser">Utilizator</label>
+                            <input class="form-control" id="mUser" @bind="_user" placeholder="ex. kasamonitor" autocomplete="off" />
+                        </div>
+                        <div class="col-sm-6">
+                            <span class="form-label d-block">Parola</span>
+                            @if (_s.HasPassword)
+                            {
+                                <span class="badge text-bg-success">încărcată</span> <span class="small text-secondary">•••••••• din @_s.PasswordSource</span>
+                            }
+                            else
+                            {
+                                <span class="badge text-bg-warning">lipsă</span> <span class="small text-secondary">@_s.PasswordProblem</span>
+                            }
+                        </div>
+                    </div>
+                    <div class="row g-2 mb-2">
+                        <div class="col-sm-6">
+                            <label class="form-label" for="mPrefix">Prefix discovery</label>
+                            <input class="form-control" id="mPrefix" @bind="_prefix" placeholder="homeassistant" autocomplete="off" />
+                        </div>
+                        <div class="col-sm-6 d-flex flex-column justify-content-end">
+                            <div class="form-check">
+                                <input class="form-check-input" type="checkbox" id="mTls" @bind="_tls" />
+                                <label class="form-check-label" for="mTls">TLS (oprit în LAN)</label>
+                            </div>
+                            <div class="form-check">
+                                <input class="form-check-input" type="checkbox" id="mAuto" @bind="_autoAdd" />
+                                <label class="form-check-label" for="mAuto">Adaugă automat ce se descoperă</label>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="row g-2 mb-2">
+                        <div class="col-sm-6">
+                            <label class="form-label" for="mRet">Citiri brute păstrate (zile; 0 = mereu)</label>
+                            <input class="form-control" id="mRet" type="number" min="0" max="3650" @bind="_retention" />
+                        </div>
+                        <div class="col-sm-6">
+                            <label class="form-label" for="mLim">Limită serii /metrics</label>
+                            <input class="form-control" id="mLim" type="number" min="10" max="10000" @bind="_limit" />
+                        </div>
+                    </div>
+                    <div class="form-text">
+                        Doar citire: KasaMonitor nu trimite comenzi dispozitivelor. Parola nu se scrie în bază și nu se afișează: vine din
+                        <code>KasaMonitor__MqttPassword</code> sau din fișierul <code>KasaMonitor__MqttPasswordFile</code>
+                        (implicit <code>@MqttSettingsService.DefaultPasswordFile</code>), citită la pornire. Valorile orare rămân păstrate oricât.
+                    </div>
+                    <div class="d-flex align-items-center gap-3 mt-3">
+                        <button class="btn btn-primary" @onclick="SaveAsync"><i class="bi bi-save me-1"></i>Salvează „MQTT”</button>
+                        @if (IsDirty) { <span class="text-warning-emphasis small"><i class="bi bi-pencil-square me-1"></i>modificări nesalvate</span> }
+                        @if (_saved) { <span class="text-success"><i class="bi bi-check-circle me-1"></i>Salvat: reconectare.</span> }
+                        @if (_error is not null) { <span class="text-danger"><i class="bi bi-x-circle me-1"></i>@_error</span> }
+                    </div>
+                </div>
+            </div>
+        </div>
+        <div class="col-xl-6">
+            <div class="card h-100">
+                <div class="card-header fw-semibold"><i class="bi bi-activity me-2"></i>Conexiune și descoperire</div>
+                <div class="card-body small">
+                    <dl class="row mb-2">
+                        <dt class="col-sm-4">Conexiune</dt>
+                        <dd class="col-sm-8">@(Mqtt.Connected ? $"conectat la {Mqtt.Broker}" : Mqtt.Status ?? "se conectează…")
+                            @if (Mqtt.ConnectedSinceUtc is { } since) { <span class="text-secondary ms-1">· de @UiFormat.RelativeRo(since, now)</span> }</dd>
+                        @if (Mqtt.LastError is { } err) { <dt class="col-sm-4">Ultima eroare</dt><dd class="col-sm-8 text-danger">@err</dd> }
+                        <dt class="col-sm-4">Mesaje</dt>
+                        <dd class="col-sm-8">@Mqtt.Messages.ToString("N0")@(Mqtt.LastMessageUtc is { } m ? $" · ultimul {UiFormat.RelativeRo(m, now)}" : "")</dd>
+                        <dt class="col-sm-4">Descoperite</dt>
+                        <dd class="col-sm-8">@UiFormat.Count(_devices.Count, "dispozitiv", "dispozitive"), @UiFormat.Count(_devices.Sum(d => d.Entities.Count), "entitate", "entități")
+                            <a class="ms-1" href="@DevicePages.Add(IntegrationKeys.Mqtt)">Dispozitive → Adaugă → MQTT</a></dd>
+                    </dl>
+                    @if (Mqtt.MetricsWarning is { } warn) { <div class="alert alert-warning py-1 mb-2">@warn</div> }
+                    <button class="btn btn-outline-secondary btn-sm" @onclick="RepublishAsync" disabled="@(!Mqtt.Connected)"
+                            title="Publică „online” pe <prefix>/status (fără retain): dispozitivele își retrimit descrierea">
+                        <i class="bi bi-arrow-repeat me-1"></i>Cere republicarea</button>
+                    @if (_republish is not null) { <span class="ms-2 text-secondary">@_republish</span> }
+                    @if (_problems.Count > 0)
+                    {
+                        <h3 class="h6 mt-3">Probleme (@_problems.Count)</h3>
+                        <ul class="mb-0 mqtt-problems">
+                            @foreach (var p in _problems.Take(20)) { <li><code>@p.Topic</code>: @p.Reason</li> }
+                        </ul>
+                    }
+                </div>
+            </div>
+        </div>
+    </div>
+}
+
+@code {
+    private MqttRuntimeSettings? _s;
+    private string? _loaded;
+    private bool _enabled;
+    private string _host = "";
+    private int _port;
+    private string _user = "";
+    private bool _tls;
+    private string _prefix = "";
+    private bool _autoAdd;
+    private int _retention;
+    private int _limit;
+    private bool _saved;
+    private string? _error;
+    private string? _republish;
+    private IReadOnlyList<KasaMonitor.Core.Mqtt.MqttDeviceSnapshot> _devices = Array.Empty<KasaMonitor.Core.Mqtt.MqttDeviceSnapshot>();
+    private List<(string Topic, string Reason)> _problems = new();
+
+    public override bool IsDirty => _loaded is not null && _loaded != Fingerprint();
+
+    private string Fingerprint() => string.Join("|", _enabled, _host.Trim(), _port, _user.Trim(), _tls, _prefix.Trim(), _autoAdd, _retention, _limit);
+
+    protected override async Task OnInitializedAsync()
+    {
+        Mqtt.Changed += OnChanged;
+        await LoadAsync();
+    }
+
+    private void OnChanged() => InvokeAsync(() => { Refresh(); StateHasChanged(); });
+
+    private void Refresh()
+    {
+        var now = DateTimeOffset.UtcNow;
+        _devices = Mqtt.Registry.Devices(now);
+        _problems = Mqtt.Registry.Problems.Select(p => (p.Topic, p.Reason))
+            .Concat(_devices.SelectMany(d => d.Entities).Where(e => e.Spec.Problem is not null).Select(e => (e.Spec.ConfigTopic, $"{e.Spec.Name}: {e.Spec.Problem}")))
+            // Round 2: template errors of an accepted template, counted in memory (cleared by the next good message).
+            .Concat(_devices.SelectMany(d => d.Entities).Where(e => e.ReadErrors > 0)
+                .Select(e => (e.Spec.StateTopic ?? e.Spec.ConfigTopic, $"{e.Spec.Name}: valoarea nu s-a putut citi ×{e.ReadErrors} ({e.LastReadError})")))
+            .ToList();
+    }
+
+    private async Task LoadAsync()
+    {
+        _s = await MqttSettings.GetAsync(CancellationToken.None);
+        (_enabled, _host, _port, _user, _tls, _prefix, _autoAdd, _retention, _limit) =
+            (_s.Enabled, _s.Host, _s.Port, _s.User, _s.UseTls, _s.DiscoveryPrefix, _s.AutoAdd, _s.RawRetentionDays, _s.MetricsSeriesLimit);
+        _loaded = Fingerprint();
+        Refresh();
+    }
+
+    private async Task SaveAsync()
+    {
+        _error = null;
+        try
+        {
+            await MqttSettings.SaveAsync(new MqttSettingsUpdate(_enabled, _host, _port, _user, _tls, _prefix, _autoAdd, _retention, _limit), CancellationToken.None);
+            await LoadAsync();
+            _saved = true;
+            StateHasChanged();
+            await Task.Delay(2000);
+            _saved = false;
+        }
+        catch (ArgumentException ex)
+        {
+            _error = ex.Message;
+        }
+    }
+
+    private async Task RepublishAsync()
+    {
+        try { _republish = Mqtt.RequestRepublish is { } r ? await r(CancellationToken.None) : "Nu e conectat la broker."; }
+        catch (Exception ex) { _republish = "Nu s-a putut publica: " + ex.Message; }
+    }
+
+    public void Dispose() => Mqtt.Changed -= OnChanged;
+}

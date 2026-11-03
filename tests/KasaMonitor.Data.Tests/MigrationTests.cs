@@ -28,7 +28,7 @@ public class MigrationTests
             "Plugs", "Samples", "Settings", "LiveSamples", "LiveMinuteAggregates", "RelayCommands",
             "MeterEvents", "ApplianceSignatures", "ApplianceRuns",
             "MieleDevices", "MieleStateSnapshots", "MieleCycles",
-            "ClimateSensors", "ClimateReadings"
+            "ClimateSensors", "ClimateReadings", "EntityPrefs"
         });
     }
 

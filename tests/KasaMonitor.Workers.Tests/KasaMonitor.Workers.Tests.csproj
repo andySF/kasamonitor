@@ -30,4 +30,8 @@
     <!-- Govee device list (real, anonymised device ids), owned by KasaMonitor.Core.Tests. -->
     <None Include="../KasaMonitor.Core.Tests/fixtures/govee_*.json" Link="fixtures/%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
+  <ItemGroup>
+    <!-- MQTT Discovery fixtures written from documentation (0.11), owned by KasaMonitor.Core.Tests. -->
+    <None Include="../KasaMonitor.Core.Tests/fixtures/mqtt/*.jsonl" Link="fixtures/mqtt/%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
 </Project>

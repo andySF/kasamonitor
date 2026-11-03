@@ -34,6 +34,8 @@ internal sealed class TestScopeFactory : IServiceScopeFactory
             if (serviceType == typeof(INilmRepository)) return new NilmRepository(_ctx);
             if (serviceType == typeof(IMieleRepository)) return new MieleRepository(_ctx);
             if (serviceType == typeof(IClimateRepository)) return new ClimateRepository(_ctx);
+            if (serviceType == typeof(IEntityPrefsRepository)) return new EntityPrefsRepository(_ctx);
+            if (serviceType == typeof(IGenericRepository)) return new GenericRepository(_ctx);
             return null;
         }
 

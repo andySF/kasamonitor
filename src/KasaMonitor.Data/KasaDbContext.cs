@@ -30,6 +30,11 @@ public sealed class KasaDbContext : DbContext
     public DbSet<ClimateSensorEntity> ClimateSensors => Set<ClimateSensorEntity>();
     public DbSet<ClimateReadingEntity> ClimateReadings => Set<ClimateReadingEntity>();
     public DbSet<ClimateDailyEntity> ClimateDaily => Set<ClimateDailyEntity>();
+    public DbSet<EntityPrefEntity> EntityPrefs => Set<EntityPrefEntity>();
+    public DbSet<GenericDeviceEntity> GenericDevices => Set<GenericDeviceEntity>();
+    public DbSet<GenericEntityEntity> GenericEntities => Set<GenericEntityEntity>();
+    public DbSet<GenericReadingEntity> GenericReadings => Set<GenericReadingEntity>();
+    public DbSet<GenericHourlyEntity> GenericHourly => Set<GenericHourlyEntity>();
 
     public KasaDbContext(DbContextOptions<KasaDbContext> options) : base(options) { }
 
@@ -223,6 +228,71 @@ public sealed class KasaDbContext : DbContext
         {
             e.ToTable("ClimateDaily");
             e.HasKey(x => new { x.SensorId, x.Day });
+        });
+
+        // Per-entity preferences of the generated device page (0.11): one row per entity key the user changed.
+        mb.Entity<EntityPrefEntity>(e =>
+        {
+            e.ToTable("EntityPrefs");
+            e.HasKey(x => x.Key);
+            // Bounded strings (R10, round 2): the key fits an index on any provider (450 characters).
+            e.Property(x => x.Key).HasMaxLength(450);
+            e.Property(x => x.NameOverride).HasMaxLength(200);
+            e.Property(x => x.ClassOverride).HasMaxLength(32);
+            e.Property(x => x.UnitOverride).HasMaxLength(32);
+        });
+
+        // Generic devices of self-describing integrations (0.11, MQTT Discovery): devices, entities, raw values (on change,
+        // 90 days by default) and hourly rollups (kept). Integer keys (R6); the two value tables are WITHOUT ROWID in the
+        // migration (EF Core cannot declare it).
+        mb.Entity<GenericDeviceEntity>(e =>
+        {
+            e.ToTable("GenericDevices");
+            e.HasKey(x => x.Id);
+            e.Property(x => x.Id).ValueGeneratedOnAdd();
+            e.HasIndex(x => new { x.Integration, x.ExternalId }).IsUnique();
+            e.Property(x => x.Integration).HasMaxLength(32);
+            e.Property(x => x.ExternalId).HasMaxLength(200);
+            e.Property(x => x.Name).HasMaxLength(200);
+            e.Property(x => x.Room).HasMaxLength(100);
+            e.Property(x => x.Manufacturer).HasMaxLength(200);
+            e.Property(x => x.Model).HasMaxLength(200);
+            e.Property(x => x.Firmware).HasMaxLength(200);
+            e.Property(x => x.ViaDevice).HasMaxLength(200);
+            e.Property(x => x.AutoCategory).HasMaxLength(32);
+            e.Property(x => x.CategoryOverride).HasMaxLength(32);
+        });
+        mb.Entity<GenericEntityEntity>(e =>
+        {
+            e.ToTable("GenericEntities");
+            e.HasKey(x => x.Id);
+            e.Property(x => x.Id).ValueGeneratedOnAdd();
+            e.HasIndex(x => new { x.Integration, x.ExternalId }).IsUnique();
+            e.HasIndex(x => x.DeviceId);
+            e.Property(x => x.Integration).HasMaxLength(32);
+            e.Property(x => x.ExternalId).HasMaxLength(128);
+            e.Property(x => x.Component).HasMaxLength(32);
+            e.Property(x => x.Name).HasMaxLength(200);
+            e.Property(x => x.Kind).HasMaxLength(32);
+            e.Property(x => x.DataType).HasMaxLength(32);
+            e.Property(x => x.Class).HasMaxLength(32);
+            e.Property(x => x.ClassRaw).HasMaxLength(64);
+            e.Property(x => x.Unit).HasMaxLength(32);
+            e.Property(x => x.StateClass).HasMaxLength(32);
+            e.Property(x => x.Category).HasMaxLength(32);
+            e.Property(x => x.Problem).HasMaxLength(500);
+            e.Property(x => x.LastText).HasMaxLength(255);
+        });
+        mb.Entity<GenericReadingEntity>(e =>
+        {
+            e.ToTable("GenericReadings");
+            e.HasKey(x => new { x.EntityId, x.Ts });
+            e.Property(x => x.Text).HasMaxLength(255);
+        });
+        mb.Entity<GenericHourlyEntity>(e =>
+        {
+            e.ToTable("GenericHourly");
+            e.HasKey(x => new { x.EntityId, x.HourTs });
         });
     }
 }

@@ -12,6 +12,11 @@ public enum DeviceCategory
     Appliance,
     ClimateSensor,
     Weather,
+    // 0.11, appended (the order sorts /dispozitive and gives the slug): generic devices of MQTT Discovery.
+    /// <summary>A switch without a meter („Releu”).</summary>
+    Relay,
+    /// <summary>„Alt dispozitiv”: a generic device that is none of the above (door contact, CO₂ sensor …).</summary>
+    Generic,
 }
 
 public static class DeviceCategories
@@ -27,6 +32,8 @@ public static class DeviceCategories
         DeviceCategory.Appliance => "Electrocasnic",
         DeviceCategory.ClimateSensor => "Senzor climă",
         DeviceCategory.Weather => "Sursă meteo",
+        DeviceCategory.Relay => "Releu",
+        DeviceCategory.Generic => "Alt dispozitiv",
         _ => c.ToString(),
     };
 
@@ -39,6 +46,8 @@ public static class DeviceCategories
         DeviceCategory.Appliance => "bi-water",
         DeviceCategory.ClimateSensor => "bi-thermometer-half",
         DeviceCategory.Weather => "bi-cloud-sun",
+        DeviceCategory.Relay => "bi-toggle-on",
+        DeviceCategory.Generic => "bi-cpu",
         _ => "bi-question-circle",
     };
 
@@ -67,4 +76,6 @@ public static class IntegrationKeys
     public const string Govee = "govee";
     /// <summary>Open-Meteo: the outdoor weather (a service, not a device vendor).</summary>
     public const string OpenMeteo = "openmeteo";
+    /// <summary>MQTT Discovery (0.11): devices that describe themselves on a broker (Zigbee2MQTT, ESPHome), read only.</summary>
+    public const string Mqtt = "mqtt";
 }

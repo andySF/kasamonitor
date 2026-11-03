@@ -124,7 +124,7 @@ public sealed class ClimateRecorder
             if (!sample.Online || sample.TemperatureC is null)
             {
                 _state.Publish((current ?? new ClimateSensorLive(sensor, null, null, sensor.BatteryPercent, null))
-                    with { Sensor = sensor, SourceOnline = false, BatteryPowered = sample.BatteryPowered });
+                    with { Sensor = sensor, SourceOnline = false, BatteryPowered = sample.BatteryPowered, ExpectedInterval = sample.ExpectedInterval });
                 return ClimateRecordResult.Offline;
             }
 
@@ -144,7 +144,8 @@ public sealed class ClimateRecorder
                 lock (_sensors) _lastStored[sensor.Id] = reading;
                 result = ClimateRecordResult.Stored;
             }
-            _state.Publish(new ClimateSensorLive(sensor, temp, sample.HumidityPercent, battery, sample.TsUtc, SourceOnline: true, sample.BatteryPowered));
+            _state.Publish(new ClimateSensorLive(sensor, temp, sample.HumidityPercent, battery, sample.TsUtc, SourceOnline: true, sample.BatteryPowered,
+                sample.ExpectedInterval));
             return result;
         }
         finally

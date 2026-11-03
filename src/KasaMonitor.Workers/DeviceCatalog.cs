@@ -71,17 +71,69 @@ public sealed record DeviceRow(
     string? LinkedTo,
     string DataUrl,
     string? Note = null,
-    string? RetireWarning = null)
+    string? RetireWarning = null,
+    IReadOnlyList<string>? Capabilities = null)
 {
     public const string PlugPrefix = "plug:";
     public const string MielePrefix = "miele:";
     public const string HeatingPrefix = "heating:";
     public const string ClimatePrefix = "climate:";
+    /// <summary>A generic device of a self-describing integration (0.11, MQTT Discovery): <c>dev:{GenericDevices.Id}</c>.</summary>
+    public const string GenericPrefix = "dev:";
 
     public static string PlugKey(Guid id) => PlugPrefix + id;
     public static string MieleKey(string id) => MielePrefix + id;
     public static string HeatingKey(Guid id) => HeatingPrefix + id;
     public static string ClimateKey(Guid id) => ClimatePrefix + id;
+    public static string GenericKey(long id) => GenericPrefix + id.ToString(System.Globalization.CultureInfo.InvariantCulture);
+
+    /// <summary>
+    /// R1 (0.11): who owns a row, from the prefix of its key — the single dispatch of the expanded row's editor, of „Retrage”
+    /// and of the generated page. Never from the category (a generic device classed „Contor” is not a plug).
+    /// </summary>
+    public static DeviceRowOwner OwnerOf(string? key) => key switch
+    {
+        null => DeviceRowOwner.Unknown,
+        _ when key.StartsWith(PlugPrefix, StringComparison.Ordinal) => DeviceRowOwner.Plug,
+        _ when key.StartsWith(MielePrefix, StringComparison.Ordinal) => DeviceRowOwner.Miele,
+        _ when key.StartsWith(HeatingPrefix, StringComparison.Ordinal) => DeviceRowOwner.Heating,
+        _ when key.StartsWith(ClimatePrefix, StringComparison.Ordinal) => DeviceRowOwner.Climate,
+        _ when key.StartsWith(GenericPrefix, StringComparison.Ordinal) => DeviceRowOwner.Generic,
+        _ => DeviceRowOwner.Unknown,
+    };
+
+    /// <summary>The id after the prefix as a Guid (plug, boiler, climate sensor); false for any other key or a malformed id.</summary>
+    public static bool TryGuid(string? key, string prefix, out Guid id)
+    {
+        id = Guid.Empty;
+        return key is not null && key.StartsWith(prefix, StringComparison.Ordinal) && Guid.TryParse(key.AsSpan(prefix.Length), out id);
+    }
+
+    /// <summary>The generic device id after the prefix (a positive integer); false otherwise.</summary>
+    public static bool TryGeneric(string? key, out long id)
+    {
+        id = 0;
+        return key is not null && key.StartsWith(GenericPrefix, StringComparison.Ordinal)
+               && long.TryParse(key.AsSpan(GenericPrefix.Length), System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out id) && id > 0;
+    }
+
+    /// <summary>The Miele device id after the prefix (digits only, as the API gives it); false otherwise.</summary>
+    public static bool TryMiele(string? key, out string id)
+    {
+        id = key is not null && key.StartsWith(MielePrefix, StringComparison.Ordinal) ? key[MielePrefix.Length..] : "";
+        return id.Length > 0 && id.All(char.IsAsciiLetterOrDigit);
+    }
+}
+
+/// <summary>The owner of a /dispozitive row, from its key prefix (<see cref="DeviceRow.OwnerOf"/>).</summary>
+public enum DeviceRowOwner
+{
+    Unknown,
+    Plug,
+    Miele,
+    Heating,
+    Climate,
+    Generic,
 }
 
 /// <summary>The filters of /dispozitive (category, vendor / integration, state, „arată retrase”).</summary>
@@ -96,6 +148,10 @@ public sealed record DeviceFilter(DeviceCategory? Category = null, string? Integ
         .ToList();
 }
 
+/// <summary>A generic device for the catalog: the stored device, its classification, whether it answers, its last value.</summary>
+public sealed record GenericCatalogItem(GenericDevice Device, KasaMonitor.Core.Devices.Generic.GenericClassification Classification, bool Available,
+    DateTimeOffset? LastReadUtc, bool Late = false);
+
 /// <summary>The projection of the existing tables and in-memory states into <see cref="DeviceRow"/> (pure; tested).</summary>
 public static class DeviceCatalogRules
 {
@@ -104,7 +160,7 @@ public static class DeviceCatalogRules
         IReadOnlyList<MieleDevice> miele, MieleState? mieleState,
         IReadOnlyList<HeatingDevice> heating, HeatingState? heatingState,
         IReadOnlyList<ClimateSensor> sensors, ClimateState? climate,
-        DateTimeOffset now)
+        DateTimeOffset now, IReadOnlyList<GenericCatalogItem>? generic = null)
     {
         var rows = new List<DeviceRow>();
         var plugNames = plugs.ToDictionary(p => p.Id, p => p.Alias);
@@ -128,7 +184,7 @@ public static class DeviceCatalogRules
                 // its time without a reading: that is no reading.
                 st is { LastReading: not null } ? st.LastSampleUtc : null,
                 p.IsArchived, linked.Count == 0 ? null : string.Join(" · ", linked),
-                p.Role == PlugRole.MainMeter ? "/contor" : $"/history?plug={p.Id}#curent",
+                PlugDataUrl(p),
                 p.IsSupported ? null : p.UnsupportedReason,
                 p.Role == PlugRole.MainMeter
                     ? "E contorul general: pagina Contor, „Acum în casă” din Acasă și detecția consumatorilor rămân fără date."
@@ -159,8 +215,11 @@ public static class DeviceCatalogRules
                 "Centrala nu mai e citită: fără gaz, temperaturi și cronologie noi (contul ViCare rămâne conectat)."));
         }
 
+        // One row per physical device (0.11): the climate sensor of a generic device is a badge of its row, not a row.
+        var ownedClimate = (generic ?? []).Select(g => g.Device.ExternalId).ToHashSet(StringComparer.Ordinal);
         foreach (var s in sensors)
         {
+            if (s.Source == ClimateSources.Mqtt && ownedClimate.Contains(s.ExternalId)) continue;
             var st = climate?.Get(s.Id);
             DeviceHealth health;
             if (s.IsArchived) health = DeviceHealth.Retired;
@@ -174,6 +233,18 @@ public static class DeviceCatalogRules
                 s.BatteryPercent is { } b ? $"baterie {b} %" : null));
         }
 
+        foreach (var g in generic ?? [])
+        {
+            var d = g.Device;
+            var health = d.IsArchived ? DeviceHealth.Retired : !g.Available ? DeviceHealth.Offline : g.Late ? DeviceHealth.Late : DeviceHealth.Online;
+            var model = string.Join(" · ", new[] { d.Manufacturer, d.Model }.Where(x => !string.IsNullOrWhiteSpace(x)));
+            var key = DeviceRow.GenericKey(d.Id);
+            rows.Add(new DeviceRow(key, d.Integration, d.Category, d.Name, d.NameIsCustom, d.Room.Length > 0 ? d.Room : null,
+                model.Length > 0 ? model : g.Classification.Label, null, health, g.LastReadUtc ?? d.LastSeenUtc, d.IsArchived,
+                d.CategoryOverride is null && d.Category == DeviceCategory.Generic ? g.Classification.Label : null,
+                "/dispozitive/" + Uri.EscapeDataString(key), null, null, g.Classification.Capabilities));
+        }
+
         return rows
             .OrderBy(r => r.Health == DeviceHealth.Retired)
             .ThenBy(r => r.Category)
@@ -181,15 +252,18 @@ public static class DeviceCatalogRules
             .ToList();
     }
 
+    /// <summary>The page with a plug's data: /contor for the main meter, its electricity history otherwise.</summary>
+    public static string PlugDataUrl(Plug p) => p.Role == PlugRole.MainMeter ? "/contor" : $"/history?plug={p.Id}#curent";
+
     /// <summary>The room, with „afară” for an outdoor sensor unless the room already says it.</summary>
-    private static string? Room(ClimateSensor s)
+    public static string? Room(ClimateSensor s)
     {
         if (!s.IsOutdoor) return s.Room.Length > 0 ? s.Room : null;
         if (s.Room.Length == 0 || string.Equals(s.Room, "afară", StringComparison.CurrentCultureIgnoreCase)) return "Afară";
         return s.Room + " · afară";
     }
 
-    private static string Model(Plug p)
+    public static string Model(Plug p)
     {
         var model = p.Protocol == PlugProtocols.ShellyRpc
             ? KasaMonitor.Core.Protocol.Shelly.ShellySupport.FriendlyModel(p.Model, p.HwVer)
@@ -216,11 +290,16 @@ public sealed class DeviceCatalog
     private readonly IClimateSettingsService? _climateSettings;
     private readonly Action? _wakeHeating;
     private readonly Action? _wakeClimate;
+    private readonly Mqtt.GenericRecorder? _generic;
+    private readonly Mqtt.MqttState? _mqtt;
 
     public DeviceCatalog(IServiceScopeFactory scopes, IPlugStateBroadcaster plugs, ClimateState? climate = null, HeatingState? heating = null,
         MieleState? miele = null, ClimateRecorder? climateRecorder = null, MieleRecorder? mieleRecorder = null,
-        IClimateSettingsService? climateSettings = null, Action? wakeHeating = null, Action? wakeClimate = null)
+        IClimateSettingsService? climateSettings = null, Action? wakeHeating = null, Action? wakeClimate = null,
+        Mqtt.GenericRecorder? generic = null, Mqtt.MqttState? mqtt = null)
     {
+        _generic = generic;
+        _mqtt = mqtt;
         _scopes = scopes;
         _plugs = plugs;
         _climate = climate;
@@ -241,7 +320,19 @@ public sealed class DeviceCatalog
         var miele = await sp.GetRequiredService<IMieleRepository>().ListDevicesAsync(includeArchived: true, ct);
         var heating = await sp.GetRequiredService<IHeatingRepository>().ListDevicesAsync(ct);
         var sensors = await sp.GetRequiredService<IClimateRepository>().ListSensorsAsync(includeArchived: true, ct);
-        return DeviceCatalogRules.Build(plugs, _plugs.Snapshot(), miele, _miele, heating, _heating, sensors, _climate, now);
+        return DeviceCatalogRules.Build(plugs, _plugs.Snapshot(), miele, _miele, heating, _heating, sensors, _climate, now, await GenericItemsAsync(now, ct));
+    }
+
+    /// <summary>The generic devices with their classification and whether they answer (the MQTT registry; offline while it does not know them).</summary>
+    private async Task<IReadOnlyList<GenericCatalogItem>> GenericItemsAsync(DateTimeOffset now, CancellationToken ct)
+    {
+        if (_generic is null) return [];
+        await _generic.LoadAsync(ct);
+        return _generic.Devices.Select(d =>
+        {
+            var snap = _mqtt?.Registry.Get(d.ExternalId, now);
+            return new GenericCatalogItem(d, _generic.Classification(d.Id), snap?.Available ?? false, snap?.LastValueUtc, snap?.Late ?? false);
+        }).ToList();
     }
 
     /// <summary>
@@ -254,36 +345,43 @@ public sealed class DeviceCatalog
     {
         using var scope = _scopes.CreateScope();
         var sp = scope.ServiceProvider;
-        if (key.StartsWith(DeviceRow.PlugPrefix, StringComparison.Ordinal) && Guid.TryParse(key[DeviceRow.PlugPrefix.Length..], out var plugId))
+        // R2 (0.11): one dispatch on the key's prefix (DeviceRow.OwnerOf), each branch validating its id.
+        switch (DeviceRow.OwnerOf(key))
         {
-            await sp.GetRequiredService<IPlugRepository>().SetArchivedAsync(plugId, retired, ct);
-            return retired ? "Priza nu mai e interogată și nu mai apare în /metrics." : "Priza e interogată din nou.";
-        }
-        if (key.StartsWith(DeviceRow.MielePrefix, StringComparison.Ordinal))
-        {
-            var id = key[DeviceRow.MielePrefix.Length..];
-            await sp.GetRequiredService<IMieleRepository>().SetArchivedAsync(id, retired, ct);
-            if (_mieleRecorder is not null) await _mieleRecorder.ReloadDeviceAsync(id, ct);
-            return retired ? "Aparatul e ascuns în Aparate și Acasă (istoricul rămâne)." : "Aparatul apare din nou.";
-        }
-        if (key.StartsWith(DeviceRow.HeatingPrefix, StringComparison.Ordinal) && Guid.TryParse(key[DeviceRow.HeatingPrefix.Length..], out var heatingId))
-        {
-            var repo = sp.GetRequiredService<IHeatingRepository>();
-            if (!await repo.SetDeviceEnabledAsync(heatingId, !retired, ct)) return "Centrala nu mai există.";
-            if ((await repo.ListDevicesAsync(ct)).FirstOrDefault(d => d.Id == heatingId) is { } device) _heating?.UpdateDevice(device);
-            _wakeHeating?.Invoke();
-            return retired ? "Centrala nu mai e citită (fără apeluri la Viessmann)." : "Centrala e citită din nou.";
-        }
-        if (key.StartsWith(DeviceRow.ClimatePrefix, StringComparison.Ordinal) && Guid.TryParse(key[DeviceRow.ClimatePrefix.Length..], out var sensorId))
-        {
-            var sensor = (await sp.GetRequiredService<IClimateRepository>().ListSensorsAsync(includeArchived: true, ct)).FirstOrDefault(s => s.Id == sensorId);
-            if (sensor is null) return "Senzorul nu mai există.";
-            if (sensor.Source == ClimateSources.Govee && _climateSettings is not null)
-                await _climateSettings.SetGoveeHomeAsync(sensor.ExternalId, !retired, ct);
-            if (_climateRecorder is not null) await _climateRecorder.SetArchivedAsync(sensorId, retired, ct);
-            else await sp.GetRequiredService<IClimateRepository>().SetArchivedAsync(sensorId, retired, ct);
-            _wakeClimate?.Invoke();
-            return retired ? "Senzorul e ascuns în Climă și nu se mai salvează (istoricul rămâne)." : "Senzorul apare din nou în Climă.";
+            case DeviceRowOwner.Plug when DeviceRow.TryGuid(key, DeviceRow.PlugPrefix, out var plugId):
+                await sp.GetRequiredService<IPlugRepository>().SetArchivedAsync(plugId, retired, ct);
+                return retired ? "Priza nu mai e interogată și nu mai apare în /metrics." : "Priza e interogată din nou.";
+            case DeviceRowOwner.Miele when DeviceRow.TryMiele(key, out var id):
+            {
+                await sp.GetRequiredService<IMieleRepository>().SetArchivedAsync(id, retired, ct);
+                if (_mieleRecorder is not null) await _mieleRecorder.ReloadDeviceAsync(id, ct);
+                return retired ? "Aparatul e ascuns în Aparate și Acasă (istoricul rămâne)." : "Aparatul apare din nou.";
+            }
+            case DeviceRowOwner.Heating when DeviceRow.TryGuid(key, DeviceRow.HeatingPrefix, out var heatingId):
+            {
+                var repo = sp.GetRequiredService<IHeatingRepository>();
+                if (!await repo.SetDeviceEnabledAsync(heatingId, !retired, ct)) return "Centrala nu mai există.";
+                if ((await repo.ListDevicesAsync(ct)).FirstOrDefault(d => d.Id == heatingId) is { } device) _heating?.UpdateDevice(device);
+                _wakeHeating?.Invoke();
+                return retired ? "Centrala nu mai e citită (fără apeluri la Viessmann)." : "Centrala e citită din nou.";
+            }
+            case DeviceRowOwner.Climate when DeviceRow.TryGuid(key, DeviceRow.ClimatePrefix, out var sensorId):
+            {
+                var sensor = (await sp.GetRequiredService<IClimateRepository>().ListSensorsAsync(includeArchived: true, ct)).FirstOrDefault(s => s.Id == sensorId);
+                if (sensor is null) return "Senzorul nu mai există.";
+                if (sensor.Source == ClimateSources.Govee && _climateSettings is not null)
+                    await _climateSettings.SetGoveeHomeAsync(sensor.ExternalId, !retired, ct);
+                if (_climateRecorder is not null) await _climateRecorder.SetArchivedAsync(sensorId, retired, ct);
+                else await sp.GetRequiredService<IClimateRepository>().SetArchivedAsync(sensorId, retired, ct);
+                _wakeClimate?.Invoke();
+                return retired ? "Senzorul e ascuns în Climă și nu se mai salvează (istoricul rămâne)." : "Senzorul apare din nou în Climă.";
+            }
+            case DeviceRowOwner.Generic when DeviceRow.TryGeneric(key, out var genericId) && _generic is not null:
+            {
+                // R2: the device and its routed climate sensor, through one owner.
+                if (await _generic.SetArchivedAsync(genericId, retired, ct) is null) return "Dispozitivul nu mai există.";
+                return retired ? "Dispozitivul nu mai e salvat și nu mai apare în /metrics și Climă (istoricul rămâne)." : "Dispozitivul e citit din nou.";
+            }
         }
         return "Dispozitiv necunoscut.";
     }

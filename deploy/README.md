@@ -33,10 +33,10 @@ stack has no repository directory. Keep `network_mode: host`.
 ## Local build & push to Docker Hub
 
 ```powershell
-docker build -t duobit/kasamonitor:latest -t duobit/kasamonitor:0.10.0 -f deploy/Dockerfile .
+docker build -t duobit/kasamonitor:latest -t duobit/kasamonitor:0.11.0 -f deploy/Dockerfile .
 docker login
 docker push duobit/kasamonitor:latest
-docker push duobit/kasamonitor:0.10.0
+docker push duobit/kasamonitor:0.11.0
 ```
 
 ## Configuration
@@ -62,6 +62,9 @@ the environment variables are only initial values (full list in `../README.md`).
 | `KasaMonitor__GoveeApiKey` | — | alternative to the file; avoid (visible in `docker inspect`) |
 | `KasaMonitor__ClimateLatitude` / `KasaMonitor__ClimateLongitude` | — | initial location for the outdoor temperature (Open-Meteo); better: `/settings` |
 | `KasaMonitor__GrafanaUrl` | — | Grafana dashboard linked from the home page footer (better: `/settings` → Altele); empty = no link |
+| `KasaMonitor__MqttHost` / `KasaMonitor__MqttPort` / `KasaMonitor__MqttUser` | — / `1883` / — | 0.11: initial MQTT broker for the generic devices (better: `/settings` → MQTT) |
+| `KasaMonitor__MqttPasswordFile` | `/run/secrets/mqtt-kasamonitor.password` | file with the broker password, read at startup; mount it read-only like the Miele secret (`…/secrets/mqtt-kasamonitor.password:/run/secrets/mqtt-kasamonitor.password:ro`) |
+| `KasaMonitor__MqttPassword` | — | alternative to the file; avoid (visible in `docker inspect`) |
 
 ### Miele client secret
 

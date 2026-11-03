@@ -1,0 +1,247 @@
+@page "/dispozitive/{Key}"
+@rendermode InteractiveServer
+@using KasaMonitor.Workers
+@using KasaMonitor.Workers.Entities
+@using KasaMonitor.Web.Ui
+@using KasaMonitor.Web.Components.Istoric
+@using KasaMonitor.Core.Devices.Entities
+@inject DeviceEntityService Entities
+@inject NavigationManager Nav
+@implements IDisposable
+
+@* /dispozitive/{key} (0.11): the generated page of one device — every value of every entity, drawn by EntityViewRules
+   (measurement → card + chart, counter → value, binary → badge, command → shown but not enabled, diagnostics folded).
+   Configuration stays in the expanded row of /dispozitive (✎); the integration's own page keeps whatever links several
+   values (totals, cost, cycles). *@
+<PageTitle>KasaMonitor — @(_device?.Name ?? "Dispozitiv")</PageTitle>
+
+@if (_device is not { } d)
+{
+    <p class="text-secondary"><span class="spinner-border spinner-border-sm me-2"></span>Se încarcă…</p>
+}
+else
+{
+    var now = DateTimeOffset.UtcNow;
+    var decisions = d.Entities.Select(e => (Entity: e, Prefs: _prefs.GetValueOrDefault(e.Key), View: EntityViewRules.For(e, _prefs.GetValueOrDefault(e.Key)))).ToList();
+    var main = decisions.Where(x => x.View.Section == EntitySection.Main).OrderBy(x => EntityViewRules.Order(x.View.View))
+        .ThenBy(x => EntityViewRules.ClassRank(EntityDefaults.Class(x.Entity, x.Prefs))).ToList();
+    var diagnostic = decisions.Where(x => x.View.Section == EntitySection.Diagnostic).ToList();
+    var hidden = decisions.Count(x => x.View.Section == EntitySection.Hidden);
+    var unsupported = decisions.Where(x => x.View.Section == EntitySection.Unsupported).ToList();
+    var charts = main.Where(x => x.View.View != EntityView.Counter && x.View.History && _history.TryGetValue(x.Entity.Key, out var h) && h.Any(b => b.Avg is not null)).ToList();
+    var counters = main.Where(x => x.View.View == EntityView.Counter && _counters.ContainsKey(x.Entity.Key)).ToList();
+    <div class="home hist dev-page">
+        <nav class="small mb-1" aria-label="Navigare"><a href="@DevicePages.Path"><i class="bi bi-arrow-left me-1"></i>Dispozitive</a></nav>
+        <div class="dev-head">
+            <h1>@d.Name</h1>
+            <span class="badge @(d.IsArchived ? "text-bg-secondary" : !d.Available ? "text-bg-danger" : d.Late ? "text-bg-warning" : "text-bg-success")">@(d.IsArchived ? "Retras" : !d.Available ? "Offline" : d.Late ? "Întârziat" : "Online")</span>
+            <span class="sec">@Integrations.NameOf(d.Integration)</span>
+            @if (d.Manufacturer is { } mf && !string.Equals(mf, Integrations.NameOf(d.Integration), StringComparison.OrdinalIgnoreCase)) { <span class="sec">· @mf</span> }
+            @if (d.Model is { } model) { <span class="sec">· @model</span> }
+            @if (d.Firmware is { } fw) { <span class="muted">· firmware @fw</span> }
+            @if (d.Room is { } room) { <span class="sec">· @room</span> }
+            <span class="muted">· ultima citire @(d.LastReadUtc is { } read ? UiFormat.RelativeRo(read, now) : "—")</span>
+            <span class="dev-actions">
+                <a class="btn btn-outline-secondary btn-sm" href="@DevicePages.Row(d.Key)" title="Configurează: nume, cameră, ce valori se arată"><i class="bi bi-pencil me-1"></i>Configurează</a>
+                @if (d.RichPageUrl is { } rich)
+                {
+                    <a class="btn btn-outline-secondary btn-sm" href="@rich" title="Pagina integrării: totaluri, istoric, cicluri"><i class="bi bi-bar-chart me-1"></i>Pagina integrării</a>
+                }
+            </span>
+        </div>
+        @if (d.Note is { } note) { <div class="alert alert-warning py-1 small">@note</div> }
+
+        @if (main.Count == 0)
+        {
+            <div class="hcard empty ent-empty">Nicio valoare de afișat: @(hidden > 0 ? $"{hidden} ascunse (✎ Configurează → Valorile afișate)" : unsupported.Count > 0 ? "dispozitivul are doar componente neacceptate (lista de mai jos)" : "dispozitivul nu a descris nicio valoare")@(diagnostic.Count > 0 ? $"; {diagnostic.Count} în Diagnostic" : "").</div>
+        }
+        else
+        {
+            <div class="ent-grid" aria-label="Valorile dispozitivului">
+                @foreach (var x in main)
+                {
+                    var v = d.ValueOf(x.Entity.Key);
+                    var (value, unit) = EntityFormat.Parts(x.Entity, v, x.Prefs);
+                    var alert = EntityFormat.IsAlert(x.Entity, v, x.Prefs);
+                    <div class="hcard tile ent-card @(v is { Available: false } ? "unavail" : "")" data-entity="@x.Entity.Key" data-view="@x.View.View.ToString().ToLowerInvariant()">
+                        <div class="lbl">@EntityDefaults.Name(x.Entity, x.Prefs)
+                            @if (x.View.View == EntityView.Counter) { <span class="badge text-bg-light border">contor</span> }
+                        </div>
+                        @if (x.View.View == EntityView.Binary)
+                        {
+                            <div class="val"><span class="badge @(alert ? "text-bg-warning" : value == "—" ? "text-bg-secondary" : "text-bg-light border")">@value</span></div>
+                        }
+                        else
+                        {
+                            <div class="val num">@value@if (unit is not null) { <small class="ms-1">@unit</small> }</div>
+                        }
+                        @if (x.View.View == EntityView.Command)
+                        {
+                            <div class="meta"><span class="badge text-bg-secondary" title="Comenzile din KasaMonitor nu sunt activate în această versiune">comandă (neactivată)</span>
+                                @if (x.Entity.Command is { Optimistic: true }) { <span class="muted"> · mod optimist (fără stare citită)</span> }
+                            </div>
+                        }
+                        @if (x.Entity.Problem is { } problem) { <div class="meta text-warning-emphasis">@problem</div> }
+                        @if (x.View.View == EntityView.Counter && _counters.TryGetValue(x.Entity.Key, out var cs))
+                        {
+                            var u = EntityDefaults.Unit(x.Entity, x.Prefs);
+                            var dec = EntityFormat.Decimals(x.Entity, x.Prefs);
+                            <div class="meta">azi <b class="num">@EntityFormat.Amount(x.Entity, cs.Today, x.Prefs)</b> · ieri <span class="num">@EntityFormat.Amount(x.Entity, cs.Yesterday, x.Prefs)</span> · luna <span class="num">@EntityFormat.Amount(x.Entity, cs.Month, x.Prefs)</span></div>
+                        }
+                        else if (x.View.View != EntityView.Counter && x.View.History && _history.TryGetValue(x.Entity.Key, out var spark) && spark.Any(b => b.Avg is not null))
+                        {
+                            <svg class="spark" viewBox="0 0 240 40" preserveAspectRatio="none" role="img" aria-label="@($"{EntityDefaults.Name(x.Entity, x.Prefs)}, ultimele 24 h")">
+                                <polyline points="@Spark(spark)" />
+                            </svg>
+                        }
+                        <div class="meta muted">@(v?.TsUtc is { } ts ? UiFormat.RelativeRo(ts, now) : v is { HasValue: true } ? "păstrată de broker, fără oră" : "fără valoare")@(v is { Available: false } ? " · indisponibil" : v is { Late: true } ? " · întârziat" : "")</div>
+                        @if (v is { ReadErrors: > 0, ReadError: { } why })
+                        {
+                            <div class="read-error" title="Mesajele nu s-au putut citi prin șablon; se reia la primul mesaj bun">valoarea nu s-a putut citi: @why (×@v.ReadErrors@(v.ReadErrorUtc is { } at ? ", ultima " + UiFormat.RelativeRo(at, now) : ""))</div>
+                        }
+                    </div>
+                }
+            </div>
+        }
+
+        @if (charts.Count > 0)
+        {
+            var labels = _buckets.Select(b => b.ToLocalTime().ToString("HH", System.Globalization.CultureInfo.InvariantCulture)).ToList();
+            var titles = _buckets.Select(b => b.ToLocalTime().ToString("dd.MM HH:00", System.Globalization.CultureInfo.InvariantCulture)).ToList();
+            <div class="ent-charts">
+                @foreach (var x in charts)
+                {
+                    var h = _history[x.Entity.Key];
+                    <div class="hcard">
+                        <div class="card-h"><h2>@EntityDefaults.Name(x.Entity, x.Prefs) <span class="muted">· ultimele 24 h, pe oră</span></h2></div>
+                        <HistoryLines Labels="labels" Titles="titles" W="1000" H="220" Unit="@(EntityDefaults.Unit(x.Entity, x.Prefs) ?? "")" Decimals="EntityFormat.Decimals(x.Entity, x.Prefs)"
+                                      AriaLabel="@EntityDefaults.Name(x.Entity, x.Prefs)" Empty="Fără valori în ultimele 24 h."
+                                      Series="@(new[] { new HistoryLines.LineSeries(EntityDefaults.Name(x.Entity, x.Prefs), "ln-p1", h.Select(b => b.Avg).ToList(), h.Select(b => b.Min).ToList(), h.Select(b => b.Max).ToList()) })" />
+                    </div>
+                }
+            </div>
+        }
+
+        @if (counters.Count > 0)
+        {
+            <div class="ent-charts">
+                @foreach (var x in counters)
+                {
+                    var cs = _counters[x.Entity.Key];
+                    var dec = EntityFormat.Decimals(x.Entity, x.Prefs);
+                    <div class="hcard wide">
+                        <div class="card-h"><h2>@EntityDefaults.Name(x.Entity, x.Prefs) <span class="muted">· pe zi, ultimele 30 de zile (fără cost: nu intră în totalurile casei)</span></h2></div>
+                        <HistoryBars Labels="@(cs.Days.Select(d => d.Day.ToString("dd", System.Globalization.CultureInfo.InvariantCulture)).ToList())"
+                                     Titles="@(cs.Days.Select(d => d.Day.ToString("dd.MM.yyyy", System.Globalization.CultureInfo.InvariantCulture)).ToList())"
+                                     W="1400" H="200" Unit="@(EntityDefaults.Unit(x.Entity, x.Prefs) ?? "")" Format="@(v => HeatingFormat.Number(v, dec))"
+                                     AriaLabel="@($"{EntityDefaults.Name(x.Entity, x.Prefs)} pe zi")"
+                                     Series="@(new[] { new HistoryBars.BarSeries(EntityDefaults.Name(x.Entity, x.Prefs), "k-plug", cs.Days.Select(d => (double?)d.Value).ToList()) })" />
+                    </div>
+                }
+            </div>
+        }
+
+        @if (diagnostic.Count > 0)
+        {
+            <details class="hcard ent-diag">
+                <summary class="fw-semibold">Diagnostic <span class="muted">(@diagnostic.Count)</span></summary>
+                <table class="table table-sm align-middle mb-0 mt-2">
+                    <tbody>
+                        @foreach (var x in diagnostic)
+                        {
+                            var v = d.ValueOf(x.Entity.Key);
+                            <tr data-entity="@x.Entity.Key"><td>@EntityDefaults.Name(x.Entity, x.Prefs)</td><td class="num">@EntityFormat.Value(x.Entity, v, x.Prefs)</td>
+                                <td class="muted small">@(v?.TsUtc is { } ts ? UiFormat.RelativeRo(ts, now) : "—")</td></tr>
+                        }
+                    </tbody>
+                </table>
+            </details>
+        }
+        @if (hidden > 0) { <div class="foot-note">@hidden @(hidden == 1 ? "valoare ascunsă" : "valori ascunse") (✎ Configurează → Valorile afișate).</div> }
+
+        @if (unsupported.Count > 0)
+        {
+            <div class="hcard ent-unsupported mt-3">
+                <div class="card-h"><h2>Neacceptate <span class="muted">(@unsupported.Count)</span></h2></div>
+                <ul class="small mb-0">
+                    @foreach (var x in unsupported)
+                    {
+                        <li data-entity="@x.Entity.Key"><b>@x.Entity.Name</b> — @(x.Entity.Problem ?? "neacceptat")</li>
+                    }
+                    @if (DeviceRow.OwnerOf(d.Key) == DeviceRowOwner.Generic)
+                    {
+                        <li class="list-unstyled text-secondary">Descrierea primită de la dispozitiv (payload-ul) e în <a href="@DevicePages.Row(d.Key)">✎ Configurează</a>.</li>
+                    }
+                </ul>
+            </div>
+        }
+    </div>
+}
+
+@code {
+    [Parameter] public string Key { get; set; } = "";
+
+    private EntityDevice? _device;
+    private IReadOnlyDictionary<string, EntityPrefs> _prefs = new Dictionary<string, EntityPrefs>();
+    private readonly Dictionary<string, IReadOnlyList<EntityBucket>> _history = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, EntityCounterSummary> _counters = new(StringComparer.Ordinal);
+    private IReadOnlyList<DateTimeOffset> _buckets = Array.Empty<DateTimeOffset>();
+    private System.Threading.Timer? _timer;
+    private int _ticks;
+    private string? _loadedKey;
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (_loadedKey == Key) return;
+        _loadedKey = Key;
+        _device = await Entities.GetAsync(Key, DateTimeOffset.UtcNow, CancellationToken.None);
+        if (_device is null)
+        {
+            Nav.NotFound();
+            return;
+        }
+        await LoadPrefsAndHistoryAsync();
+        _timer ??= new System.Threading.Timer(_ => InvokeAsync(async () =>
+        {
+            // Values every 10 s (in memory); the history and the preferences every minute.
+            _device = await Entities.GetAsync(Key, DateTimeOffset.UtcNow, CancellationToken.None) ?? _device;
+            if (++_ticks % 6 == 0) await LoadPrefsAndHistoryAsync();
+            StateHasChanged();
+        }), null, 10_000, 10_000);
+    }
+
+    private async Task LoadPrefsAndHistoryAsync()
+    {
+        if (_device is not { } d) return;
+        _prefs = await Entities.PrefsAsync(d.Key, CancellationToken.None);
+        var now = DateTimeOffset.UtcNow;
+        var hourEnd = new DateTimeOffset(now.Year, now.Month, now.Day, now.Hour, 0, 0, TimeSpan.Zero).AddHours(1);
+        var from = hourEnd.AddHours(-24);
+        _buckets = Enumerable.Range(0, 24).Select(i => from.AddHours(i)).ToList();
+        _history.Clear();
+        _counters.Clear();
+        foreach (var e in d.Entities)
+        {
+            if (e.StateClass is StateClass.Total or StateClass.TotalIncreasing
+                && await Entities.CounterAsync(d.Key, e.Key, now, TimeZoneInfo.Local, CancellationToken.None) is { } counter)
+                _counters[e.Key] = counter;
+            if (!EntityViewRules.For(e, _prefs.GetValueOrDefault(e.Key)).History) continue;
+            if (await Entities.HistoryAsync(d.Key, e.Key, from, hourEnd, CancellationToken.None) is { } h) _history[e.Key] = h;
+        }
+    }
+
+    /// <summary>The 24-hour sparkline of a card: the hourly means scaled into the 240 × 40 box (gaps skipped).</summary>
+    private static string Spark(IReadOnlyList<EntityBucket> h)
+    {
+        var values = h.Select(b => b.Avg).ToList();
+        var known = values.Where(v => v is not null).Select(v => v!.Value).ToList();
+        var lo = known.Min();
+        var hi = known.Max();
+        var range = hi - lo < 1e-9 ? 1 : hi - lo;
+        var step = values.Count > 1 ? 240.0 / (values.Count - 1) : 0;
+        return string.Join(" ", values.Select((v, i) => (v, i)).Where(p => p.v is not null)
+            .Select(p => HomeSvg.N(p.i * step) + "," + HomeSvg.N(37 - (p.v!.Value - lo) / range * 34)));
+    }
+
+    public void Dispose() => _timer?.Dispose();
+}

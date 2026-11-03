@@ -300,6 +300,33 @@ builder.Services.AddSingleton(sp => new DeviceDetailsService(
     sp.GetRequiredService<ITapoClient>(),
     sp.GetRequiredService<IKasaSettingsService>(),
     shelly: sp.GetRequiredService<IShellyClient>()));
+// MQTT Discovery (0.11, read only): devices that describe themselves on a broker (Zigbee2MQTT, ESPHome). The broker and the
+// user come from the MQTT tab (or KasaMonitor__MqttHost / __MqttPort / __MqttUser while the database has none); the password
+// from KasaMonitor__MqttPassword or the file KasaMonitor__MqttPasswordFile (read once here, never stored).
+builder.Services.AddSingleton(new KasaMonitor.Workers.Mqtt.MqttSettingsDefaults(
+    Host: builder.Configuration["KasaMonitor:MqttHost"] ?? "",
+    Port: int.TryParse(builder.Configuration["KasaMonitor:MqttPort"], out var mqttPort) ? mqttPort : KasaMonitor.Workers.Mqtt.MqttSettingsService.DefaultPort,
+    User: builder.Configuration["KasaMonitor:MqttUser"] ?? "",
+    PasswordFile: builder.Configuration["KasaMonitor:MqttPasswordFile"] ?? KasaMonitor.Workers.Mqtt.MqttSettingsService.DefaultPasswordFile,
+    Password: builder.Configuration["KasaMonitor:MqttPassword"]));
+builder.Services.AddSingleton<KasaMonitor.Workers.Mqtt.IMqttSettingsService, KasaMonitor.Workers.Mqtt.MqttSettingsService>();
+builder.Services.AddSingleton<KasaMonitor.Workers.Mqtt.MqttState>();
+builder.Services.AddSingleton<KasaMonitor.Workers.Mqtt.IMqttTransportFactory, KasaMonitor.Workers.Mqtt.MqttNetTransportFactory>();
+builder.Services.AddSingleton(sp => new KasaMonitor.Workers.Mqtt.GenericRecorder(
+    sp.GetRequiredService<IServiceScopeFactory>(),
+    sp.GetRequiredService<KasaMonitor.Workers.Mqtt.MqttState>(),
+    sp.GetRequiredService<ClimateRecorder>(),
+    sp.GetRequiredService<ILogger<KasaMonitor.Workers.Mqtt.GenericRecorder>>()));
+builder.Services.AddSingleton(sp => new KasaMonitor.Workers.Mqtt.MqttDiscoveryWorker(
+    sp.GetRequiredService<KasaMonitor.Workers.Mqtt.IMqttSettingsService>(),
+    sp.GetRequiredService<KasaMonitor.Workers.Mqtt.IMqttTransportFactory>(),
+    sp.GetRequiredService<KasaMonitor.Workers.Mqtt.MqttState>(),
+    sp.GetRequiredService<KasaMonitor.Workers.Mqtt.GenericRecorder>(),
+    sp.GetRequiredService<ILogger<KasaMonitor.Workers.Mqtt.MqttDiscoveryWorker>>()));
+builder.Services.AddHostedService(sp => sp.GetRequiredService<KasaMonitor.Workers.Mqtt.MqttDiscoveryWorker>());
+builder.Services.AddSingleton(sp => new KasaMonitor.Workers.Mqtt.GenericHistoryService(
+    sp.GetRequiredService<IServiceScopeFactory>(), sp.GetRequiredService<KasaMonitor.Workers.Mqtt.GenericRecorder>()));
+
 // /dispozitive: every device of every integration in one list (a projection, no table of its own) and the uniform
 // „Retrage / Readu”, which writes through each kind's owner.
 builder.Services.AddSingleton(sp => new DeviceCatalog(
@@ -312,7 +339,24 @@ builder.Services.AddSingleton(sp => new DeviceCatalog(
     sp.GetRequiredService<MieleRecorder>(),
     sp.GetRequiredService<IClimateSettingsService>(),
     wakeHeating: () => sp.GetRequiredService<HeatingPollWorker>().Wake(),
-    wakeClimate: () => sp.GetRequiredService<ClimateWorker>().Wake()));
+    wakeClimate: () => sp.GetRequiredService<ClimateWorker>().Wake(),
+    generic: sp.GetRequiredService<KasaMonitor.Workers.Mqtt.GenericRecorder>(),
+    mqtt: sp.GetRequiredService<KasaMonitor.Workers.Mqtt.MqttState>()));
+// /dispozitive/{key} (0.11): every device of every integration projected into entities (no migration of the existing
+// tables), one source per row-key prefix, and the per-entity preferences.
+builder.Services.AddSingleton<KasaMonitor.Core.Devices.Entities.IEntitySource>(sp => new KasaMonitor.Workers.Entities.PlugEntitySource(
+    sp.GetRequiredService<IServiceScopeFactory>(), sp.GetRequiredService<IPlugStateBroadcaster>()));
+builder.Services.AddSingleton<KasaMonitor.Core.Devices.Entities.IEntitySource>(sp => new KasaMonitor.Workers.Entities.ClimateEntitySource(
+    sp.GetRequiredService<IServiceScopeFactory>(), sp.GetRequiredService<ClimateState>()));
+builder.Services.AddSingleton<KasaMonitor.Core.Devices.Entities.IEntitySource>(sp => new KasaMonitor.Workers.Entities.HeatingEntitySource(
+    sp.GetRequiredService<IServiceScopeFactory>(), sp.GetRequiredService<HeatingState>()));
+builder.Services.AddSingleton<KasaMonitor.Core.Devices.Entities.IEntitySource>(sp => new KasaMonitor.Workers.Entities.MieleEntitySource(
+    sp.GetRequiredService<IServiceScopeFactory>(), sp.GetRequiredService<MieleState>()));
+builder.Services.AddSingleton<KasaMonitor.Core.Devices.Entities.IEntitySource>(sp => new KasaMonitor.Workers.Entities.GenericEntitySource(
+    sp.GetRequiredService<IServiceScopeFactory>(), sp.GetRequiredService<KasaMonitor.Workers.Mqtt.GenericRecorder>(),
+    sp.GetRequiredService<KasaMonitor.Workers.Mqtt.MqttState>()));
+builder.Services.AddSingleton(sp => new KasaMonitor.Workers.Entities.DeviceEntityService(
+    sp.GetServices<KasaMonitor.Core.Devices.Entities.IEntitySource>(), sp.GetRequiredService<IServiceScopeFactory>()));
 builder.Services.AddSingleton<MetricsScrapeLog>();
 builder.Services.AddSingleton<KasaMonitor.Web.Diagnostics.ClientErrorEndpoint>();
 builder.Services.AddSingleton<PrometheusTargetsChecker>();
@@ -324,6 +368,9 @@ NilmMetrics.Register(app.Services.GetRequiredService<KasaMonitor.Workers.Nilm.Ni
 MieleMetrics.Register(app.Services.GetRequiredService<MieleState>());
 ClimateMetrics.Register(app.Services.GetRequiredService<ClimateState>());
 HomeMetrics.Register(app.Services.GetRequiredService<HomeService>());
+GenericMetrics.Register(app.Services.GetRequiredService<KasaMonitor.Workers.Mqtt.MqttState>(), app.Services.GetRequiredService<KasaMonitor.Workers.Mqtt.GenericRecorder>(),
+    app.Services.GetRequiredService<KasaMonitor.Workers.Mqtt.IMqttSettingsService>(), app.Services.GetRequiredService<IServiceScopeFactory>(),
+    app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("KasaMonitor.Web.GenericMetrics"));
 
 using (var scope = app.Services.CreateScope())
 {
@@ -430,7 +477,7 @@ app.MapGet(KasaMonitor.Core.Miele.MieleApi.CallbackPath, async (HttpContext ctx,
 
 // CSV of one /history section for the period of the address (the page's „CSV” buttons): the same data and table as the page.
 app.MapGet("/history/export.csv", async (HttpContext ctx, HomeService home, HistoryService history, IKasaSettingsService kasa,
-    IHeatingSettingsService heating) =>
+    IHeatingSettingsService heating, KasaMonitor.Workers.Mqtt.GenericHistoryService generic) =>
 {
     var q = ctx.Request.Query;
     var section = q["section"].FirstOrDefault() ?? "";
@@ -438,7 +485,7 @@ app.MapGet("/history/export.csv", async (HttpContext ctx, HomeService home, Hist
         q["pana"].FirstOrDefault(), history.Today(), KasaMonitor.Core.Reports.ReportGranularity.Month);
     var plug = KasaMonitor.Core.Reports.PeriodQuery.Plug(q["plug"].FirstOrDefault());
     var table = await KasaMonitor.Web.Ui.HistoryExport.TableAsync(section, period, KasaMonitor.Core.Reports.PeriodQuery.Compare(q["cmp"].FirstOrDefault()),
-        plug, home, history, kasa, heating, DateTimeOffset.UtcNow, ctx.RequestAborted);
+        plug, home, history, kasa, heating, DateTimeOffset.UtcNow, ctx.RequestAborted, generic);
     return table is null
         ? Results.Text("Secțiune necunoscută. Valori: " + string.Join(", ", KasaMonitor.Web.Ui.HistorySections.All), "text/plain; charset=utf-8", statusCode: 400)
         : Results.File(KasaMonitor.Core.History.HistoryCsv.Bytes(table), "text/csv; charset=utf-8", KasaMonitor.Web.Ui.HistoryExport.FileName(section, period));

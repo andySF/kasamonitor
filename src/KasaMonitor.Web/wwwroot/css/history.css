@@ -109,3 +109,7 @@
 .cons-sum { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
 @media (max-width: 900px) { .cons-sum { grid-template-columns: minmax(0, 1fr); } .cons-list .cons-members { columns: 1; } }
 @media (max-width: 899px) { .hist .hist-top { position: static; } .hist .hist-chips { margin-left: 0; } }
+
+/* „Alte dispozitive” (0.11): one small chart per generic entity, two a row on a PC. */
+.hist .hist-generic { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(620px, 100%), 1fr)); gap: 12px 20px; }
+@media (max-width: 640px) { .hist .hist-generic { grid-template-columns: minmax(0, 1fr); } }

@@ -19,6 +19,10 @@ public static class UiFormat
         return future ? $"peste {body}" : $"acum {body}";
     }
 
+    /// <summary>„1 entitate”, „3 entități”, „20 de entități” (Romanian: „de” from 20 on, except 101–119 …).</summary>
+    public static string Count(int n, string one, string many) =>
+        n == 1 ? $"1 {one}" : n % 100 is 0 or >= 20 && n >= 20 ? $"{n} de {many}" : $"{n} {many}";
+
     /// <summary>A duration: "45 s", "12 min", "1 h 05 min" ("—" when null).</summary>
     public static string DurationRo(double? seconds)
     {

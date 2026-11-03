@@ -13,7 +13,8 @@ public static class HistoryExport
 {
     /// <summary>The table of a section, or null for an unknown section.</summary>
     public static async Task<HistoryTable?> TableAsync(string section, ReportPeriod period, bool compare, Guid? plug, HomeService home,
-        HistoryService history, IKasaSettingsService kasa, IHeatingSettingsService heating, DateTimeOffset nowUtc, CancellationToken ct)
+        HistoryService history, IKasaSettingsService kasa, IHeatingSettingsService heating, DateTimeOffset nowUtc, CancellationToken ct,
+        KasaMonitor.Workers.Mqtt.GenericHistoryService? generic = null)
     {
         var tz = history.TimeZone;
         var gas = section is HistorySections.Gas or HistorySections.Costs or HistorySections.DegreeDays || section == HistorySections.Electricity
@@ -34,6 +35,8 @@ public static class HistoryExport
                 return HistoryTables.Consumers((await history.GetDetectedAsync(period, ct)).Breakdown, prices);
             case HistorySections.Detected:
                 return HistoryTables.Detected(await history.GetDetectedAsync(period, ct), prices);
+            case HistorySections.Generic:
+                return generic is null ? HistoryTable.Empty : HistoryTables.Generic(await generic.GetAsync(period, tz, ct), period.Kind, nowUtc, compare);
             case HistorySections.Climate:
                 return HistoryTables.Climate(await history.GetClimateAsync(period, ct), period.Kind, nowUtc, compare);
             case HistorySections.DegreeDays:

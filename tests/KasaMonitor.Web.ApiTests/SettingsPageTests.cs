@@ -85,8 +85,8 @@ public class SettingsPageTests : IClassFixture<SettingsFactory>
     public void Registry_EveryIntegrationHasATab_AndTheTabsAreAppExportThenTheIntegrations()
     {
         Integrations.All.Select(i => i.Key).Should().Equal(IntegrationKeys.TpLink, IntegrationKeys.Shelly, IntegrationKeys.Viessmann,
-            IntegrationKeys.Miele, IntegrationKeys.Govee, IntegrationKeys.OpenMeteo);
-        SettingsTabs.All.Select(t => t.Name).Should().Equal("Aplicație", "Export", "TP-Link (Kasa, Tapo)", "Shelly", "Viessmann", "Miele", "Govee", "Open-Meteo");
+            IntegrationKeys.Miele, IntegrationKeys.Govee, IntegrationKeys.OpenMeteo, IntegrationKeys.Mqtt);
+        SettingsTabs.All.Select(t => t.Name).Should().Equal("Aplicație", "Export", "TP-Link (Kasa, Tapo)", "Shelly", "Viessmann", "Miele", "Govee", "Open-Meteo", "MQTT");
         foreach (var i in Integrations.All)
         {
             SettingsTabs.Get(i.Key).Should().NotBeNull($"„{i.Name}” needs a settings tab");

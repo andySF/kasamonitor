@@ -1,0 +1,145 @@
+@using KasaMonitor.Workers.Entities
+@using KasaMonitor.Web.Ui
+@using KasaMonitor.Core.Devices.Entities
+@inject DeviceEntityService Entities
+
+@* The per-entity preferences of a device (0.11), in its expanded row of /dispozitive: shown or hidden on the generated
+   page, in its history, in /metrics (generic devices only: the other integrations export their own families), a name
+   and decimals of one's own. „Comenzi permise” is not offered in 0.11 (R8). *@
+@if (_device is not { } d)
+{
+    <span class="text-secondary small">@(_loaded ? "Dispozitivul nu are valori de arătat." : "Se încarcă…")</span>
+}
+else
+{
+    <div class="table-responsive">
+        <table class="table table-sm align-middle mb-1 small entity-prefs">
+            <thead class="table-light">
+                <tr>
+                    <th scope="col">Valoare</th><th scope="col">Tip</th><th scope="col">Acum</th>
+                    <th scope="col" class="text-center">Arată</th><th scope="col" class="text-center">Istoric</th>
+                    @if (ShowMetrics) { <th scope="col" class="text-center">Metrici</th> }
+                    <th scope="col">Nume propriu</th><th scope="col">Zecimale</th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var e in d.Entities.Where(e => e.Kind != EntityKind.Unsupported))
+                {
+                    var row = _rows[e.Key];
+                    var id = "ep-" + ((uint)e.Key.GetHashCode()).ToString(System.Globalization.CultureInfo.InvariantCulture);
+                    <tr data-entity="@e.Key">
+                        <td>@e.Name @if (e.Category != EntityCategory.Primary) { <span class="badge text-bg-light border">diagnostic</span> }</td>
+                        <td class="text-secondary">@EntityFormat.KindName(e)@(e.StateClassInferred ? " (dedus)" : "")@(e.Unit is { } u ? $" · {u}" : "")</td>
+                        <td class="text-nowrap">@EntityFormat.Value(e, d.ValueOf(e.Key), _saved.GetValueOrDefault(e.Key))</td>
+                        <td class="text-center"><input class="form-check-input" type="checkbox" id="@(id)-v" @bind="row.Visible" aria-label="@($"Arată {e.Name}")" /></td>
+                        <td class="text-center"><input class="form-check-input" type="checkbox" id="@(id)-h" @bind="row.InHistory" aria-label="@($"Istoric {e.Name}")" /></td>
+                        @if (ShowMetrics)
+                        {
+                            <td class="text-center"><input class="form-check-input" type="checkbox" id="@(id)-m" @bind="row.InMetrics" aria-label="@($"Metrici {e.Name}")" /></td>
+                        }
+                        <td><input class="form-control form-control-sm" id="@(id)-n" @bind="row.Name" placeholder="@e.Name" aria-label="@($"Nume propriu {e.Name}")" /></td>
+                        <td style="width: 5.5rem;">
+                            @if (e.DataType == EntityDataType.Number)
+                            {
+                                <input class="form-control form-control-sm" type="number" min="0" max="6" id="@(id)-p" @bind="row.Precision" aria-label="@($"Zecimale {e.Name}")" />
+                            }
+                        </td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </div>
+    <div class="d-flex flex-wrap align-items-center gap-2">
+        <button type="button" class="btn btn-outline-primary btn-sm" @onclick="SaveAsync"><i class="bi bi-save me-1"></i>Salvează valorile afișate</button>
+        <a class="small" href="@DevicePages.Device(d.Key)">Pagina cu toate valorile</a>
+        @if (_message is not null) { <span class="small text-success" role="status">@_message</span> }
+        @if (_error is not null) { <span class="small text-danger">@_error</span> }
+    </div>
+}
+
+@code {
+    [Parameter, EditorRequired] public string DeviceKey { get; set; } = "";
+    /// <summary>Show the „Metrici” column (generic devices; the projected ones keep their integration's families).</summary>
+    [Parameter] public bool ShowMetrics { get; set; }
+
+    private sealed class Row
+    {
+        public bool Visible { get; set; }
+        public bool InHistory { get; set; }
+        public bool InMetrics { get; set; }
+        public string? Name { get; set; }
+        public int? Precision { get; set; }
+    }
+
+    private EntityDevice? _device;
+    private IReadOnlyDictionary<string, EntityPrefs> _saved = new Dictionary<string, EntityPrefs>();
+    private readonly Dictionary<string, Row> _rows = new(StringComparer.Ordinal);
+    private bool _loaded;
+    private string? _loadedKey;
+    private string? _message;
+    private string? _error;
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (_loadedKey == DeviceKey) return;
+        _loadedKey = DeviceKey;
+        await LoadAsync();
+    }
+
+    private async Task LoadAsync()
+    {
+        _device = await Entities.GetAsync(DeviceKey, DateTimeOffset.UtcNow, CancellationToken.None);
+        _saved = _device is null ? new Dictionary<string, EntityPrefs>() : await Entities.PrefsAsync(DeviceKey, CancellationToken.None);
+        _rows.Clear();
+        foreach (var e in _device?.Entities ?? Array.Empty<DeviceEntity>())
+        {
+            var p = _saved.GetValueOrDefault(e.Key);
+            _rows[e.Key] = new Row
+            {
+                Visible = EntityDefaults.EffectiveVisible(p),
+                InHistory = EntityDefaults.EffectiveInHistory(e, p),
+                InMetrics = EntityDefaults.EffectiveInMetrics(e, p),
+                Name = p?.NameOverride,
+                Precision = p?.PrecisionOverride,
+            };
+        }
+        _loaded = true;
+    }
+
+    /// <summary>
+    /// Stores only what differs from the default (a value equal to the default is saved as null, so a later default change
+    /// still applies); a row back to every default is deleted.
+    /// </summary>
+    private async Task SaveAsync()
+    {
+        _message = null;
+        _error = null;
+        if (_device is not { } d) return;
+        try
+        {
+            var changed = 0;
+            foreach (var e in d.Entities.Where(e => _rows.ContainsKey(e.Key)))
+            {
+                var r = _rows[e.Key];
+                var old = _saved.GetValueOrDefault(e.Key);
+                var prefs = new EntityPrefs(e.Key,
+                    Visible: r.Visible ? null : false,
+                    InHistory: r.InHistory == EntityDefaults.InHistory(e) ? null : r.InHistory,
+                    InMetrics: !ShowMetrics ? old?.InMetrics : r.InMetrics == EntityDefaults.InMetrics(e) ? null : r.InMetrics,
+                    NameOverride: string.IsNullOrWhiteSpace(r.Name) ? null : r.Name.Trim(),
+                    PrecisionOverride: r.Precision is { } p ? Math.Clamp(p, 0, 6) : null,
+                    ClassOverride: old?.ClassOverride,
+                    UnitOverride: old?.UnitOverride);
+                if (prefs == (old ?? new EntityPrefs(e.Key))) continue;
+                await Entities.SavePrefsAsync(prefs, CancellationToken.None);
+                changed++;
+            }
+            await LoadAsync();
+            _message = changed == 0 ? "Nimic de schimbat." : $"Salvat ({changed} {(changed == 1 ? "valoare" : "valori")}).";
+        }
+        catch (Exception ex)
+        {
+            _error = "Nu s-a putut salva: " + ex.Message;
+        }
+    }
+}

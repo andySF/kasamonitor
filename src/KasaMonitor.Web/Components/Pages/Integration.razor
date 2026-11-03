@@ -182,6 +182,23 @@
             <li>temperatura pe camere: <code>avg by (room) (climate_temperature_celsius{source!="viessmann"})</code></li>
             <li>senzori fără date: <code>climate_online == 0</code>; baterie slabă: <code>climate_battery_percent &lt; 20</code></li>
         </ul>
+        <h3>Dispozitive generice (MQTT): metrici <code>entity_*</code></h3>
+        <p class="note">
+            Dispozitivele adăugate prin MQTT Discovery (Zigbee2MQTT, ESPHome). O familie pe clasă, cu unitate fixă; <code>entity_value</code>
+            (eticheta <code>unit</code>) doar pentru clasele fără familie, <code>entity_state</code> pentru pornit/oprit. Etichete: <code>device</code>,
+            <code>entity</code>, <code>room</code>, <code>integration</code> (fără id-uri sau MAC). Implicit doar clasele principale (temperatură, umiditate,
+            putere, energie, tensiune, curent, baterie, CO₂, PM, presiune, iluminare), nu diagnosticele; bifa „Metrici” din rândul dispozitivului schimbă asta.
+            Temperatura unui senzor generic apare în <code>climate_*</code>, nu aici. Puterea și energia nu intră în totalurile casei. Limita de serii e în Setări → MQTT.
+        </p>
+        <table class="table table-sm align-middle int-table">
+            <thead><tr><th>Metrică</th><th>Tip</th><th>Unitate</th><th>Descriere</th></tr></thead>
+            <tbody>
+                @foreach (var m in GenericMetrics.Catalog)
+                {
+                    <tr><td><code>@m.Name</code></td><td>@m.Type</td><td>@m.Unit</td><td>@m.Help</td></tr>
+                }
+            </tbody>
+        </table>
         <h3>Consumatori detectați (NILM)</h3>
         <p class="note">
             Din fluxul la 1 s al contorului general, KasaMonitor detectează pornirile și opririle aparatelor (pagina <a href="/consumatori">Consumatori</a>)

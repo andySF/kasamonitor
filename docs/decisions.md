@@ -260,21 +260,52 @@ load and still gets a `304` when nothing changed.
 
 ---
 
-## 0.11 – Generic devices (**planned**)
+## 0.11.0 – Generic devices: a common entity model, a generated page, MQTT Discovery
 
-**Context.** Every new device family so far needed code: a protocol client, a recorder, a page and metrics. Many
-useful devices already publish self-describing data: Home Assistant's MQTT Discovery (a retained config message per
-entity with a device class, unit and state topic) and Prometheus/OpenMetrics text exposition (a type, unit and help
-per metric family).
+**Context.** Every new device family needed code: a client, a recorder, a page, metrics. Devices that describe
+themselves (Home Assistant's MQTT Discovery: Zigbee2MQTT, ESPHome) can be read without that, but only for what they
+describe: what links several values (totals, cost, cycles, NILM) cannot be self-described.
 
-**Intended direction.**
-- A **capability model**: a device exposes typed capabilities (power, energy, temperature, humidity, battery,
-  switch…) instead of belonging to a hard-coded category; pages and metrics are generated from the capabilities.
-- Two generic ingestion paths: **MQTT Discovery** (subscribe to the discovery topics of a broker, create devices and
-  capabilities from the configs) and **OpenMetrics** scraping of exporters.
-- Devices that fit the model appear on `/dispozitive` through the registry and the catalog described in
-  [architecture.md](architecture.md), without a migration per vendor.
+**Decision.**
+- **Demarcation rule.** The generic layer shows and keeps values per entity (current value, history, per-entity
+  statistics). Anything that links several entities or devices (house balance, totals, cost, NILM, cycles, degree
+  days) stays in the rich integrations; a generic device enters such a calculation only through an explicit adapter.
+  0.11 has one: a generic climate sensor is recorded through `ClimateRecorder` (source `mqtt` = the integration key).
+  Generic power and energy never enter the totals, the cost or the detection.
+- **A common entity model** (`Core/Devices/Entities`): kind, data type, the app's own device class mapped from HA's
+  `device_class`, a canonical unit (values converted on the way in), state class, category, precision, writable.
+  The page `/dispozitive/{key}` is drawn from `Kind × StateClass × DeviceClass × EntityCategory` (pure rules), not from
+  the data type alone.
+- **Projection, not migration.** The existing integrations get read-only `IEntitySource` projections (plug, climate
+  sensor, boiler, Miele); their tables are untouched (the database has no off-host copy and feeds NILM, history and
+  the alert rules). Reflection tests keep the projections complete. Per-entity preferences live apart from the
+  descriptions (`EntityPrefs`), since a discovery message rewrites the description.
+- **MQTT Discovery, read only.** Both discovery formats, the abbreviations and the `~` base; a small template subset
+  (anything else marks the entity, the raw payload is never used instead); availability and `expire_after`; MQTTnet 5
+  behind a thin `IMqttTransport` (own reconnection and re-subscription, the CONNACK result checked). No command is
+  published (KasaMonitor has no authentication). New additive tables with integer keys (`GenericReadings` and
+  `GenericHourly` are `WITHOUT ROWID`), a write rule with a 10-second cap, hourly rollups kept forever, raw rows 90 days.
+- **Metrics per class**, one unit per family (`entity_temperature_celsius`, `entity_energy_wh_total` …), `entity_value`
+  with a `unit` label only for unknown classes; no ids in labels; a series limit.
+- **Keys decide owners**: the expanded row, „Retrage” and the page dispatch on the key prefix (`plug:`, `miele:`,
+  `heating:`, `climate:`, `dev:`), never on the category; `PlugProtocols.Integration` maps protocols explicitly.
 
-**Open questions (to settle before implementing).** How to map HA device classes to the existing categories; handling of retained „ghost” entities;
-whether commands (switches) are in scope for the first version; credentials for the broker (file/environment, as for
-the other integrations). None of this is implemented yet.
+- **Untrusted input.** Discovery payloads come from any publisher on the broker: templates are bounded (512
+  characters, 32 levels, 128 nodes) and never throw; payloads over 64 KB, wildcard state topics, unique ids over 128
+  characters and more than 500 devices are refused and listed as problems; texts are cut to their column lengths and
+  only finite numbers are stored.
+- **A retained state is not a reading.** What the broker kept is shown (without a time) but never stored, and the last
+  reading's time stays; the same holds after every reconnection.
+- **Freshness without availability.** An entity with neither availability nor `expire_after` is fresh up to 2 expected
+  intervals, „Întârziat” up to 6, then not available; the interval is the observed cadence (median gap, 30 s – 12 h),
+  else 1 h for a number and 12 h for an on/off or a text.
+- **Counters as Home Assistant counts them.** A `total_increasing` value under 90 % of the highest seen is a reset; a
+  smaller dip is ignored. What a counter counted while KasaMonitor was not listening goes to the hour of the first
+  reading after the gap.
+- **Deduced state class.** A device that sends no `state_class` gets `measurement` only for the classes that cannot be
+  anything else (temperature, humidity, pressure, illuminance, CO₂/CO, PM, VOC, voltage, current, power, signal
+  strength, battery) with a recognised unit and not diagnostic — never energy (total or total_increasing cannot be
+  told) and never a number without a class. The entity is marked `StateClassInferred` („dedus” in its row).
+
+**Consequences.** A Zigbee2MQTT or ESPHome device needs no code; the rich pages stay what they were. OpenMetrics
+scraping, commands and Shelly over MQTT are not in 0.11 (no real target yet / no authentication / RPC stays better).

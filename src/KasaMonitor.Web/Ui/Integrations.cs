@@ -103,6 +103,9 @@ public static class Integrations
             typeof(GoveeSettingsTab), typeof(GoveeAddPanel), "/clima", GoveeAsync),
         new(IntegrationKeys.OpenMeteo, "Open-Meteo", "bi-cloud-sun", [DeviceCategory.Weather],
             typeof(OpenMeteoSettingsTab), typeof(OpenMeteoAddPanel), "/clima", OpenMeteoAsync),
+        // 0.11: devices that describe themselves on a broker (Zigbee2MQTT, ESPHome); read only.
+        new(IntegrationKeys.Mqtt, "MQTT", "bi-diagram-2", [DeviceCategory.Meter, DeviceCategory.Relay, DeviceCategory.ClimateSensor, DeviceCategory.Generic],
+            typeof(MqttSettingsTab), typeof(MqttAddPanel), DevicePages.Href(IntegrationKeys.Mqtt), MqttAsync),
     ];
 
     public static IntegrationInfo? Get(string? key) =>
@@ -149,6 +152,20 @@ public static class Integrations
         return IntegrationStatusRules.Govee(s.HasGoveeKey, s.GoveeKeyProblem, s.GoveeHomeDevices.Count,
             sensors.Count(x => climate.IsOnline(x, now)), climate.SourceStatus(ClimateSources.Govee), climate.GoveeCalls.Today,
             sensors.Select(x => x.ReadUtc).Max());
+    }
+
+    private static async Task<IntegrationStatus> MqttAsync(IServiceProvider sp, DateTimeOffset now, CancellationToken ct)
+    {
+        var s = await sp.GetRequiredService<KasaMonitor.Workers.Mqtt.IMqttSettingsService>().GetAsync(ct);
+        var state = sp.GetRequiredService<KasaMonitor.Workers.Mqtt.MqttState>();
+        var recorder = sp.GetRequiredService<KasaMonitor.Workers.Mqtt.GenericRecorder>();
+        await recorder.LoadAsync(ct);
+        var discovered = state.Registry.Devices(now);
+        var added = recorder.Devices.Where(d => !d.IsArchived).ToList();
+        var online = added.Count(d => discovered.FirstOrDefault(x => x.ExternalId == d.ExternalId) is { Available: true });
+        var problems = state.Registry.Problems.Count + discovered.SelectMany(d => d.Entities).Count(e => e.Spec.Problem is not null || e.ReadErrors > 0);
+        return IntegrationStatusRules.Mqtt(s.Enabled, s.IsConfigured, state.Connected, s.Broker, state.Status, added.Count, online,
+            discovered.Count(d => added.All(a => a.ExternalId != d.ExternalId)), problems, state.LastMessageUtc);
     }
 
     private static async Task<IntegrationStatus> OpenMeteoAsync(IServiceProvider sp, DateTimeOffset now, CancellationToken ct)
@@ -255,6 +272,24 @@ public static class IntegrationStatusRules
         return new(level, Devices(online, ticked, "termometru", "termometre"), lastReadUtc, callsToday, GoveeApi.DailyRequestLimit);
     }
 
+    /// <summary>
+    /// MQTT (0.11): „Oprit” when switched off, „Neconfigurat” without a broker, „Eroare” while not connected (the reason:
+    /// refused authentication, unreachable), „Atenție” when an added device does not answer or an entity cannot be read.
+    /// </summary>
+    public static IntegrationStatus Mqtt(bool enabled, bool configured, bool connected, string broker, string? status, int added, int online,
+        int notAdded, int problems, DateTimeOffset? lastMessageUtc)
+    {
+        if (!enabled) return new(IntegrationLevel.Off, "citirea MQTT e oprită", lastMessageUtc);
+        if (!configured) return new(IntegrationLevel.NotConfigured, "lipsește brokerul", lastMessageUtc);
+        if (!connected) return new(IntegrationLevel.Error, $"neconectat la {broker}{(status is null ? "" : $": {status}")}", lastMessageUtc);
+        var parts = new List<string> { $"conectat la {broker}" };
+        parts.Add(added == 0 ? "niciun dispozitiv adăugat" : Devices(online, added, "dispozitiv", "dispozitive"));
+        if (notAdded > 0) parts.Add($"{notAdded} descoperite neadăugate");
+        if (problems > 0) parts.Add($"{problems} {(problems == 1 ? "problemă" : "probleme")} (Setări → MQTT)");
+        var level = online < added || problems > 0 ? IntegrationLevel.Warning : IntegrationLevel.Ok;
+        return new(level, string.Join(" · ", parts), lastMessageUtc);
+    }
+
     public static IntegrationStatus OpenMeteo(bool hasLocation, string? sourceStatus, DateTimeOffset? lastReadUtc, bool fresh, int callsToday)
     {
         if (!hasLocation) return new(IntegrationLevel.NotConfigured, "fără coordonate: nu se face nicio cerere", lastReadUtc, callsToday);
@@ -300,6 +335,9 @@ public static class DevicePages
 
     /// <summary>The devices page with one row open (<c>?d=plug:{id}</c>, <c>climate:{id}</c>, …): the ✎ links of the data pages.</summary>
     public static string Row(string key) => $"{Path}?d={Uri.EscapeDataString(key)}";
+
+    /// <summary>The generated page of one device (0.11): every value, <c>/dispozitive/{key}</c> with the key escaped.</summary>
+    public static string Device(string key) => $"{Path}/{Uri.EscapeDataString(key)}";
 
     /// <summary>The devices page with the „+ Adaugă” panel open on one integration (<c>?adauga=govee</c>).</summary>
     public static string Add(string integration) => $"{Path}?adauga={Uri.EscapeDataString(integration)}";

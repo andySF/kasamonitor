@@ -7,6 +7,7 @@
 @using KasaMonitor.Web.Ui
 @inject HomeService Home
 @inject HistoryService HistorySvc
+@inject KasaMonitor.Workers.Mqtt.GenericHistoryService GenericHistory
 @inject EnergyReportService Reports
 @inject IKasaSettingsService KasaSettings
 @inject IHeatingSettingsService HeatingSettings
@@ -30,7 +31,7 @@
             <span>@(IsToday ? "Compară cu ieri (la aceeași oră)" : PeriodNames.For(_period.Kind).Compare)</span>
         </label>
         <nav class="hist-chips" aria-label="Secțiuni">
-            <a href="#curent">Curent</a><a href="#gaz">Gaz</a><a href="#aparate">Aparate</a><a href="#consumatori">Consumatori</a><a href="#clima">Climă</a><a href="#costuri">Costuri</a><a href="#evenimente">Evenimente</a>
+            <a href="#curent">Curent</a><a href="#gaz">Gaz</a><a href="#aparate">Aparate</a><a href="#consumatori">Consumatori</a><a href="#clima">Climă</a>@if (_generic is { Entities.Count: > 0 }) {<a href="#alte">Alte dispozitive</a>}<a href="#costuri">Costuri</a><a href="#evenimente">Evenimente</a>
         </nav>
     </div>
     @if (_errors.Count > 0)
@@ -99,6 +100,10 @@
     <HistoryMieleSection Data="_miele" Prices="_prices" Tz="Reports.TimeZone" CsvHref="@Csv(HistorySections.MieleCycles)" ProgramsCsvHref="@Csv(HistorySections.MielePrograms)" />
     <HistoryDetectedSection Data="_detected" Period="_period" Compare="_compare" Prices="_prices" CsvHref="@Csv(HistorySections.Consumers)" DetectedCsvHref="@Csv(HistorySections.Detected)" />
     <HistoryClimateSection Data="_climate" Period="_period" Compare="_compare" Now="_now" CsvHref="@Csv(HistorySections.Climate)" DegreeDaysCsvHref="@Csv(HistorySections.DegreeDays)" />
+    @if (_generic is { Entities.Count: > 0 })
+    {
+        <HistoryGenericSection Data="_generic" Period="_period" Compare="_compare" Now="_now" CsvHref="@Csv(HistorySections.Generic)" />
+    }
     <HistoryCostSection Electricity="_home" Gas="_gas" Bill="_bill" Prices="_prices" Comparison="cost" Period="_period" Today="_today" Compare="_compare" Now="_now"
                         Tz="Reports.TimeZone" CsvHref="@Csv(HistorySections.Costs)" />
     <HistoryEventsSection Data="_events" Tz="Reports.TimeZone" CsvHref="@Csv(HistorySections.Events)" />
@@ -131,6 +136,7 @@
     private HistoryDetected? _detected;
     private HistoryClimate? _climate;
     private HistoryEventList? _events;
+    private KasaMonitor.Workers.Mqtt.HistoryGeneric? _generic;
     private BillEstimate? _bill;
     private readonly SortedSet<string> _errors = new();
 
@@ -174,7 +180,7 @@
         _today = HistorySvc.Today();
         _now = DateTimeOffset.UtcNow;
         var period = _period;
-        (_home, _gas, _gasLoaded, _miele, _detected, _climate, _events) = (null, null, false, null, null, null, null);
+        (_home, _gas, _gasLoaded, _miele, _detected, _climate, _events, _generic) = (null, null, false, null, null, null, null, null);
         _errors.Clear();
         var ct = CancellationToken.None;
         var tasks = new List<Task>
@@ -186,6 +192,7 @@
             Section("consumatori", () => HistorySvc.GetDetectedAsync(period, ct), d => _detected = d, version),
             Section("climă", () => HistorySvc.GetClimateAsync(period, ct), x => _climate = x, version),
             Section("evenimente", () => HistorySvc.GetEventsAsync(period, ct), e => _events = e, version),
+            Section("alte dispozitive", () => GenericHistory.GetAsync(period, Reports.TimeZone, ct), g => _generic = g, version),
             Section("estimare", () => Home.Metrics.Bill is { } b ? Task.FromResult<BillEstimate?>(b) : Home.GetBillAsync(ct), b => _bill = b, version),
         };
         if (!RendererInfo.IsInteractive) await Task.WhenAll(tasks);

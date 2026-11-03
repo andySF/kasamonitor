@@ -21,7 +21,16 @@ public static class PlugProtocols
     /// <summary>The TP-Link protocols (Kasa legacy, Tapo KLAP / AES) and the unsupported placeholders of the TP-Link discovery.</summary>
     public static bool IsTpLink(string protocol) => protocol is Legacy or Klap or Aes or Unsupported;
 
-    /// <summary>The integration a plug belongs to (<see cref="Devices.IntegrationKeys"/>): Shelly RPC = shelly, the rest = tplink.</summary>
-    public static string Integration(string protocol) =>
-        protocol == ShellyRpc ? Devices.IntegrationKeys.Shelly : Devices.IntegrationKeys.TpLink;
+    /// <summary>
+    /// R11 (0.11): the integration a plug belongs to (<see cref="Devices.IntegrationKeys"/>), mapped explicitly: Shelly RPC =
+    /// shelly, the TP-Link protocols (and their unsupported placeholder) = tplink. A protocol not listed here is an error,
+    /// never silently „TP-Link”: a new plug adapter must add its mapping.
+    /// </summary>
+    public static string Integration(string protocol) => protocol switch
+    {
+        ShellyRpc => Devices.IntegrationKeys.Shelly,
+        Legacy or Klap or Aes or Unsupported => Devices.IntegrationKeys.TpLink,
+        _ => throw new ArgumentOutOfRangeException(nameof(protocol), protocol,
+            $"Protocolul de priză „{protocol}” nu are o integrare (PlugProtocols.Integration)."),
+    };
 }

@@ -1,0 +1,5 @@
+{"source": "din documentație (ESPHome MQTT), neverificat pe hardware", "topic": "senzor-co2/status", "retain": true, "payload": "online"}
+{"source": "din documentație (ESPHome MQTT), neverificat pe hardware", "topic": "senzor-co2/sensor/co2/state", "retain": true, "payload": "612"}
+{"source": "din documentație (ESPHome MQTT), neverificat pe hardware", "topic": "senzor-co2/sensor/temperatura/state", "retain": true, "payload": "22.84"}
+{"source": "din documentație (ESPHome MQTT), neverificat pe hardware", "topic": "senzor-co2/sensor/wifi_signal/state", "retain": true, "payload": "-61"}
+{"source": "din documentație (ESPHome MQTT), neverificat pe hardware", "topic": "senzor-co2/switch/releu/state", "retain": true, "payload": "OFF"}

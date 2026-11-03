@@ -13,6 +13,8 @@ else
     var lo = Math.Floor(all.Min() - 0.5);
     var hi = Math.Ceiling(all.Max() + 0.5);
     if (hi - lo < 4) { lo -= 2; hi += 2; }
+    // Round 2: values that are never negative (a current, a power, a concentration) get no negative part of the axis.
+    if (all.Min() >= 0 && lo < 0) { hi -= lo; lo = 0; }
     var step = HomeSvg.NiceMax((hi - lo) / 4);
     lo = Math.Floor(lo / step) * step;
     hi = lo + step * 4;
@@ -80,7 +82,8 @@ else
     /// <summary>One line: its mean per bucket and, optionally, the band of min and max.</summary>
     public sealed record LineSeries(string Name, string Css, IReadOnlyList<double?> Mean, IReadOnlyList<double?>? Min = null, IReadOnlyList<double?>? Max = null);
 
-    private const double W = 760;
+    /// <summary>The width of the drawing (its units are the font's): close to the rendered width keeps the axis labels at ~12 px.</summary>
+    [Parameter] public double W { get; set; } = 760;
     [Parameter] public double H { get; set; } = 230;
     private const double L = 40;
     private const double R = 8;

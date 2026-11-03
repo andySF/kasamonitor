@@ -14,7 +14,8 @@ public sealed record ClimateSensorLive(
     int? BatteryPercent,
     DateTimeOffset? ReadUtc,
     bool SourceOnline = true,
-    bool BatteryPowered = false);
+    bool BatteryPowered = false,
+    TimeSpan? ExpectedInterval = null);
 
 /// <summary>
 /// In-memory state of the climate section (singleton), the service the pages use (/clima, the „Afară” row of
@@ -85,7 +86,7 @@ public sealed class ClimateState
 
     /// <summary>The interval the sensor's source delivers at.</summary>
     public TimeSpan Expected(ClimateSensorLive s) =>
-        ClimateFreshness.Expected(s.Sensor.Source, s.BatteryPowered, _viessmannPollSeconds());
+        ClimateFreshness.Expected(s.Sensor.Source, s.BatteryPowered, _viessmannPollSeconds(), s.ExpectedInterval);
 
     public ClimateFreshnessLevel Freshness(ClimateSensorLive s, DateTimeOffset now) =>
         ClimateFreshness.Level(s.ReadUtc, now, Expected(s));

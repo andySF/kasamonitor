@@ -7,7 +7,7 @@ plugs and energy meters (e.g. Shelly EM Gen3, local JSON-RPC; the only write is 
 with SQLite, a web UI on port 8910 and a Prometheus `/metrics` endpoint. An optional Prometheus + Grafana stack
 with a ready-made dashboard and alert rules is included.
 
-Version: **0.10.1** (`Directory.Build.props`). Docker image: `duobit/kasamonitor`.
+Version: **0.11.0** (`Directory.Build.props`). Docker image: `duobit/kasamonitor`.
 
 ## Quick start
 
@@ -76,7 +76,7 @@ TP-Link (Tapo app) account in `/settings/tplink` and press **Adaugă** → TP-Li
   in the address) for electricity, gas and boiler, Miele, detected consumers, climate (with heating degree days and the
   energy signature), costs and events; Δ at the same share of the previous period, drill-down, CSV per section; and
   „Rapoarte” on `/centrala` (gas, boiler electricity, heat produced). See [History](#history-history-istoric).
-- **Version in the menu**: „v0.10.1” at the right of the navigation bar; the tooltip shows the commit and the build time.
+- **Version in the menu**: „v0.11.0” at the right of the navigation bar; the tooltip shows the commit and the build time.
 - **Browser errors in the server log**: JavaScript errors and the Blazor error banner are reported to
   `POST /api/client-error` and logged at Warning (category `KasaMonitor.ClientErrors`), so `docker logs` shows them.
 - **HTTP API for the appliance detection** (`/api/nilm/*`, LAN only): list, sheet, label, merge, add to, hide, regroup,
@@ -113,13 +113,101 @@ restore). Filters by category, vendor, state and „Arată retrase”, kept in t
   discovery skips it, and the rows an earlier auto-add stored in `Plugs` were archived once at the first start of
   0.10.0 (logged; a row brought back stays back).
 
+### Device page (`/dispozitive/{key}`)
+
+Since 0.11 every device has a generated page with **all its values** (the ▦ button of its row, and „Pagina cu toate
+valorile” in the expanded row). Each integration is *projected* into a common model of entities (no table was
+migrated: the plugs, the boiler, the Miele appliances and the climate sensors keep their tables and their pages); each
+entity has a kind (sensor, binary, switch, number, select, button, text), a class (temperature, power, energy, door,
+moisture …, mapped from Home Assistant's `device_class`), a canonical unit (W, Wh, V, A, °C, %, hPa …) and a state class
+(`measurement`, `total_increasing` …). The page draws each entity by `Kind × StateClass × DeviceClass × EntityCategory`:
+
+- a **measurement** (power, temperature) is a card with the value and a 24-hour sparkline, and a chart of the hourly
+  min / mean / max below the cards;
+- a **counter** (`total_increasing`: the plug's energy counter, Miele's program energy) shows its value; the totals,
+  costs and per-period consumption stay on the integration's own page (the „Pagina integrării” button);
+- a number **without a state class** (a target temperature, a remaining time) is a card without a chart; texts and
+  enums (boiler mode, Miele program) are text cards; **binaries** are a badge with a Romanian text per class (ușă
+  deschis/închis, baterie descărcată/OK, umezeală ud/uscat);
+- a **switch / number / select / button** is shown with its value and „comandă (neactivată)”: KasaMonitor sends no
+  command from this page in 0.11 (the relays keep their own control on the plug pages);
+- **diagnostics** (the device's day/month counters, „online”, Wi-Fi signal, firmware details) are folded under
+  „Diagnostic”.
+
+History on this page comes only from what is already stored: a plug's power and voltage from `LiveMinuteAggregates`
+(streamed channels), a climate sensor's temperature and humidity from `ClimateReadings`. The boiler and the Miele
+appliances show their current values; their history stays on `/centrala` and `/aparate`.
+
+**Per-entity preferences** live in the expanded row („Valorile afișate pe pagina dispozitivului”): shown or hidden,
+in the history (a chart also for a value without a state class), a name and decimals of one's own. They are stored in
+the table `EntityPrefs` (key = the entity key, e.g. `plug:{id}/power`; only what differs from the default). The
+row's editor is chosen by the prefix of the device key (`plug:`, `climate:`, `miele:`, `heating:`, `dev:`), never by its
+category. An unknown key answers 404.
+
+## Generic devices (MQTT Discovery)
+
+Since 0.11 KasaMonitor reads devices that **describe themselves** on an MQTT broker with Home Assistant's MQTT
+Discovery: Zigbee2MQTT (with `homeassistant: {enabled: true}`) and ESPHome (with `mqtt:`). Tasmota (current firmware)
+and Shelly do not publish discovery and are not read this way. **Read only**: KasaMonitor never publishes a command;
+a switch, number, select or button is shown with its value and „comandă (neactivată)”.
+
+- **Connection** (`/settings/mqtt`): broker (name or address), port, user, TLS (off on a LAN), discovery prefix
+  (default `homeassistant`), „Adaugă automat ce se descoperă” (default off). The password is never stored nor shown: it
+  comes from `KasaMonitor__MqttPassword` or the file `KasaMonitor__MqttPasswordFile` (default
+  `/run/secrets/mqtt-kasamonitor.password`), read once at start-up. MQTT 3.1.1 through MQTTnet 5; a refused login is
+  shown as „Eroare: autentificare refuzată”, not as connected; reconnection every 5 → 60 s, everything re-subscribed.
+- **Discovery**: subscribes to `<prefix>/#` and reads both formats — one payload per entity
+  (`<prefix>/<component>/[<node_id>/]<object_id>/config`) and one per device (`<prefix>/device/…/config` with
+  `components`) — with the abbreviations (`stat_t`, `dev_cla`, `uniq_id`, `dev`, `ids` …) and the `~` topic base. An empty
+  retained payload marks the entity removed (its history stays). An entity without `unique_id` cannot be added (listed
+  under „Probleme” on the MQTT tab). Supported: `sensor`, `binary_sensor`, `switch`, `number`, `select`, `button`,
+  `text`; other components (`light`, `climate`, `cover` …) are listed as „neacceptat”.
+- **Templates**: `value_template` is accepted only in a small subset: `{{ value }}`, `{{ value_json.a.b }}`,
+  `value_json['a']`, `value_json.a[0]`, the filters `float`, `int`, `round(n)`, `default(x)`, `lower`, `upper` and
+  `* / + -`. Anything else (`{% … %}`, other filters) marks the entity „șablon neacceptat” — the raw payload is never
+  used instead.
+- **Availability**: `availability` / `availability_topic` with `availability_mode` (all / any / latest) and
+  `expire_after` (an unknown availability payload is ignored). Without either, a value is fresh up to 2 expected
+  intervals, „Întârziat” up to 6, then unavailable; the interval is the cadence observed (median gap of the last
+  messages, 30 s – 12 h), else 1 h for a number and 12 h for an on/off or a text.
+- **Retained states** (ESPHome retains them) are shown but are not readings: no row is stored and the time of the last
+  live reading stays, also after every reconnection.
+- **Untrusted input**: templates of at most 512 characters and 32 nesting levels, payloads up to 64 KB, no wildcard state
+  topics, unique ids up to 128 characters, at most 500 devices; everything refused is listed under „Probleme”. A template
+  that fails on a message is counted in memory and shown on the card („valoarea nu s-a putut citi …”).
+- **Deduced state class**: without `state_class`, `measurement` is deduced only for temperature, humidity, pressure,
+  illuminance, CO₂/CO, PM, VOC, voltage, current, power, signal strength and battery with a recognised unit („dedus”
+  in the row); never for energy.
+- **Adding**: Dispozitive → „+ Adaugă” → MQTT (or the „Descoperite” table) lists what the broker describes and is not
+  added, with what it would be; nothing is stored before „Adaugă”. „Cere republicarea” publishes `online` on
+  `<prefix>/status` (not retained), so the devices send their description again. One row per physical device: its
+  capabilities are badges („+ releu”, „+ temperatură”).
+- **Category** (automatic, can be overridden in the expanded row among Contor / Releu / Senzor climă / Alt dispozitiv):
+  power + energy counter → Contor; a switch without power → Releu; a temperature without power → Senzor climă; anything
+  else → Alt dispozitiv („Senzor ușă”, „Senzor CO₂” …). „Priză” is not offered: **the power and energy of a generic
+  device never enter the house totals, the cost or the appliance detection.**
+- **Climate**: the temperature (+ humidity and battery) of a generic device also goes to `ClimateReadings` (source
+  `mqtt`): it appears in Climă, in Istoric → Climă and in `climate_*`, not again among the generic values. Its freshness
+  comes from `expire_after` (half of it) or one hour (a Zigbee sensor reports on change), its „online” from its
+  availability. At most one climate record per sensor every 10 s.
+- **Storage**: `GenericDevices`, `GenericEntities` (description + the raw discovery payload), `GenericReadings`
+  (integer key `(EntityId, Ts)`, `WITHOUT ROWID`) written on a change above a threshold (the entity's precision, else
+  0.1 °C, 1 % RH, max(1 W, 2 %)), at least every 30 minutes, at most one row per entity every 10 s (a change inside the
+  window is stored at its end); `GenericHourly` (min, time-weighted mean, max, last, count, what a counter counted — a
+  `total_increasing` dip under 10 % is ignored, a drop below 90 % is a reset, what was counted during a gap goes to the
+  hour after it)
+  rolled up every 10 minutes and kept forever; the raw rows are deleted after 90 days (setting).
+- **Where it shows**: the device page (`/dispozitive/dev:{id}`: cards, 24-hour charts, a counter's today / yesterday /
+  month and 30 daily bars), Istoric → „Alte dispozitive” (the entities ticked „Istoric”: a line for a measurement,
+  bars of Σ for a counter, minutes on for an on/off; CSV section `alte-dispozitive`) and `/metrics` (`entity_*`).
+
 ## Settings
 
 `/settings` has one tab per address (`/settings/<tab>`, deep links): **Aplicație** (`aplicatie`: tariffs for electricity
 and gas, LAN discovery, live stream, data retention, appliance detection, degree days, Grafana; the poll interval is shown
 read-only, it comes from the configuration), **Export** (`export`: Prometheus remote write, and the link to the
 `/integration` page, which left the top menu), then one tab per integration of the registry (`Ui/Integrations.cs`):
-**TP-Link (Kasa, Tapo)** (`tplink`), **Shelly**, **Viessmann**, **Miele**, **Govee**, **Open-Meteo** (`openmeteo`). An
+**TP-Link (Kasa, Tapo)** (`tplink`), **Shelly**, **Viessmann**, **Miele**, **Govee**, **Open-Meteo** (`openmeteo`), **MQTT** (`mqtt`, 0.11). An
 integration's tab starts with its state (OK / Atenție / Eroare / Oprit / Neconfigurat, last reading, requests today) and
 holds only how the app talks to that vendor (account, key, intervals, API budget); what is done with each device
 (name, room, role, links, withdraw) is on the devices page. Each tab has its own „Salvează” and writes only its own keys
@@ -169,6 +257,12 @@ values only**: they are used while the key has not been saved from `/settings`.
 | — (Govee API key) | Govee (state only) | `KasaMonitor__GoveeApiKey` | — | alternative to the file (wins when set); prefer the file |
 | Heating degree days base (°C) | Aplicație | `KasaMonitor__HeatingDegreeDaysBaseC` | `18` | 10–25; /history „Climă”: degree days = base − outdoor daily mean on days with a mean ≤ base − 3 °C (Eurostat 18 / 15; SR 4839 uses another method, 20 / 12). Saved in /settings/aplicatie (the database wins once saved) |
 | Boiler time zone | Viessmann | `KasaMonitor__BoilerTimeZone` | `Europe/Berlin` | IANA zone of the boiler's day: its „today” counters reset at midnight there (Viessmann: Central European Time, 00:00 CET/CEST = 01:00 Romanian time); every daily attribution of the boiler's gas, electricity and heat uses it |
+| MQTT broker / port / user | MQTT | `KasaMonitor__MqttHost`, `KasaMonitor__MqttPort`, `KasaMonitor__MqttUser` | — / `1883` / — | 0.11; empty broker = the integration is „Neconfigurat” |
+| MQTT TLS, discovery prefix, auto-add, on/off | MQTT | — | off, `homeassistant`, off, on | |
+| Keep raw generic readings (days) | MQTT | — | `90` | `0` = never deleted; the hourly rollups are kept forever |
+| Generic series limit on /metrics | MQTT | — | `500` | 10–10,000; above it the rest is skipped with a warning (log, MQTT tab) |
+| — (MQTT password file) | MQTT (state only) | `KasaMonitor__MqttPasswordFile` | `/run/secrets/mqtt-kasamonitor.password` | read once at start-up; never stored in the database, shown or logged |
+| — (MQTT password) | MQTT (state only) | `KasaMonitor__MqttPassword` | — | alternative to the file (wins when set); prefer the file |
 | — | — | `KasaMonitor__DbPath` | `/data/kasa.db` (image) | |
 | — | — | `KasaMonitor__NilmApiToken` | — | optional; when set, every `/api/nilm/*` route needs the header `X-Api-Key` with this value. Set it before exposing KasaMonitor outside the LAN ([HTTP API (LAN)](#http-api-lan)); read per request |
 
@@ -850,6 +944,25 @@ archived one disappears; ids and MACs are never labels):
 | `climate_last_reading_timestamp_seconds` | gauge | unix time of the last value read |
 | `climate_api_requests_today{source}` | gauge | HTTP requests to Govee / Open-Meteo today (local day; in memory, restarts at 0) |
 
+**Generic devices** (0.11, labels `device`, `entity`, `room`, `integration`; never an id or a MAC). One family per class
+with a fixed unit — a Prometheus metric refers to a single unit, so there is no family mixing units:
+
+| Metric | Type | Notes |
+|---|---|---|
+| `entity_temperature_celsius`, `entity_humidity_percent`, `entity_moisture_percent` | gauge | the temperature of a sensor routed to Climă is only in `climate_*` |
+| `entity_power_watts`, `entity_apparent_power_va`, `entity_reactive_power_var` | gauge | never part of the house totals |
+| `entity_energy_wh_total` | counter | a `total` / `total_increasing` energy (Wh); a device reset is skipped |
+| `entity_voltage_volts`, `entity_current_amperes`, `entity_frequency_hertz` | gauge | |
+| `entity_battery_percent`, `entity_signal_strength_dbm` | gauge | |
+| `entity_co2_ppm`, `entity_co_ppm`, `entity_pm1_ugm3`, `entity_pm25_ugm3`, `entity_pm10_ugm3`, `entity_voc_ugm3` | gauge | |
+| `entity_pressure_hpa`, `entity_illuminance_lux`, `entity_duration_seconds` | gauge | |
+| `entity_state` | gauge | 0/1 of a binary sensor or a switch |
+| `entity_value{unit}` | gauge | a number whose class has no family (link quality, rpm …), with its unit as a label |
+| `entity_online{device,room,integration}` | gauge | 0/1 per device |
+
+Only the entities ticked „Metrici” in the device's row (by default the main measured classes, not diagnostics, texts or
+enums); at most 500 series (setting).
+
 ```promql
 avg by (room) (climate_temperature_celsius{source!="viessmann"})   # rooms
 climate_online == 0                                                  # sensors without data
@@ -1323,6 +1436,10 @@ curl -s -X POST "$K/api/nilm/plugs/<plug id>/appliance" -H "Content-Type: applic
 | Climate per day | `ClimateDaily` | one row per sensor and day (≈ 100 bytes) | never |
 | Minute aggregates | `OneMinuteAggregates` | ≈ 120 bytes per plug-minute ≈ 65 MB per plug per year | never |
 | Daily / monthly energy | `DailyEnergy`, `MonthlyEnergy` | one row per plug per day / month | never |
+| Per-entity preferences (0.11) | `EntityPrefs` | one row per entity whose display the user changed | never (a row back to every default is deleted) |
+| Generic devices and entities (0.11) | `GenericDevices`, `GenericEntities` | one row per added device / entity (with its discovery payload) | never (a removed entity is marked) |
+| Generic raw readings (0.11) | `GenericReadings` | ≈ 20 bytes per row (integer key, WITHOUT ROWID): on a change above the threshold, at least every 30 min, at most one per entity in 10 s | after 90 days (MQTT tab; `0` = never), daily |
+| Generic hourly rollups (0.11) | `GenericHourly` | one row per entity and hour | never |
 
 Up to and including 0.2.1, raw readings older than 30 days were deleted automatically; from the next version nothing is deleted unless you set
 a retention. SQLite does not shrink the file after deletions (the space is reused); run `VACUUM` manually if needed.
@@ -1360,15 +1477,15 @@ dotnet test KasaMonitor.sln
 From the repository root, with Docker running and `docker login` done once:
 
 ```powershell
-.\deploy\build-and-push.ps1 -Version 0.10.0         # build :0.10.0 + :latest and push both
-.\deploy\build-and-push.ps1 -Version 0.10.0 -NoPush  # local build only
+.\deploy\build-and-push.ps1 -Version 0.11.0         # build :0.11.0 + :latest and push both
+.\deploy\build-and-push.ps1 -Version 0.11.0 -NoPush  # local build only
 ```
 
 or manually:
 
 ```bash
-docker build -t duobit/kasamonitor:0.10.0 -t duobit/kasamonitor:latest -f deploy/Dockerfile .
-docker push duobit/kasamonitor:0.10.0
+docker build -t duobit/kasamonitor:0.11.0 -t duobit/kasamonitor:latest -f deploy/Dockerfile .
+docker push duobit/kasamonitor:0.11.0
 docker push duobit/kasamonitor:latest
 ```
 
@@ -1398,7 +1515,12 @@ To publish under your own Docker Hub account, change the image name (`-Repo` par
    the first start the current boiler day is repaired if 0.8.0 left yesterday's total in its highest value (logged at
    Information). Rows of earlier days are not rewritten. Upgrading to 0.8.2 needs no migration: at the first start the
    appliance detection re-clusters right away (the marker `NilmLastReclusterTs` does not exist yet), with the anchors,
-   the unknown transients and the automatic merge; the merges are logged at Information.
+   the unknown transients and the automatic merge; the merges are logged at Information. Upgrading to 0.11.0 runs one
+   additive migration, `AddEntityPrefsAndGenericDevices` (empty tables `EntityPrefs`, `GenericDevices`,
+   `GenericEntities`, `GenericReadings`, `GenericHourly`); no existing table is touched. Copy the
+   database off the host before updating (a copy on the same disk is not a backup). MQTT stays „Neconfigurat” until a
+   broker is set on `/settings/mqtt` (or `KasaMonitor__MqttHost`); mount the password as a file
+   (`KasaMonitor__MqttPasswordFile`).
 2. `docker compose -f deploy/docker-compose.yml pull && docker compose -f deploy/docker-compose.yml up -d`
    (Portainer: *Update the stack* with *Re-pull image and redeploy*).
 3. Check `http://<host>:8910/health`, `/dispozitive` (Adaugă → Scanează acum) and `curl -s http://<host>:8910/metrics | grep kasa_online`.

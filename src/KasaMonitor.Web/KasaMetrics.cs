@@ -158,7 +158,7 @@ public sealed class KasaMetrics : IHostedService, IDisposable
     /// Feeds a device's cumulative Wh into a Prometheus counter: seeded at the device value on first sighting, then
     /// increased by the positive differences (a decrease = device counter reset, skipped).
     /// </summary>
-    private static void AddCumulative(Counter counter, string[] labels, Dictionary<Guid, double> last, Guid plugId, double value)
+    internal static void AddCumulative<TKey>(Counter counter, string[] labels, Dictionary<TKey, double> last, TKey plugId, double value) where TKey : notnull
     {
         if (last.TryGetValue(plugId, out var prev))
         {

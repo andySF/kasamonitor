@@ -16,10 +16,18 @@ namespace KasaMonitor.Workers.Nilm;
 /// (<see cref="SignatureId"/> 0, W summed).
 /// </summary>
 public sealed record ActiveAppliance(long SignatureId, string Name, string Category, string Icon, SignatureLabelSource Source, double PowerW,
-    DateTimeOffset SinceUtc, int RareCount = 0);
+    DateTimeOffset SinceUtc, int RareCount = 0)
+{
+    /// <summary>The row „Semnături rare (n)” of the card, not an appliance: never a bubble on the home page.</summary>
+    public bool IsRareGroup => RareCount > 0;
+}
 
 /// <summary>Energy of one signature over a period, or the summed row „Semnături rare (n)” when <see cref="RareCount"/> &gt; 0.</summary>
-public sealed record ApplianceEnergyRow(long SignatureId, string Name, string Category, string Icon, double Wh, int RareCount = 0);
+public sealed record ApplianceEnergyRow(long SignatureId, string Name, string Category, string Icon, double Wh, int RareCount = 0)
+{
+    /// <summary>The row „Semnături rare (n)” of the card, not an appliance.</summary>
+    public bool IsRareGroup => RareCount > 0;
+}
 
 /// <summary>
 /// What the cards ("Acum pornite", "Azi") show, refreshed every <see cref="NilmService.SummaryInterval"/>; only detected
@@ -33,6 +41,12 @@ public sealed record NilmSummary(DateTimeOffset AtUtc, bool Enabled, bool HasMai
 {
     public static readonly NilmSummary Empty = new(DateTimeOffset.MinValue, false, false, Array.Empty<ActiveAppliance>(),
         Array.Empty<ApplianceEnergyRow>(), 0, 0, 0);
+
+    /// <summary>
+    /// The running detected appliances shown one by one (<see cref="Active"/> without the row „Semnături rare (n)”): the
+    /// home page's bubbles, which show appliances only (the rare ones' power stays in the rest of the house there).
+    /// </summary>
+    public IEnumerable<ActiveAppliance> Appliances => Active.Where(a => !a.IsRareGroup);
 
     /// <summary>The icon of the row „Semnături rare (n)”.</summary>
     public const string RareIcon = "bi-question-circle";

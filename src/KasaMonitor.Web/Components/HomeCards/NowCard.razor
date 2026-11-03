@@ -194,7 +194,7 @@
 
         var summary = Nilm.Summary;
         var detected = summary.Enabled
-            ? summary.Active.GroupBy(a => a.SignatureId).Select(g => new NowPart("sig-" + g.Key, g.First().Name, NowKind.Detected, g.Sum(a => a.PowerW),
+            ? summary.Appliances.GroupBy(a => a.SignatureId).Select(g => new NowPart("sig-" + g.Key, g.First().Name, NowKind.Detected, g.Sum(a => a.PowerW),
                 "detectat, fără priză", true, "/consumatori"))
             : Enumerable.Empty<NowPart>();
 

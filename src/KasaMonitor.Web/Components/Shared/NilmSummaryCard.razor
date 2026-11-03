@@ -26,7 +26,7 @@
                         @foreach (var a in s.Active.Take(MaxRows))
                         {
                             <li class="list-group-item d-flex justify-content-between align-items-center py-1">
-                                @if (a.RareCount > 0)
+                                @if (a.IsRareGroup)
                                 {
                                     <a class="text-reset" href="/consumatori" title="@RareTitle"><i class="bi @a.Icon me-2"></i>@a.Name</a>
                                 }
@@ -48,7 +48,7 @@
                     @foreach (var r in s.Today.Take(5))
                     {
                         <li class="list-group-item d-flex justify-content-between align-items-center py-1">
-                            @if (r.RareCount > 0)
+                            @if (r.IsRareGroup)
                             {
                                 <a class="text-reset" href="/consumatori" title="@RareTitle"><i class="bi @r.Icon me-2"></i>@r.Name</a>
                             }

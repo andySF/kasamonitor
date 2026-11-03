@@ -356,6 +356,8 @@ public class NilmServiceTests
         rareRow.RareCount.Should().Be(1);
         rareRow.Icon.Should().Be("bi-question-circle");
         svc.Summary.Today.Should().ContainSingle().Which.Name.Should().Be("Semnături rare (1)");
+        rareRow.IsRareGroup.Should().BeTrue();
+        svc.Summary.Appliances.Should().BeEmpty("the group is not an appliance: no bubble on the home page");
         svc.Metrics.Events.Should().Be(1);
 
         // A second switch-on of the same appliance before any switch-off: two open runs of one signature
@@ -560,6 +562,7 @@ public class NilmServiceTests
         var kettle = sigs.Single(x => x.MeanDeltaP > 1500);
         await svc.RenameAsync(kettle.Id, "Fierbător", CancellationToken.None);
         svc.Summary.Active.Select(a => a.Name).Should().Equal("Fierbător", "Semnături rare (2)");
+        svc.Summary.Appliances.Should().ContainSingle().Which.Name.Should().Be("Fierbător", "the home page's bubbles: appliances only");
         svc.Summary.Active[1].PowerW.Should().BeApproximately(1080, 1);
         svc.Summary.Today.Select(r => r.Name).Should().BeEquivalentTo("Fierbător", "Semnături rare (2)");
         svc.Summary.Today.Sum(r => r.Wh).Should().BeApproximately(rareWh, 1, "the same energy, only grouped differently");
@@ -585,6 +588,9 @@ public class NilmServiceTests
         rows[1].Should().Be(new ActiveAppliance(0, "Semnături rare (2)", ApplianceCategories.Other, NilmSummary.RareIcon, SignatureLabelSource.Cluster,
             100, t.AddMinutes(-30), 2));
         rows.Should().NotContain(a => a.SignatureId == 7 || a.SignatureId == 9);
+        rows.Where(a => a.IsRareGroup).Should().ContainSingle().Which.RareCount.Should().Be(2);
+        new NilmSummary(t, true, true, rows, Array.Empty<ApplianceEnergyRow>(), 0, 0, 0).Appliances.Select(a => a.Name)
+            .Should().Equal("Boiler", "Necunoscut #3");
         NilmSummary.GroupRare(active, new HashSet<long>()).Should().HaveCount(5).And.NotContain(a => a.RareCount > 0);
 
         var today = new[]

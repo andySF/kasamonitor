@@ -1,3 +1,6 @@
+using System.Globalization;
+using System.Text;
+
 namespace KasaMonitor.Core.Nilm;
 
 /// <summary>The columns the table of detected signatures on /consumatori can be ordered by.</summary>
@@ -76,8 +79,47 @@ public static class SignatureSorting
         before == after ? page : 0;
 
     /// <summary>
+    /// The order of the texts (name, category, source): without diacritics, then <see cref="StringComparison.OrdinalIgnoreCase"/>,
+    /// so „Șemineu” sorts with S. Not the culture's comparer: the container runs with invariant globalization (no ro-RO
+    /// data), where a culture comparison is ordinal and puts Ă, Î, Ș, Ț after Z.
+    /// </summary>
+    public static readonly IComparer<string> TextOrder =
+        Comparer<string>.Create((a, b) => string.Compare(WithoutDiacritics(a), WithoutDiacritics(b), StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>
+    /// The text without diacritics: decomposed (FormD) without the non-spacing marks, and the Romanian letters mapped
+    /// explicitly as well, because in invariant mode <see cref="string.Normalize(NormalizationForm)"/> returns the string as
+    /// it is.
+    /// </summary>
+    public static string WithoutDiacritics(string? text)
+    {
+        if (string.IsNullOrEmpty(text)) return "";
+        string decomposed;
+        try { decomposed = text.Normalize(NormalizationForm.FormD); }
+        catch (ArgumentException) { decomposed = text; }   // an invalid surrogate: compare it as it is
+        var sb = new StringBuilder(decomposed.Length);
+        foreach (var c in decomposed)
+        {
+            if (CharUnicodeInfo.GetUnicodeCategory(c) == UnicodeCategory.NonSpacingMark) continue;
+            sb.Append(c switch
+            {
+                'ă' or 'â' => 'a',
+                'Ă' or 'Â' => 'A',
+                'î' => 'i',
+                'Î' => 'I',
+                'ș' or 'ş' => 's',
+                'Ș' or 'Ş' => 'S',
+                'ț' or 'ţ' => 't',
+                'Ț' or 'Ţ' => 'T',
+                _ => c,
+            });
+        }
+        return sb.ToString();
+    }
+
+    /// <summary>
     /// Every row in the chosen order (before paging). Name, category (its Romanian name) and source (its Romanian name)
-    /// compare with <see cref="StringComparer.CurrentCultureIgnoreCase"/>; rows without a last event or without a known
+    /// compare with <see cref="TextOrder"/> (diacritics and case ignored); rows without a last event or without a known
     /// transient (<see cref="ApplianceSignature.MeanTransient"/> ≤ 0, shown „—”) are last in both directions.
     /// </summary>
     public static IReadOnlyList<T> Sorted<T>(IEnumerable<T> rows, Func<T, ApplianceSignature> signature, Func<T, double> todayWh,
@@ -102,13 +144,12 @@ public static class SignatureSorting
             SignatureSort.Days30 => r => last30DaysWh(r),
             _ => _ => null,
         };
-        var words = StringComparer.CurrentCultureIgnoreCase;
 
         int Primary(T a, T b)
         {
             if (text is not null)
             {
-                var c = words.Compare(text(a), text(b));
+                var c = TextOrder.Compare(text(a), text(b));
                 return descending ? -c : c;
             }
             var (x, y) = (number(a), number(b));

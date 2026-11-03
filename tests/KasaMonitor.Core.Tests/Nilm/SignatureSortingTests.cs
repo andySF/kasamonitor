@@ -59,6 +59,20 @@ public class SignatureSortingTests
     }
 
     [Fact]
+    public void Texts_DiacriticsIgnored_ȘemineuSortsWithS()
+    {
+        var names = new[] { "Uscător", "Șemineu", "Țeava", "robot", "Îmbrăcăminte", "Zăpadă", "Ăla", "Sobă", "aer" };
+        var rows = names.Select((n, i) => R(i + 1, n, "other", 1, 3, 0, 0, Now, SignatureLabelSource.Cluster, 0, 0, 0)).ToArray();
+        SignatureSorting.Sorted(rows, r => r.Signature, r => r.Today, r => r.Days7, r => r.Days30, SignatureSort.Name, descending: false)
+            .Select(r => r.Signature.Name).Should().Equal("aer", "Ăla", "Îmbrăcăminte", "robot", "Șemineu", "Sobă", "Țeava", "Uscător", "Zăpadă");
+
+        SignatureSorting.WithoutDiacritics("Șemineu ţuică Ăâî ș").Should().Be("Semineu tuica Aai s");
+        SignatureSorting.WithoutDiacritics(null).Should().BeEmpty();
+        SignatureSorting.TextOrder.Compare("Șemineu", "semineu").Should().Be(0, "only the id breaks this tie");
+        SignatureSorting.TextOrder.Compare("Ștefan", "Zorro").Should().BeNegative();
+    }
+
+    [Fact]
     public void WithoutALastEvent_LastInBothDirections_TiesById()
     {
         var rows = new[] { Rows[3], Rows[0] with { Signature = Rows[0].Signature with { Id = 9, LastSeenUtc = null } }, Rows[1] };

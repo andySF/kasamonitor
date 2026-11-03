@@ -65,4 +65,16 @@ public class HistoryPageTests : IClassFixture<HomeFactory>
         var html = WebUtility.HtmlDecode(await _f.CreateClient().GetStringAsync("/consumatori"));
         html.Should().Contain("<title>KasaMonitor — Consumatori</title>").And.NotContain("Cât din consum e identificat");
     }
+
+    [Theory]
+    [InlineData("/consumatori?sort=dp&dir=asc")]
+    [InlineData("/consumatori?sort=%3Cscript%3E&dir=sideways")]
+    [InlineData("/consumatori?sort=&dir=")]
+    [InlineData("/consumatori?sort=last&sort=dp&dir=desc")]
+    public async Task Consumatori_SortInTheAddress_WrongValuesStillOpenThePage(string url)
+    {
+        var r = await _f.CreateClient().GetAsync(url);
+        r.StatusCode.Should().Be(HttpStatusCode.OK);
+        WebUtility.HtmlDecode(await r.Content.ReadAsStringAsync()).Should().Contain("<title>KasaMonitor — Consumatori</title>");
+    }
 }

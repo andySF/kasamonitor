@@ -266,6 +266,17 @@ public class PlugEventMatcherTests
 }
 public class ApplianceRunTests
 {
+    [Fact]
+    public void IsRunning_OpenAndAtMostMaxOpenOld()
+    {
+        var t = new DateTimeOffset(2026, 11, 3, 4, 38, 0, TimeSpan.Zero);
+        var open = new ApplianceRun(1, 170, t, null, 43, null, 1, null);
+        ApplianceRunBuilder.IsRunning(open, t.AddHours(4)).Should().BeTrue("4 h is within the 6 h limit");
+        ApplianceRunBuilder.IsRunning(open, t + ApplianceRunBuilder.MaxOpen).Should().BeTrue();
+        ApplianceRunBuilder.IsRunning(open, t + ApplianceRunBuilder.MaxOpen + TimeSpan.FromSeconds(1)).Should().BeFalse("past MaxOpen, even before Expire closed it");
+        ApplianceRunBuilder.IsRunning(open with { EndUtc = t.AddMinutes(5) }, t.AddMinutes(1)).Should().BeFalse("closed");
+    }
+
     private static readonly DateTimeOffset T = new(2026, 11, 1, 10, 0, 0, TimeSpan.Zero);
 
     private static MeterEvent E(long id, long? sig, int minute, double deltaP, double before = 300) =>

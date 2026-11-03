@@ -10,23 +10,67 @@ using Microsoft.Extensions.Logging;
 
 namespace KasaMonitor.Workers.Nilm;
 
-/// <summary>A detected appliance running now (an open run, at most <see cref="ApplianceRunBuilder.MaxOpen"/> old).</summary>
+/// <summary>
+/// A detected appliance running now (an open run, at most <see cref="ApplianceRunBuilder.MaxOpen"/> old), or, when
+/// <see cref="RareCount"/> &gt; 0, the single row „Semnături rare (n)” of <see cref="NilmSummary.GroupRare(IEnumerable{ActiveAppliance}, IReadOnlySet{long})"/>
+/// (<see cref="SignatureId"/> 0, W summed).
+/// </summary>
 public sealed record ActiveAppliance(long SignatureId, string Name, string Category, string Icon, SignatureLabelSource Source, double PowerW,
-    DateTimeOffset SinceUtc);
+    DateTimeOffset SinceUtc, int RareCount = 0);
 
-/// <summary>Energy of one signature over a period.</summary>
-public sealed record ApplianceEnergyRow(long SignatureId, string Name, string Category, string Icon, double Wh);
+/// <summary>Energy of one signature over a period, or the summed row „Semnături rare (n)” when <see cref="RareCount"/> &gt; 0.</summary>
+public sealed record ApplianceEnergyRow(long SignatureId, string Name, string Category, string Icon, double Wh, int RareCount = 0);
 
 /// <summary>
 /// What the cards ("Acum pornite", "Azi") show, refreshed every <see cref="NilmService.SummaryInterval"/>; only detected
-/// appliances (not hidden, not measured by a plug). <see cref="UnidentifiedTodayWh"/> = house today − Σ plugs over the
-/// covered time − Σ runs today of the detected appliances.
+/// appliances (not hidden, not measured by a plug). The signatures /consumatori does not list by default (rare: see
+/// <see cref="SignatureListing.ShownByDefault"/>) are not listed one by one but summed into one row „Semnături rare (n)”
+/// (<c>GroupRare</c>), so every name on the cards is one the table shows. <see cref="UnidentifiedTodayWh"/> =
+/// house today − Σ plugs over the covered time − Σ runs today of the detected appliances (the rare ones included).
 /// </summary>
 public sealed record NilmSummary(DateTimeOffset AtUtc, bool Enabled, bool HasMainMeter, IReadOnlyList<ActiveAppliance> Active,
     IReadOnlyList<ApplianceEnergyRow> Today, double HouseTodayWh, double PlugsTodayWh, double UnidentifiedTodayWh)
 {
     public static readonly NilmSummary Empty = new(DateTimeOffset.MinValue, false, false, Array.Empty<ActiveAppliance>(),
         Array.Empty<ApplianceEnergyRow>(), 0, 0, 0);
+
+    /// <summary>The icon of the row „Semnături rare (n)”.</summary>
+    public const string RareIcon = "bi-question-circle";
+
+    /// <summary>The name of the row that sums <paramref name="count"/> rare signatures.</summary>
+    public static string RareName(int count) => $"Semnături rare ({count})";
+
+    /// <summary>
+    /// The running appliances with the rare signatures (<paramref name="rare"/>) summed into one row (W summed, since the
+    /// earliest switch-on; n = distinct signatures), present only when n &gt; 0; largest W first.
+    /// </summary>
+    public static IReadOnlyList<ActiveAppliance> GroupRare(IEnumerable<ActiveAppliance> active, IReadOnlySet<long> rare)
+    {
+        var all = active.ToList();
+        var list = all.Where(a => !rare.Contains(a.SignatureId)).ToList();
+        var grouped = all.Where(a => rare.Contains(a.SignatureId)).ToList();
+        if (grouped.Count > 0)
+        {
+            var n = grouped.Select(a => a.SignatureId).Distinct().Count();
+            list.Add(new ActiveAppliance(0, RareName(n), ApplianceCategories.Other, RareIcon, SignatureLabelSource.Cluster,
+                grouped.Sum(a => a.PowerW), grouped.Min(a => a.SinceUtc), n));
+        }
+        return list.OrderByDescending(a => a.PowerW).ToList();
+    }
+
+    /// <summary>The energy rows of today with the rare signatures summed into one row (when there is one); largest first.</summary>
+    public static IReadOnlyList<ApplianceEnergyRow> GroupRare(IEnumerable<ApplianceEnergyRow> today, IReadOnlySet<long> rare)
+    {
+        var all = today.ToList();
+        var list = all.Where(r => !rare.Contains(r.SignatureId)).ToList();
+        var grouped = all.Where(r => rare.Contains(r.SignatureId)).ToList();
+        if (grouped.Count > 0)
+        {
+            var n = grouped.Select(r => r.SignatureId).Distinct().Count();
+            list.Add(new ApplianceEnergyRow(0, RareName(n), ApplianceCategories.Other, RareIcon, grouped.Sum(r => r.Wh), n));
+        }
+        return list.OrderByDescending(r => r.Wh).ToList();
+    }
 }
 
 /// <summary>One exported appliance series (signature id, raw name, category, source, power now if running, cumulative Wh).</summary>
@@ -65,7 +109,8 @@ public sealed record NilmOverview(IReadOnlyList<SignatureRow> Detected, int Dete
     IReadOnlyList<SignatureRow> PlugMeasured, IReadOnlyList<ApplianceSignature> AllSignatures,
     IReadOnlyList<EventRow> Events, int EventsInWindow, int EventsPage, int EventsPageCount,
     NilmModelInfo? Model, int LabeledEvents, int LabeledClasses, NilmSummary Summary, string? MainMeterAlias, NilmSettings Settings,
-    IReadOnlyList<PlugNilmRow> Plugs, bool Busy, int RareCount = 0, int CleanableCount = 0, bool ShowRare = false);
+    IReadOnlyList<PlugNilmRow> Plugs, bool Busy, int RareCount = 0, int CleanableCount = 0, bool ShowRare = false,
+    SignatureSort Sort = SignatureSorting.Default, bool Descending = SignatureSorting.DefaultDescending);
 
 /// <summary>The „fișa” of one signature on /consumatori: its profile and the plug it matches (alias), linked or only „posibil”.</summary>
 public sealed record SignatureProfileView(ApplianceSignature Signature, SignatureProfile Profile, string? PlugAlias, bool PlugLinked);
@@ -1229,6 +1274,7 @@ public sealed class NilmService : BackgroundService
         var detected = _signatures.Where(s => !s.Hidden && !s.ConfirmedByPlug).ToDictionary(s => s.Id);
         var open = _openSnapshot;
 
+        // Every open run of a detected appliance: the power of kasa_appliance_power_w (not changed by the grouping below).
         var active = open.Where(r => detected.ContainsKey(r.SignatureId))
             .Select(r => { var s = detected[r.SignatureId]; return new ActiveAppliance(s.Id, s.Name, s.Category, s.Icon, s.LabelSource, r.PowerW, r.StartUtc); })
             .OrderByDescending(a => a.PowerW).ToList();
@@ -1238,6 +1284,8 @@ public sealed class NilmService : BackgroundService
             .GroupBy(r => r.SignatureId)
             .Select(g => { var s = detected[g.Key]; return new ApplianceEnergyRow(s.Id, s.Name, s.Category, s.Icon, g.Sum(r => ApplianceEnergy.InRange(r, midnight, nowUtc, nowUtc))); })
             .Where(x => x.Wh > 0).OrderByDescending(x => x.Wh).ToList();
+        var rare = await RareAsync(scope.ServiceProvider, repo,
+            active.Select(a => a.SignatureId).Concat(today.Select(x => x.SignatureId)).Distinct().Select(id => detected[id]), nowUtc, ct);
 
         double houseWh = 0, covered = 0;
         if (_mainId is { } main)
@@ -1257,13 +1305,30 @@ public sealed class NilmService : BackgroundService
             _summaryDay = day;
         }
         _unidentifiedToday = Math.Max(_unidentifiedToday, unidentified);
-        Summary = new NilmSummary(nowUtc, _current.Enabled, _mainId is not null, active, today, houseWh, plugsWh, unidentified);
+        // „Acum pornite”: only the runs within MaxOpen, even when the last expiry is older (no main meter, a page action).
+        var shownActive = open.Where(r => detected.ContainsKey(r.SignatureId) && ApplianceRunBuilder.IsRunning(r, nowUtc))
+            .Select(r => { var s = detected[r.SignatureId]; return new ActiveAppliance(s.Id, s.Name, s.Category, s.Icon, s.LabelSource, r.PowerW, r.StartUtc); });
+        Summary = new NilmSummary(nowUtc, _current.Enabled, _mainId is not null, NilmSummary.GroupRare(shownActive, rare),
+            NilmSummary.GroupRare(today, rare), houseWh, plugsWh, unidentified);
 
         var power = active.GroupBy(a => a.SignatureId).ToDictionary(g => g.Key, g => g.Sum(a => a.PowerW));
         Metrics = new NilmMetricSnapshot(_signatures.Where(IsExported)
             .Select(s => new NilmMetricItem(s.Id, s.Name, s.Category, s.LabelSource, power.TryGetValue(s.Id, out var w) ? w : null,
                 _applianceWh.GetValueOrDefault(s.Id)))
             .ToList(), Interlocked.Read(ref _events), _unidentifiedBase + _unidentifiedToday);
+    }
+
+    /// <summary>
+    /// The ids of <paramref name="signatures"/> that /consumatori does not list by default (<see cref="SignatureListing.ShownByDefault"/>):
+    /// the „posibil &lt;priză&gt;” query runs only for those that would be rare without the badge (usually none).
+    /// </summary>
+    private async Task<IReadOnlySet<long>> RareAsync(IServiceProvider sp, INilmRepository repo, IEnumerable<ApplianceSignature> signatures,
+        DateTimeOffset nowUtc, CancellationToken ct)
+    {
+        var candidates = signatures.Where(s => !SignatureListing.ShownByDefault(s, possiblePlug: false)).Select(s => s.Id).ToList();
+        if (candidates.Count == 0) return new HashSet<long>();
+        var possible = await PossiblePlugsAsync(sp, repo, candidates, nowUtc, ct);
+        return candidates.Where(id => !possible.ContainsKey(id)).ToHashSet();
     }
 
     /// <summary>
@@ -1288,10 +1353,12 @@ public sealed class NilmService : BackgroundService
     /// <summary>
     /// The page's data, read in its own scope without waiting for the processing lock (a snapshot: the nightly job or a
     /// backfill never blocks the page). Detected signatures: by default only those of <see cref="SignatureListing.ShownByDefault"/>
-    /// (every one with <paramref name="showRare"/>), largest energy over 7 days first, paged by <see cref="PageSize"/>;
-    /// events of the last 24 h paged newest first.
+    /// (every one with <paramref name="showRare"/>), all of them ordered by <paramref name="sort"/> (default: the newest
+    /// event first, see <see cref="SignatureSorting"/>) and only then paged by <see cref="PageSize"/>; the plug-measured
+    /// ones newest first too; events of the last 24 h paged newest first.
     /// </summary>
-    public async Task<NilmOverview> GetOverviewAsync(int page, int eventsPage, CancellationToken ct, bool showRare = false)
+    public async Task<NilmOverview> GetOverviewAsync(int page, int eventsPage, CancellationToken ct, bool showRare = false,
+        SignatureSort sort = SignatureSorting.Default, bool descending = SignatureSorting.DefaultDescending)
     {
         var now = _clock();
         using var scope = _scopes.CreateScope();
@@ -1313,14 +1380,15 @@ public sealed class NilmService : BackgroundService
         var detectedAll = signatures.Where(s => !s.ConfirmedByPlug).ToList();
         var possible = await PossiblePlugsAsync(scope.ServiceProvider, repo, detectedAll.Select(s => s.Id).ToList(), now, ct);
         var rows = detectedAll.Select(s => Row(s) with { PossiblePlug = possible.GetValueOrDefault(s.Id) }).ToList();
-        var listed = SignatureListing.Ordered(rows.Where(r => showRare || SignatureListing.ShownByDefault(r.Signature, r.PossiblePlug is not null)),
-            r => r.Signature, r => r.Last7DaysWh).ToList();
+        var listed = SignatureSorting.Sorted(rows.Where(r => showRare || SignatureListing.ShownByDefault(r.Signature, r.PossiblePlug is not null)),
+            r => r.Signature, r => r.TodayWh, r => r.Last7DaysWh, r => r.Last30DaysWh, sort, descending);
         var pages = Math.Max(1, (listed.Count + PageSize - 1) / PageSize);
         page = Math.Clamp(page, 0, pages - 1);
         var shown = listed.Skip(page * PageSize).Take(PageSize).ToList();
         var rare = rows.Count(r => !SignatureListing.ShownByDefault(r.Signature, r.PossiblePlug is not null));
         var cleanable = rows.Count(r => SignatureListing.IsRareAndOld(r.Signature, now, r.PossiblePlug is not null));
-        var measured = signatures.Where(s => s.ConfirmedByPlug).OrderByDescending(s => s.Count).Select(Row).ToList();
+        var measured = SignatureSorting.Sorted(signatures.Where(s => s.ConfirmedByPlug).Select(Row),
+            r => r.Signature, r => r.TodayWh, r => r.Last7DaysWh, r => r.Last30DaysWh, SignatureSorting.Default, SignatureSorting.DefaultDescending);
 
         var names = signatures.ToDictionary(s => s.Id, s => s.Name);
         var eventsTotal = await repo.CountEventsAsync(now.AddHours(-24), now, ct);
@@ -1334,7 +1402,7 @@ public sealed class NilmService : BackgroundService
         var main = plugs.FirstOrDefault(p => p.Role == PlugRole.MainMeter && !p.IsArchived)?.Alias;
         var plugRows = PlugRows(plugs);
         return new NilmOverview(shown, detectedAll.Count, page, pages, measured, signatures, events, eventsTotal, eventsPage, eventPages,
-            ModelInfo, labeled, classes, Summary, main, _current, plugRows, _busy, rare, cleanable, showRare);
+            ModelInfo, labeled, classes, Summary, main, _current, plugRows, _busy, rare, cleanable, showRare, sort, descending);
     }
 
     /// <summary>Runs a UI action under the processing lock; throws <see cref="NilmBusyException"/> after <see cref="ActionWait"/>.</summary>

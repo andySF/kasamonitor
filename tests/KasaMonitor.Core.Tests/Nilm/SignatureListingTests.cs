@@ -42,11 +42,4 @@ public class SignatureListingTests
         SignatureListing.IsRareAndOld(Sig(1, 1, Now.AddDays(-8), "Frigider", SignatureLabelSource.Plug, Guid.NewGuid()), Now, false).Should().BeFalse("measured by a plug");
         SignatureListing.IsRareAndOld(Sig(1, 1) with { LastSeenUtc = null }, Now, false).Should().BeFalse("no event time: kept");
     }
-
-    [Fact]
-    public void Ordered_BySevenDayEnergy_ThenEvents_ThenId()
-    {
-        var rows = new[] { (Sig(1, 3), 10.0), (Sig(2, 9), 0.0), (Sig(3, 4), 50.0), (Sig(4, 9), 0.0), (Sig(5, 12), 0.0) };
-        SignatureListing.Ordered(rows, r => r.Item1, r => r.Item2).Select(r => r.Item1.Id).Should().Equal(3, 1, 5, 2, 4);
-    }
 }

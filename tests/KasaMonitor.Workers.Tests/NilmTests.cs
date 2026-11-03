@@ -349,8 +349,13 @@ public class NilmServiceTests
 
         rig.Now = T0.AddMinutes(2);
         await svc.RunOnceAsync(CancellationToken.None);
-        svc.Summary.Active.Should().ContainSingle().Which.PowerW.Should().BeApproximately(2000, 0.1);
-        svc.Summary.Active[0].Name.Should().StartWith("Necunoscut #");
+        // One event, no name, no plug: rare, so „Acum pornite” shows it only inside the row „Semnături rare (1)”.
+        var rareRow = svc.Summary.Active.Should().ContainSingle().Subject;
+        rareRow.PowerW.Should().BeApproximately(2000, 0.1);
+        rareRow.Name.Should().Be("Semnături rare (1)");
+        rareRow.RareCount.Should().Be(1);
+        rareRow.Icon.Should().Be("bi-question-circle");
+        svc.Summary.Today.Should().ContainSingle().Which.Name.Should().Be("Semnături rare (1)");
         svc.Metrics.Events.Should().Be(1);
 
         // A second switch-on of the same appliance before any switch-off: two open runs of one signature
@@ -503,6 +508,94 @@ public class NilmServiceTests
         await svc.RenameAsync(sigId, "Ceva", CancellationToken.None);   // named: exported
         svc.Metrics.Appliances.Should().ContainSingle().Which.EnergyWh.Should().Be(0);
         (await svc.GetOverviewAsync(0, 0, CancellationToken.None)).Detected.Single().UncertainRuns.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task OpenRunOlderThanMaxOpen_NotRunning_EvenWhenNoExpiryRanSince()
+    {
+        using var rig = new Rig();
+        var main = await rig.AddAsync("aabbccddee00", "Casa", PlugRole.MainMeter, PlugProtocols.ShellyRpc);
+        var svc = rig.Service();
+        await svc.RunOnceAsync(CancellationToken.None);
+        for (var t = 0; t < 40; t++)
+            rig.Live.Publish(new LiveSample(main, T0.AddSeconds(t), t < 20 ? 300 : 380));
+        rig.Now = T0.AddMinutes(2);
+        await svc.RunOnceAsync(CancellationToken.None);
+        svc.Summary.Active.Should().ContainSingle();
+        var sig = (await rig.Repo(r => r.ListSignaturesAsync(CancellationToken.None))).Single();
+        await svc.RenameAsync(sig.Id, "Lampă", CancellationToken.None);   // named: listed, so its own row
+        svc.Summary.Active.Should().ContainSingle().Which.Name.Should().Be("Lampă");
+
+        // The main meter goes away: the loop stops before the expiry, the summary is still refreshed.
+        using (var ctx = rig.Db.CreateContext())
+            await new PlugRepository(ctx).SetRoleAsync(main, PlugRole.Plug, CancellationToken.None);
+        rig.Now = T0.AddHours(7);
+        await svc.RunOnceAsync(CancellationToken.None);
+        svc.MainMeterId.Should().BeNull();
+        (await rig.Repo(r => r.ListRunsAsync(T0, rig.Now, CancellationToken.None))).Should().ContainSingle().Which.IsOpen.Should().BeTrue(
+            "not expired: no pass reached the expiry");
+        svc.Summary.Active.Should().BeEmpty("open for 7 h, past MaxOpen (6 h): not running any more");
+    }
+
+    [Fact]
+    public async Task Summary_RareSignatures_OneRowEach_InAcumPornite_AndAzi_NamedOnesStayApart()
+    {
+        using var rig = new Rig();
+        var main = await rig.AddAsync("aabbccddee00", "Casa", PlugRole.MainMeter, PlugProtocols.ShellyRpc);
+        var svc = rig.Service();
+        await svc.RunOnceAsync(CancellationToken.None);
+        // Three switch-ons far apart (+80 W, +1000 W, +2000 W): three signatures with one event each, none switched off.
+        for (var t = 0; t < 160; t++)
+            rig.Live.Publish(new LiveSample(main, T0.AddSeconds(t), t < 20 ? 300 : t < 60 ? 380 : t < 100 ? 1380 : 3380));
+        rig.Now = T0.AddMinutes(5);
+        await svc.RunOnceAsync(CancellationToken.None);
+        var sigs = await rig.Repo(r => r.ListSignaturesAsync(CancellationToken.None));
+        sigs.Should().HaveCount(3);
+
+        svc.Summary.Active.Should().ContainSingle().Which.Should().Match<ActiveAppliance>(a =>
+            a.Name == "Semnături rare (3)" && a.RareCount == 3 && a.SignatureId == 0 && Math.Abs(a.PowerW - 3080) < 1);
+        svc.Summary.Today.Should().ContainSingle().Which.RareCount.Should().Be(3);
+        var rareWh = svc.Summary.Today[0].Wh;
+
+        var kettle = sigs.Single(x => x.MeanDeltaP > 1500);
+        await svc.RenameAsync(kettle.Id, "Fierbător", CancellationToken.None);
+        svc.Summary.Active.Select(a => a.Name).Should().Equal("Fierbător", "Semnături rare (2)");
+        svc.Summary.Active[1].PowerW.Should().BeApproximately(1080, 1);
+        svc.Summary.Today.Select(r => r.Name).Should().BeEquivalentTo("Fierbător", "Semnături rare (2)");
+        svc.Summary.Today.Sum(r => r.Wh).Should().BeApproximately(rareWh, 1, "the same energy, only grouped differently");
+        svc.Metrics.Appliances.Should().ContainSingle().Which.PowerW.Should().BeApproximately(2000, 1, "the metrics are per signature, as before");
+    }
+
+    [Fact]
+    public void GroupRare_SumsTheRareSignaturesIntoOneRow_OnlyWhenThereIsOne()
+    {
+        var t = T0;
+        var active = new[]
+        {
+            new ActiveAppliance(1, "Boiler", ApplianceCategories.Other, "bi-x", SignatureLabelSource.User, 2000, t.AddMinutes(-10)),
+            new ActiveAppliance(7, "Necunoscut #7", ApplianceCategories.Other, "bi-x", SignatureLabelSource.Cluster, 40, t.AddMinutes(-30)),
+            new ActiveAppliance(7, "Necunoscut #7", ApplianceCategories.Other, "bi-x", SignatureLabelSource.Cluster, 35, t.AddMinutes(-5)),
+            new ActiveAppliance(9, "Necunoscut #9", ApplianceCategories.Other, "bi-x", SignatureLabelSource.Cluster, 25, t.AddMinutes(-1)),
+            new ActiveAppliance(3, "Necunoscut #3", ApplianceCategories.Other, "bi-x", SignatureLabelSource.Cluster, 60, t.AddMinutes(-2)),
+        };
+        var rare = new HashSet<long> { 7, 9 };
+
+        var rows = NilmSummary.GroupRare(active, rare);
+        rows.Select(a => a.Name).Should().Equal("Boiler", "Semnături rare (2)", "Necunoscut #3");
+        rows[1].Should().Be(new ActiveAppliance(0, "Semnături rare (2)", ApplianceCategories.Other, NilmSummary.RareIcon, SignatureLabelSource.Cluster,
+            100, t.AddMinutes(-30), 2));
+        rows.Should().NotContain(a => a.SignatureId == 7 || a.SignatureId == 9);
+        NilmSummary.GroupRare(active, new HashSet<long>()).Should().HaveCount(5).And.NotContain(a => a.RareCount > 0);
+
+        var today = new[]
+        {
+            new ApplianceEnergyRow(1, "Boiler", ApplianceCategories.Other, "bi-x", 900),
+            new ApplianceEnergyRow(7, "Necunoscut #7", ApplianceCategories.Other, "bi-x", 30),
+            new ApplianceEnergyRow(9, "Necunoscut #9", ApplianceCategories.Other, "bi-x", 1200),
+        };
+        var energy = NilmSummary.GroupRare(today, rare);
+        energy.Select(r => (r.Name, r.Wh, r.RareCount)).Should().Equal(("Semnături rare (2)", 1230.0, 2), ("Boiler", 900.0, 0));
+        NilmSummary.GroupRare(today, new HashSet<long> { 42 }).Should().HaveCount(3).And.NotContain(r => r.RareCount > 0);
     }
 
     [Fact]
@@ -714,7 +807,7 @@ public class NilmServiceTests
     }
 
     [Fact]
-    public async Task Overview_ByDefault_ListsFrequentNamedOrPossibleSignatures_LargestSevenDayEnergyFirst()
+    public async Task Overview_ByDefault_ListsFrequentNamedOrPossibleSignatures_NewestFirst()
     {
         using var rig = new Rig();
         var main = await rig.AddAsync("aabbccddee00", "Casa", PlugRole.MainMeter, PlugProtocols.ShellyRpc);
@@ -724,10 +817,17 @@ public class NilmServiceTests
 
         var page = await svc.GetOverviewAsync(0, 0, CancellationToken.None);
 
-        page.Detected.Select(r => r.Signature.Id).Should().Equal(ids["big"], ids["small"], ids["oldFrequent"], ids["possible"], ids["named"]);
+        // Newest last event first (ties by id): big and small an hour ago, the other three 10 days ago.
+        page.Detected.Select(r => r.Signature.Id).Should().Equal(ids["big"], ids["small"], ids["oldFrequent"], ids["named"], ids["possible"]);
+        page.Sort.Should().Be(SignatureSort.LastSeen);
+        page.Descending.Should().BeTrue();
+        (await svc.GetOverviewAsync(0, 0, CancellationToken.None, sort: SignatureSort.Days7)).Detected.Select(r => r.Signature.Id)
+            .Should().Equal(ids["big"], ids["small"], ids["oldFrequent"], ids["named"], ids["possible"]);   // 500, 100, then 0 Wh by id
+        (await svc.GetOverviewAsync(0, 0, CancellationToken.None, sort: SignatureSort.Days30, descending: false)).Detected.Select(r => r.Signature.Id)
+            .Should().Equal(ids["named"], ids["possible"], ids["small"], ids["big"], ids["oldFrequent"]);
         page.Detected[0].Last7DaysWh.Should().BeApproximately(500, 1e-6);
-        page.Detected[2].Last7DaysWh.Should().Be(0, "its only run is 10 days old");
-        page.Detected[2].Last30DaysWh.Should().BeApproximately(900, 1e-6);
+        page.Detected.Single(r => r.Signature.Id == ids["oldFrequent"]).Last7DaysWh.Should().Be(0, "its only run is 10 days old");
+        page.Detected.Single(r => r.Signature.Id == ids["oldFrequent"]).Last30DaysWh.Should().BeApproximately(900, 1e-6);
         page.Detected.Single(r => r.Signature.Id == ids["possible"]).PossiblePlug.Should().Be("Frigider");
         page.DetectedTotal.Should().Be(7);
         page.RareCount.Should().Be(2);
@@ -738,6 +838,32 @@ public class NilmServiceTests
         var all = await svc.GetOverviewAsync(0, 0, CancellationToken.None, showRare: true);
         all.Detected.Should().HaveCount(7);
         all.ShowRare.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task Overview_SortsEveryRowBeforePaging_PlugMeasuredNewestFirst()
+    {
+        using var rig = new Rig();
+        var fridge = await rig.AddAsync("aabbccddee01", "Frigider", PlugRole.Plug, PlugProtocols.Legacy);
+        // 60 listed signatures: id order = newest first, ΔP growing with age.
+        for (var i = 1; i <= 60; i++)
+            await rig.Repo(r => r.AddSignatureAsync(Sig("", 3, T0.AddMinutes(-i)) with { MeanDeltaP = 10 * i }, CancellationToken.None));
+        var olderPlug = (await rig.Repo(r => r.AddSignatureAsync(Sig("Frigider", 5, T0.AddDays(-1), SignatureLabelSource.Plug, fridge), CancellationToken.None))).Id;
+        var newerPlug = (await rig.Repo(r => r.AddSignatureAsync(Sig("Frigider 2", 3, T0.AddHours(-1), SignatureLabelSource.Plug, fridge), CancellationToken.None))).Id;
+        var svc = rig.Service();
+
+        var first = await svc.GetOverviewAsync(0, 0, CancellationToken.None);
+        first.PageCount.Should().Be(2);
+        first.Detected.Should().HaveCount(NilmService.PageSize);
+        first.Detected.Select(r => r.Signature.MeanDeltaP).Should().Equal(Enumerable.Range(1, 50).Select(i => 10.0 * i), "newest first");
+        first.PlugMeasured.Select(r => r.Signature.Id).Should().Equal(newerPlug, olderPlug);
+
+        var second = await svc.GetOverviewAsync(1, 0, CancellationToken.None, sort: SignatureSort.DeltaP, descending: true);
+        second.Page.Should().Be(1);
+        second.Detected.Select(r => r.Signature.MeanDeltaP).Should().Equal(Enumerable.Range(1, 10).Select(i => 10.0 * (11 - i)),
+            "the second page of all 60 rows by ΔP descending, not the first page re-sorted");
+        second.Sort.Should().Be(SignatureSort.DeltaP);
+        second.Descending.Should().BeTrue();
     }
 
     [Fact]

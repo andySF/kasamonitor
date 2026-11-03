@@ -5,7 +5,8 @@
 @implements IDisposable
 
 @* "Acum pornite" and "Azi" of the appliance detection (Prize, /contor): from NilmService.Summary, refreshed every 10 s.
-   Only detected appliances: those measured by a plug are on their own plug card. *@
+   Only detected appliances: those measured by a plug are on their own plug card. The rare signatures (not in the default
+   list of /consumatori) are one row „Semnături rare (n)”, with a link to the table. *@
 @if (_summary is { Enabled: true, HasMainMeter: true } s)
 {
     <div class="row g-3 @CssClass">
@@ -25,7 +26,14 @@
                         @foreach (var a in s.Active.Take(MaxRows))
                         {
                             <li class="list-group-item d-flex justify-content-between align-items-center py-1">
-                                <span title="@NilmSources.Name(a.Source) · pornit la @UiFormat.FullLocal(a.SinceUtc)"><i class="bi @a.Icon me-2"></i>@a.Name</span>
+                                @if (a.RareCount > 0)
+                                {
+                                    <a class="text-reset" href="/consumatori" title="@RareTitle"><i class="bi @a.Icon me-2"></i>@a.Name</a>
+                                }
+                                else
+                                {
+                                    <span title="@NilmSources.Name(a.Source) · pornit la @UiFormat.FullLocal(a.SinceUtc)"><i class="bi @a.Icon me-2"></i>@a.Name</span>
+                                }
                                 <span class="fw-semibold">@a.PowerW.ToString("0") W</span>
                             </li>
                         }
@@ -40,7 +48,14 @@
                     @foreach (var r in s.Today.Take(5))
                     {
                         <li class="list-group-item d-flex justify-content-between align-items-center py-1">
-                            <span><i class="bi @r.Icon me-2"></i>@r.Name</span>
+                            @if (r.RareCount > 0)
+                            {
+                                <a class="text-reset" href="/consumatori" title="@RareTitle"><i class="bi @r.Icon me-2"></i>@r.Name</a>
+                            }
+                            else
+                            {
+                                <span><i class="bi @r.Icon me-2"></i>@r.Name</span>
+                            }
                             <span>@EnergyFormat.Kwh((long)Math.Round(r.Wh)) kWh</span>
                         </li>
                     }
@@ -59,6 +74,8 @@
     [Parameter] public string CssClass { get; set; } = "";
 
     private const int MaxRows = 8;
+    private static readonly string RareTitle =
+        $"Semnături cu sub {SignatureListing.MinEventsShown} evenimente, fără nume și fără „posibil <priză>”: sunt în tabelul Consumatori detectați cu bifa „arată și semnăturile rare”";
     private NilmSummary? _summary;
     private System.Threading.Timer? _timer;
 

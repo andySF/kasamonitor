@@ -31,6 +31,13 @@ public sealed class ApplianceRunBuilder
         if (openRuns is not null) _open.AddRange(openRuns.Where(r => r.IsOpen).OrderBy(r => r.StartUtc));
     }
 
+    /// <summary>
+    /// A run that counts as running at <paramref name="nowUtc"/>: open and at most <see cref="MaxOpen"/> old. „Acum
+    /// pornite” tests it too, so a run past the limit never shows as running even before <see cref="Expire"/> closed it
+    /// (the summary is also refreshed by the page's actions and while there is no main meter, between two expiries).
+    /// </summary>
+    public static bool IsRunning(ApplianceRun run, DateTimeOffset nowUtc) => run.IsOpen && nowUtc - run.StartUtc <= MaxOpen;
+
     /// <summary>Open runs (not yet expired).</summary>
     public IReadOnlyList<ApplianceRun> Open() => _open.ToList();
 

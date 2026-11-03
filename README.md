@@ -7,7 +7,7 @@ plugs and energy meters (e.g. Shelly EM Gen3, local JSON-RPC; the only write is 
 with SQLite, a web UI on port 8910 and a Prometheus `/metrics` endpoint. An optional Prometheus + Grafana stack
 with a ready-made dashboard and alert rules is included.
 
-Version: **0.9.3** (`Directory.Build.props`). Docker image: `duobit/kasamonitor`.
+Version: **0.9.4** (`Directory.Build.props`). Docker image: `duobit/kasamonitor`.
 
 ## Quick start
 
@@ -73,7 +73,7 @@ TP-Link (Tapo app) account in `/settings` and press **Scanează acum** on `/plug
   in the address) for electricity, gas and boiler, Miele, detected consumers, climate (with heating degree days and the
   energy signature), costs and events; Δ at the same share of the previous period, drill-down, CSV per section; and
   „Rapoarte” on `/centrala` (gas, boiler electricity, heat produced). See [History](#history-history-istoric).
-- **Version in the menu**: „v0.9.3” at the right of the navigation bar; the tooltip shows the commit and the build time.
+- **Version in the menu**: „v0.9.4” at the right of the navigation bar; the tooltip shows the commit and the build time.
 - **Browser errors in the server log**: JavaScript errors and the Blazor error banner are reported to
   `POST /api/client-error` and logged at Warning (category `KasaMonitor.ClientErrors`), so `docker logs` shows them.
 - **HTTP API for the appliance detection** (`/api/nilm/*`, LAN only): list, sheet, label, merge, add to, hide, regroup,
@@ -1102,8 +1102,11 @@ meter** (`/plugs`) with the live stream on (1 s). Page `/consumatori`, menu „C
    takes the name when it is an automatic one, else a new signature is created. Names are trimmed to 64 characters.
    Signatures you named or merged are kept as they are by the nightly re-clustering. A hidden signature is left out of
    the cards and the metrics (its energy stays „unidentified”). Lists are paged by 50. The list of detected signatures
-   shows by default only those with **at least 3 events, a name of their own or a „posibil <plug>” badge**, ordered by
-   their energy over the last 7 days (largest first); „arată și semnăturile rare (n)” shows all of them. Mean ΔP and the
+   shows by default only those with **at least 3 events, a name of their own or a „posibil <plug>” badge**, the newest
+   last event („Ultima”) first; „arată și semnăturile rare (n)” shows all of them. Every column header sorts the whole
+   list before paging (a second click reverses it, ▲/▼ on the active column; rows without a last event or a known
+   transient stay last; the choice is kept in the address, `?sort=last&dir=desc`, and a new order starts again from
+   page 1); „Măsurate de prize” is ordered newest first too. Mean ΔP and the
    number of events are the first two columns. „Curăță semnăturile rare” (with a confirmation) deletes the signatures
    with at most 2 events whose last event is older than 7 days (never one with a name, a „posibil <plug>” badge or
    measured by a plug); their
@@ -1134,7 +1137,10 @@ meter** (`/plugs`) with the live stream on (1 s). Page `/consumatori`, menu „C
    comes from the minute aggregates (only the minutes the stream ran), so Σ plugs (the Kasa/Tapo day counters, like the
    „Prize” header; Shelly plugs have none and are not subtracted) is scaled to the same covered share of the day.
 9. **Cards** „Acum pornite” (detected appliances running now, with W) and „Azi” (top 5 + unidentified) on the
-   „Prize” and `/contor`; metrics `kasa_appliance_*`, `kasa_nilm_*` (see Metrics).
+   „Prize” and `/contor`; the rare signatures (those the list hides by default) are not named one by one there but
+   summed into one row „Semnături rare (n)” (W, Wh; a link to `/consumatori`), so every name on the cards is in the
+   default list, and a run open longer than 6 hours is never shown as running; metrics `kasa_appliance_*`,
+   `kasa_nilm_*` (see Metrics; per signature, unchanged).
 10. **Retention**: none since 0.9.2 — events and runs are kept without limit (the history of `/history`; before: 365 days).
 
 **How it learns.** A signature is a **component**, not necessarily a whole appliance: a washing machine is a heater
@@ -1314,15 +1320,15 @@ dotnet test KasaMonitor.sln
 From the repository root, with Docker running and `docker login` done once:
 
 ```powershell
-.\deploy\build-and-push.ps1 -Version 0.9.3          # build :0.9.3 + :latest and push both
-.\deploy\build-and-push.ps1 -Version 0.9.3 -NoPush  # local build only
+.\deploy\build-and-push.ps1 -Version 0.9.4          # build :0.9.4 + :latest and push both
+.\deploy\build-and-push.ps1 -Version 0.9.4 -NoPush  # local build only
 ```
 
 or manually:
 
 ```bash
-docker build -t duobit/kasamonitor:0.9.3 -t duobit/kasamonitor:latest -f deploy/Dockerfile .
-docker push duobit/kasamonitor:0.9.3
+docker build -t duobit/kasamonitor:0.9.4 -t duobit/kasamonitor:latest -f deploy/Dockerfile .
+docker push duobit/kasamonitor:0.9.4
 docker push duobit/kasamonitor:latest
 ```
 

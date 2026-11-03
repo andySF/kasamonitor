@@ -4,6 +4,7 @@
 @using KasaMonitor.Workers.Nilm
 @using KasaMonitor.Web.Ui
 @inject NilmService Nilm
+@inject NavigationManager Nav
 @implements IDisposable
 
 <PageTitle>KasaMonitor — Consumatori</PageTitle>
@@ -134,16 +135,17 @@ else
                 <table class="table table-sm align-middle mb-0 small">
                     <thead class="table-light">
                         <tr>
-                            <th class="text-end" title="|ΔP| mediu al pornirilor și opririlor">ΔP mediu</th>
-                            <th class="text-end" title="Evenimente în fereastra de @_overview.Settings.ClusterWindowDays zile">Evenim.</th>
-                            <th>Nume</th><th>Categorie</th>
-                            <th class="text-end" title="Puterea reactivă (din partea pornirii)">ΔQ</th>
-                            <th class="text-end" title="Vârful din primele 2 s / ΔP (motoare 3–8, rezistențe ≈ 1)">Tranz.</th>
-                            <th>Ultima</th>
-                            <th class="text-end" title="Energie estimată din rulările pornire → oprire">Azi</th>
-                            <th class="text-end" title="Lista e ordonată după această coloană">7 zile</th>
-                            <th class="text-end">30 zile</th>
-                            <th>Sursă</th><th></th>
+                            <th class="text-end" aria-sort="@AriaSort(SignatureSort.DeltaP)" title="|ΔP| mediu al pornirilor și opririlor">@SortLink(SignatureSort.DeltaP)</th>
+                            <th class="text-end" aria-sort="@AriaSort(SignatureSort.Count)" title="Evenimente în fereastra de @_overview.Settings.ClusterWindowDays zile">@SortLink(SignatureSort.Count)</th>
+                            <th aria-sort="@AriaSort(SignatureSort.Name)">@SortLink(SignatureSort.Name)</th>
+                            <th aria-sort="@AriaSort(SignatureSort.Category)">@SortLink(SignatureSort.Category)</th>
+                            <th class="text-end" aria-sort="@AriaSort(SignatureSort.DeltaQ)" title="Puterea reactivă (din partea pornirii)">@SortLink(SignatureSort.DeltaQ)</th>
+                            <th class="text-end" aria-sort="@AriaSort(SignatureSort.Transient)" title="Vârful din primele 2 s / ΔP (motoare 3–8, rezistențe ≈ 1)">@SortLink(SignatureSort.Transient)</th>
+                            <th aria-sort="@AriaSort(SignatureSort.LastSeen)" title="Ultimul eveniment">@SortLink(SignatureSort.LastSeen)</th>
+                            <th class="text-end" aria-sort="@AriaSort(SignatureSort.Today)" title="Energie estimată din rulările pornire → oprire">@SortLink(SignatureSort.Today)</th>
+                            <th class="text-end" aria-sort="@AriaSort(SignatureSort.Days7)">@SortLink(SignatureSort.Days7)</th>
+                            <th class="text-end" aria-sort="@AriaSort(SignatureSort.Days30)">@SortLink(SignatureSort.Days30)</th>
+                            <th aria-sort="@AriaSort(SignatureSort.Source)">@SortLink(SignatureSort.Source)</th><th></th>
                         </tr>
                     </thead>
                     <tbody>
@@ -324,7 +326,7 @@ else
             {
                 <div class="card-footer d-flex align-items-center gap-2 small">
                     <button class="btn btn-sm btn-outline-secondary" @onclick="() => GoAsync(_page - 1, _eventsPage)" disabled="@(_page == 0)"><i class="bi bi-chevron-left"></i></button>
-                    <span>pagina @(_overview.Page + 1) din @_overview.PageCount (câte @NilmService.PageSize, după energia pe 7 zile)</span>
+                    <span>pagina @(_overview.Page + 1) din @_overview.PageCount (câte @NilmService.PageSize, după „@ColumnName(_sort)” @(_descending ? "descrescător" : "crescător"))</span>
                     <button class="btn btn-sm btn-outline-secondary" @onclick="() => GoAsync(_page + 1, _eventsPage)" disabled="@(_page >= _overview.PageCount - 1)"><i class="bi bi-chevron-right"></i></button>
                 </div>
             }
@@ -503,6 +505,13 @@ else
 }
 
 @code {
+    // The order of the detected signatures, kept in the address (?sort=last&dir=desc) so the 30 s refresh and the paging keep it.
+    [SupplyParameterFromQuery(Name = "sort")] public string? QuerySort { get; set; }
+    [SupplyParameterFromQuery(Name = "dir")] public string? QueryDir { get; set; }
+
+    private SignatureSort _sort = SignatureSorting.Default;
+    private bool _descending = SignatureSorting.DefaultDescending;
+    private bool _initialized;
     private NilmOverview? _overview;
     private bool _busy;
     private bool _showHidden;
@@ -529,15 +538,59 @@ else
 
     protected override async Task OnInitializedAsync()
     {
+        (_sort, _descending) = SignatureSorting.Parse(QuerySort, QueryDir);
+        _initialized = true;
         await LoadAsync();
         _timer = new System.Threading.Timer(_ => InvokeAsync(async () => { if (!_busy) { await LoadAsync(); StateHasChanged(); } }), null, 30_000, 30_000);
+    }
+
+    /// <summary>A column header was clicked (the address changed): a new order starts again from the first page.</summary>
+    protected override async Task OnParametersSetAsync()
+    {
+        if (!_initialized) return;
+        var before = (_sort, _descending);
+        var after = SignatureSorting.Parse(QuerySort, QueryDir);
+        if (after == before) return;
+        (_sort, _descending) = after;
+        _page = SignatureSorting.PageAfter(_page, before, after);
+        await LoadAsync();
+    }
+
+    private static string ColumnName(SignatureSort sort) => sort switch
+    {
+        SignatureSort.DeltaP => "ΔP mediu",
+        SignatureSort.Count => "Evenim.",
+        SignatureSort.Name => "Nume",
+        SignatureSort.Category => "Categorie",
+        SignatureSort.DeltaQ => "ΔQ",
+        SignatureSort.Transient => "Tranz.",
+        SignatureSort.Today => "Azi",
+        SignatureSort.Days7 => "7 zile",
+        SignatureSort.Days30 => "30 zile",
+        SignatureSort.Source => "Sursă",
+        _ => "Ultima",
+    };
+
+    private string? AriaSort(SignatureSort sort) => sort == _sort ? (_descending ? "descending" : "ascending") : null;
+
+    /// <summary>The header of a sortable column: a link to the same page with the next order (▲/▼ on the active column).</summary>
+    private RenderFragment SortLink(SignatureSort sort)
+    {
+        var (next, nextDescending) = SignatureSorting.Click(_sort, _descending, sort);
+        var href = Nav.GetUriWithQueryParameters(new Dictionary<string, object?>
+        {
+            ["sort"] = SignatureSorting.Key(next),
+            ["dir"] = SignatureSorting.Direction(nextDescending),
+        });
+        var arrow = sort == _sort ? (_descending ? " ▼" : " ▲") : "";
+        return @<a class="text-reset text-decoration-none text-nowrap" href="@href">@ColumnName(sort)@arrow</a>;
     }
 
     private async Task LoadAsync()
     {
         try
         {
-            _overview = await Nilm.GetOverviewAsync(_page, _eventsPage, CancellationToken.None, _showRare);
+            _overview = await Nilm.GetOverviewAsync(_page, _eventsPage, CancellationToken.None, _showRare, _sort, _descending);
             _page = _overview.Page;
             _eventsPage = _overview.EventsPage;
             _error = null;

@@ -32,8 +32,4 @@ public static class SignatureListing
     public static bool IsRareAndOld(ApplianceSignature s, DateTimeOffset nowUtc, bool possiblePlug) =>
         !possiblePlug && !s.ConfirmedByPlug && !HasOwnName(s) && s.Count <= RareMaxEvents
         && s.LastSeenUtc is { } last && nowUtc - last > RareMinAge;
-
-    /// <summary>Order of the list: energy over the last 7 days (largest first), then events, then id.</summary>
-    public static IEnumerable<T> Ordered<T>(IEnumerable<T> rows, Func<T, ApplianceSignature> signature, Func<T, double> last7DaysWh) =>
-        rows.OrderByDescending(last7DaysWh).ThenByDescending(r => signature(r).Count).ThenBy(r => signature(r).Id);
 }

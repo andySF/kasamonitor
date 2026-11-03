@@ -1,0 +1,96 @@
+@using KasaMonitor.Workers
+@using KasaMonitor.Core.Miele
+@inject IServiceScopeFactory ScopeFactory
+@inject MieleRecorder Recorder
+@inject IPlugStateBroadcaster PlugStates
+
+@* The expanded row of a Miele appliance on /dispozitive: alias and the plug that feeds it (formerly on /aparate). *@
+@if (_device is not { } d)
+{
+    <span class="text-secondary small">Aparatul nu mai există.</span>
+}
+else
+{
+    <div class="row g-2 align-items-end small">
+        <div class="col-md-4">
+            <label class="form-label mb-0" for="mAlias-@_domId">Alias</label>
+            <input class="form-control form-control-sm" id="mAlias-@_domId" @bind="_alias" maxlength="64" />
+        </div>
+        <div class="col-md-4">
+            <label class="form-label mb-0" for="mPlug-@_domId">Priza care îl alimentează</label>
+            <select class="form-select form-select-sm" id="mPlug-@_domId" @bind="_plugId">
+                <option value="">— niciuna —</option>
+                @foreach (var p in _plugs)
+                {
+                    <option value="@p.Id">@p.Alias</option>
+                }
+            </select>
+        </div>
+        <div class="col-md-3">
+            <button class="btn btn-outline-primary btn-sm" @onclick="SaveAsync"><i class="bi bi-save me-1"></i>Salvează aparatul</button>
+        </div>
+    </div>
+    <div class="small text-secondary mt-2">
+        @d.TypeText@(d.TechType.Length > 0 ? " · " + d.TechType : "")@(d.DeviceName.Length > 0 ? " · în aplicația Miele: " + d.DeviceName : "") ·
+        @if (d.PlugId is { } plug && PlugStates.Snapshot().TryGetValue(plug, out var st) && st.LastReading is { } r)
+        {
+            <span>priza acum: <b>@((r.PowerMw / 1000.0).ToString("0")) W</b>. </span>
+        }
+        Cu priza legată, fiecare ciclu primește energia măsurată și costul, iar evenimentele contorului confirmate de priză primesc numele fazei (adevăr de teren NILM).
+        Starea și ciclurile sunt pe pagina <a href="/aparate">Aparate</a>.
+    </div>
+    @if (_message is not null) { <div class="small text-success mt-1" role="status">@_message</div> }
+}
+
+@code {
+    [Parameter, EditorRequired] public string DeviceId { get; set; } = "";
+    /// <summary>The row's archived flag: a withdraw / restore from the actions column reloads the editor.</summary>
+    [Parameter] public bool Archived { get; set; }
+    [Parameter] public EventCallback OnChanged { get; set; }
+
+    private MieleDevice? _device;
+    private string _alias = "";
+    private string _plugId = "";
+    private IReadOnlyList<Plug> _plugs = Array.Empty<Plug>();
+    private string? _message;
+    private string _domId = "";
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (_device?.Id != DeviceId || _device.IsArchived != Archived) await ReloadAsync();
+    }
+
+    private async Task ReloadAsync()
+    {
+        _domId = ((uint)DeviceId.GetHashCode()).ToString(System.Globalization.CultureInfo.InvariantCulture);
+        using var scope = ScopeFactory.CreateScope();
+        _device = (await scope.ServiceProvider.GetRequiredService<IMieleRepository>().ListDevicesAsync(includeArchived: true, CancellationToken.None))
+            .FirstOrDefault(x => x.Id == DeviceId);
+        _plugs = (await scope.ServiceProvider.GetRequiredService<IPlugRepository>().ListAllAsync(CancellationToken.None))
+            .Where(p => !p.IsArchived && p.Role != PlugRole.MainMeter).OrderBy(p => p.Alias, StringComparer.CurrentCultureIgnoreCase).ToList();
+        _alias = _device?.Alias ?? "";
+        _plugId = _device?.PlugId?.ToString() ?? "";
+    }
+
+    private async Task SaveAsync()
+    {
+        try
+        {
+            using (var scope = ScopeFactory.CreateScope())
+            {
+                var repo = scope.ServiceProvider.GetRequiredService<IMieleRepository>();
+                var alias = _alias.Trim();
+                if (alias.Length > 0) await repo.SetAliasAsync(DeviceId, alias.Length > 64 ? alias[..64] : alias, CancellationToken.None);
+                await repo.SetPlugAsync(DeviceId, Guid.TryParse(_plugId, out var plug) ? plug : null, CancellationToken.None);
+            }
+            await Recorder.ReloadDeviceAsync(DeviceId, CancellationToken.None);
+            await ReloadAsync();
+            _message = "Salvat.";
+        }
+        catch (Exception ex)
+        {
+            _message = "Eroare: " + ex.Message;
+        }
+        await OnChanged.InvokeAsync();
+    }
+}

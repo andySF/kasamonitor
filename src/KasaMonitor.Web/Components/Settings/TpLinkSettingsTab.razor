@@ -1,0 +1,116 @@
+@using KasaMonitor.Workers
+@using KasaMonitor.Web.Ui
+@using KasaMonitor.Core.Devices
+@inject IKasaSettingsService KasaSettings
+@inherits SettingsTabBase
+
+@* /settings/tplink: how the app talks to TP-Link (Kasa legacy, Tapo KLAP / AES): the broadcast networks of the
+   discovery and the TP-Link account of the Tapo plugs. The password is never shown. *@
+<IntegrationStatusLine Integration="@(Integrations.Get(IntegrationKeys.TpLink)!)" />
+@if (_loaded is null)
+{
+    <p class="text-secondary"><span class="spinner-border spinner-border-sm me-2"></span>Se încarcă…</p>
+}
+else
+{
+    <div class="row g-3">
+        <div class="col-xl-6">
+            <div class="card h-100">
+                <div class="card-header fw-semibold"><i class="bi bi-broadcast me-2"></i>Descoperire Kasa / Tapo</div>
+                <div class="card-body">
+                    <div class="mb-2">
+                        <label class="form-label" for="broadcast">Rețele broadcast (separate prin virgulă)</label>
+                        <input class="form-control" id="broadcast" @bind="_broadcast" placeholder="192.168.1.255" />
+                    </div>
+                    <div class="form-text">
+                        Prizele Kasa răspund la UDP 9999, cele Tapo la UDP 20002, pe adresele de broadcast de aici (gol = 255.255.255.255).
+                        Pornirea, intervalul și adăugarea automată sunt în tabul <TabLink To="@SettingsTabs.App">Aplicație</TabLink>; scanarea
+                        manuală și „Adaugă după IP” sunt pe pagina <a href="@DevicePages.Href(IntegrationKeys.TpLink)">Dispozitive</a>.
+                    </div>
+                </div>
+            </div>
+        </div>
+        <div class="col-xl-6">
+            <div class="card h-100">
+                <div class="card-header fw-semibold"><i class="bi bi-cloud me-2"></i>Cont TP-Link (prize Tapo, KLAP / AES)</div>
+                <div class="card-body">
+                    <div class="mb-2">
+                        <label class="form-label" for="tapoUser">Utilizator (e-mail)</label>
+                        <input class="form-control" id="tapoUser" @bind="_tapoUser" autocomplete="off" />
+                    </div>
+                    <div class="mb-2">
+                        <label class="form-label" for="tapoPassword">Parolă</label>
+                        <input class="form-control" id="tapoPassword" @bind="_tapoPassword" type="password" autocomplete="new-password"
+                               placeholder="@(_hasTapoPassword ? "•••••••• (setată; lasă gol ca să rămână)" : "nesetată")" />
+                    </div>
+                    @if (_hasTapoPassword)
+                    {
+                        <div class="form-check">
+                            <input class="form-check-input" type="checkbox" id="clearPw" @bind="_clearTapoPassword" />
+                            <label class="form-check-label" for="clearPw">Șterge parola</label>
+                        </div>
+                    }
+                    <div class="form-text">Parola se păstrează criptată în bază și nu se afișează. Prizele Kasa (legacy) nu au nevoie de cont.</div>
+                </div>
+            </div>
+        </div>
+        <div class="col-12 d-flex align-items-center gap-3">
+            <button class="btn btn-primary" @onclick="SaveAsync"><i class="bi bi-save me-1"></i>Salvează „TP-Link”</button>
+            @if (IsDirty) { <span class="text-warning-emphasis small"><i class="bi bi-pencil-square me-1"></i>modificări nesalvate</span> }
+            @if (_saved) { <span class="text-success"><i class="bi bi-check-circle me-1"></i>Salvat.</span> }
+            @if (_error is not null) { <span class="text-danger"><i class="bi bi-x-circle me-1"></i>@_error</span> }
+        </div>
+    </div>
+}
+
+@code {
+    private string? _loaded;
+    private bool _saved;
+    private string? _error;
+    private string _broadcast = "";
+    private string _tapoUser = "";
+    private string _tapoPassword = "";
+    private bool _hasTapoPassword;
+    private bool _clearTapoPassword;
+
+    public override bool IsDirty => _loaded is not null && (_loaded != Fingerprint() || _tapoPassword.Length > 0 || _clearTapoPassword);
+
+    private string Fingerprint() => string.Join("|", _broadcast.Trim(), _tapoUser.Trim());
+
+    protected override async Task OnInitializedAsync() => await LoadAsync();
+
+    private async Task LoadAsync()
+    {
+        var s = await KasaSettings.GetAsync(CancellationToken.None);
+        _broadcast = s.BroadcastNetworks;
+        _tapoUser = s.TapoUsername;
+        _hasTapoPassword = s.HasTapoPassword;
+        _tapoPassword = "";
+        _clearTapoPassword = false;
+        _loaded = Fingerprint();
+    }
+
+    private async Task SaveAsync()
+    {
+        _error = null;
+        try
+        {
+            await KasaSettings.SaveAsync(new KasaSettingsUpdate(
+                BroadcastNetworks: _broadcast,
+                TapoUsername: _tapoUser,
+                NewTapoPassword: _tapoPassword,
+                ClearTapoPassword: _clearTapoPassword), CancellationToken.None);
+        }
+        catch (FormatException ex)
+        {
+            _error = ex.Message;
+            return;
+        }
+        await LoadAsync();
+        _saved = true;
+        StateHasChanged();
+        await Task.Delay(2000);
+        _saved = false;
+        StateHasChanged();
+    }
+}

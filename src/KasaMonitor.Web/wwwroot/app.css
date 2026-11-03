@@ -105,7 +105,7 @@ body {
     font-weight: 600;
 }
 
-/* 11 menu entries + the theme button + the version fit on one line from 1280 px. */
+/* 10 menu entries + the theme button + the version fit on one line from 1280 px. */
 .navbar .navbar-nav .nav-link {
     padding-left: .4rem;
     padding-right: .4rem;
@@ -233,4 +233,51 @@ h1:focus {
 
 .form-floating > .form-control-plaintext:focus::placeholder, .form-floating > .form-control:focus::placeholder {
     text-align: start;
+}
+/* /dispozitive (0.10.0): the state of each integration as a chip (→ its /settings tab), above the device table. */
+.integration-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: .4rem;
+    max-width: 100%;
+    padding: .25rem .7rem;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    background: var(--surface);
+    color: var(--ink);
+    font-size: .85rem;
+    text-decoration: none;
+}
+
+.integration-chip:hover,
+.integration-chip:focus-visible {
+    background: var(--hover);
+    color: var(--ink);
+}
+
+.integration-chip .chip-text {
+    max-width: 24rem;
+    overflow: hidden;
+    color: var(--ink-2);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.device-table td {
+    padding-top: .45rem;
+    padding-bottom: .45rem;
+}
+
+.device-table tr.device-detail > td {
+    background: var(--page);
+    padding: .75rem 1rem;
+}
+
+.settings-tabs .nav-link {
+    color: var(--ink-2);
+}
+
+.settings-tabs .nav-link.active {
+    color: var(--ink);
+    font-weight: 600;
 }

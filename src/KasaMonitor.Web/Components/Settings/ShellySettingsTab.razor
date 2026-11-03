@@ -1,0 +1,127 @@
+@using KasaMonitor.Workers
+@using KasaMonitor.Web.Ui
+@using KasaMonitor.Core.Devices
+@inject IKasaSettingsService KasaSettings
+@inherits SettingsTabBase
+
+@* /settings/shelly: how the app talks to Shelly Gen2/Gen3 (meters, plugs and the climate sensors H&T / Plus Add-on):
+   the mDNS discovery, the admin password, the addresses probed besides mDNS and the relay permission. *@
+<IntegrationStatusLine Integration="@(Integrations.Get(IntegrationKeys.Shelly)!)" />
+@if (_loaded is null)
+{
+    <p class="text-secondary"><span class="spinner-border spinner-border-sm me-2"></span>Se încarcă…</p>
+}
+else
+{
+    <div class="row g-3">
+        <div class="col-xl-6">
+            <div class="card h-100">
+                <div class="card-header fw-semibold"><i class="bi bi-speedometer me-2"></i>Shelly Gen2 / Gen3 (contoare, prize, senzori de climă)</div>
+                <div class="card-body">
+                    <div class="form-check form-switch mb-3">
+                        <input class="form-check-input" type="checkbox" id="shellyDiscovery" @bind="_shellyDiscovery" />
+                        <label class="form-check-label" for="shellyDiscovery">Descoperire Shelly (mDNS <code>_shelly._tcp</code> + adresele de mai jos)</label>
+                    </div>
+                    <div class="mb-2">
+                        <label class="form-label" for="shellyPassword">Parolă Shelly (utilizator <code>admin</code>, opțional)</label>
+                        <input class="form-control" id="shellyPassword" @bind="_shellyPassword" type="password" autocomplete="new-password"
+                               placeholder="@(_hasShellyPassword ? "•••••••• (setată; lasă gol ca să rămână)" : "nesetată (doar pentru dispozitivele cu autentificare)")" />
+                    </div>
+                    @if (_hasShellyPassword)
+                    {
+                        <div class="form-check mb-2">
+                            <input class="form-check-input" type="checkbox" id="clearShellyPw" @bind="_clearShellyPassword" />
+                            <label class="form-check-label" for="clearShellyPw">Șterge parola Shelly</label>
+                        </div>
+                    }
+                    <div class="mb-1">
+                        <label class="form-label" for="shellyHosts">Adrese de probat (opțional)</label>
+                        <input class="form-control" id="shellyHosts" @bind="_shellyProbeHosts" placeholder="192.168.1.141, 192.168.1.150-160, 10.0.5.0/24" />
+                    </div>
+                    <div class="form-text">
+                        Pentru dispozitive pe care mDNS nu le găsește (alt subnet, mDNS oprit): IP-uri, intervale sau CIDR, separate prin virgulă;
+                        fiecare adresă e întrebată la fiecare descoperire cu <code>Shelly.GetDeviceInfo</code> (timeout 1 s). Descoperirea guvernează și
+                        senzorii de climă Shelly (H&amp;T, Plus Add-on). Pornirea, intervalul și adăugarea automată sunt în tabul
+                        <TabLink To="@SettingsTabs.App">Aplicație</TabLink>.
+                    </div>
+                </div>
+            </div>
+        </div>
+        <div class="col-xl-6">
+            <div class="card h-100">
+                <div class="card-header fw-semibold"><i class="bi bi-toggle-on me-2"></i>Releu</div>
+                <div class="card-body">
+                    <div class="form-check form-switch mb-1">
+                        <input class="form-check-input" type="checkbox" id="allowRelay" @bind="_allowRelay" />
+                        <label class="form-check-label" for="allowRelay">Permite comanda releului (Shelly <code>Switch.Set</code>)</label>
+                    </div>
+                    <div class="form-text">
+                        Aplicația doar citește; singura scriere e comanda releului, cu confirmare, trecută în jurnal. Când e oprită, comutatorul
+                        Pornit/Oprit nu mai apare. Aplicația nu are autentificare: expune-o doar în LAN.
+                    </div>
+                </div>
+            </div>
+        </div>
+        <div class="col-12 d-flex align-items-center gap-3">
+            <button class="btn btn-primary" @onclick="SaveAsync"><i class="bi bi-save me-1"></i>Salvează „Shelly”</button>
+            @if (IsDirty) { <span class="text-warning-emphasis small"><i class="bi bi-pencil-square me-1"></i>modificări nesalvate</span> }
+            @if (_saved) { <span class="text-success"><i class="bi bi-check-circle me-1"></i>Salvat.</span> }
+            @if (_error is not null) { <span class="text-danger"><i class="bi bi-x-circle me-1"></i>@_error</span> }
+        </div>
+    </div>
+}
+
+@code {
+    private string? _loaded;
+    private bool _saved;
+    private string? _error;
+    private bool _shellyDiscovery;
+    private string _shellyPassword = "";
+    private bool _hasShellyPassword;
+    private bool _clearShellyPassword;
+    private string _shellyProbeHosts = "";
+    private bool _allowRelay;
+
+    public override bool IsDirty => _loaded is not null && (_loaded != Fingerprint() || _shellyPassword.Length > 0 || _clearShellyPassword);
+
+    private string Fingerprint() => string.Join("|", _shellyDiscovery, _shellyProbeHosts.Trim(), _allowRelay);
+
+    protected override async Task OnInitializedAsync() => await LoadAsync();
+
+    private async Task LoadAsync()
+    {
+        var s = await KasaSettings.GetAsync(CancellationToken.None);
+        _shellyDiscovery = s.ShellyDiscoveryEnabled;
+        _hasShellyPassword = s.HasShellyPassword;
+        _shellyPassword = "";
+        _clearShellyPassword = false;
+        _shellyProbeHosts = s.ShellyProbeHosts;
+        _allowRelay = s.AllowRelayControl;
+        _loaded = Fingerprint();
+    }
+
+    private async Task SaveAsync()
+    {
+        _error = null;
+        try
+        {
+            await KasaSettings.SaveAsync(new KasaSettingsUpdate(
+                ShellyDiscoveryEnabled: _shellyDiscovery,
+                ShellyProbeHosts: _shellyProbeHosts,
+                NewShellyPassword: _shellyPassword,
+                ClearShellyPassword: _clearShellyPassword,
+                AllowRelayControl: _allowRelay), CancellationToken.None);
+        }
+        catch (FormatException ex)
+        {
+            _error = ex.Message;
+            return;
+        }
+        await LoadAsync();
+        _saved = true;
+        StateHasChanged();
+        await Task.Delay(2000);
+        _saved = false;
+        StateHasChanged();
+    }
+}

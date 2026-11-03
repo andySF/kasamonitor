@@ -1,0 +1,87 @@
+@using KasaMonitor.Workers
+@using KasaMonitor.Web.Ui
+@inject PlugDiscoveryService Discovery
+
+@* „+ Adaugă” for the LAN integrations (TP-Link, Shelly): scan now (UDP 9999 / 20002, mDNS Shelly) or add by IP, as on
+   the former /plugs page. What is found but not added is listed in „Descoperite”. *@
+<div class="d-flex flex-wrap align-items-center gap-2">
+    <button class="btn btn-success btn-sm" @onclick="ScanNowAsync" disabled="@_scanning" title="Caută dispozitive în rețea acum (UDP 9999 și 20002, mDNS Shelly)">
+        @if (_scanning) { <span class="spinner-border spinner-border-sm me-1"></span><span>Se scanează…</span> }
+        else { <i class="bi bi-search me-1"></i><span>Scanează acum</span> }
+    </button>
+    <div class="input-group input-group-sm" style="width: 24rem; max-width: 100%;">
+        <span class="input-group-text"><i class="bi bi-plus-lg"></i></span>
+        <input class="form-control" @bind="_manualIp" placeholder="IP, ex. 192.168.1.50" aria-label="Adresa IP a dispozitivului" />
+        <button class="btn btn-outline-primary" @onclick="AddByIpAsync" disabled="@_adding" title="Încearcă legacy (TCP 9999), apoi Tapo (UDP 20002 / KLAP / AES), apoi Shelly (HTTP /rpc)">
+            @(_adding ? "Se încearcă…" : "Adaugă după IP")
+        </button>
+    </div>
+</div>
+<div class="form-text">
+    @if (Integration.Key == KasaMonitor.Core.Devices.IntegrationKeys.Shelly)
+    {
+        <span>Shelly Gen2/Gen3 cu contor (EM, Plug, PM, Switch) apar ca prize sau contoare; un H&amp;T sau un Plus Add-on fără contor e senzor de climă și apare singur, după prima valoare.</span>
+    }
+    else
+    {
+        <span>Prizele Kasa (legacy) se citesc fără cont; cele Tapo au nevoie de contul TP-Link din <a href="@Integration.SettingsUrl">Setări → TP-Link</a>.</span>
+    }
+    Rețeaua scanată și adăugarea automată sunt în <a href="@SettingsTabs.Href(SettingsTabs.App)">Setări → Aplicație</a>.
+</div>
+@if (_message is not null) { <div class="alert alert-info py-2 mt-2 mb-0 small" role="status"><i class="bi bi-info-circle me-1"></i>@_message</div> }
+
+@code {
+    [Parameter, EditorRequired] public IntegrationInfo Integration { get; set; } = default!;
+    [Parameter] public EventCallback OnChanged { get; set; }
+
+    private bool _scanning;
+    private bool _adding;
+    private string _manualIp = "";
+    private string? _message;
+
+    private async Task ScanNowAsync()
+    {
+        _scanning = true;
+        _message = null;
+        StateHasChanged();
+        try
+        {
+            var scan = await Discovery.ScanAsync(CancellationToken.None);
+            _message = $"Scanare terminată: {scan.Items.Count} găsite, {scan.NewCount} noi.";
+        }
+        catch (Exception ex)
+        {
+            _message = $"Scanarea a eșuat: {ex.Message}";
+        }
+        finally
+        {
+            _scanning = false;
+        }
+        await OnChanged.InvokeAsync();
+    }
+
+    private async Task AddByIpAsync()
+    {
+        if (!System.Net.IPAddress.TryParse(_manualIp.Trim(), out var ip) || ip.AddressFamily != System.Net.Sockets.AddressFamily.InterNetwork)
+        {
+            _message = $"„{_manualIp}” nu e o adresă IPv4 validă.";
+            return;
+        }
+        _adding = true;
+        _message = null;
+        StateHasChanged();
+        try
+        {
+            _message = (await Discovery.AddByIpAsync(ip, CancellationToken.None)).Message;
+        }
+        catch (Exception ex)
+        {
+            _message = $"Adăugarea a eșuat: {ex.Message}";
+        }
+        finally
+        {
+            _adding = false;
+        }
+        await OnChanged.InvokeAsync();
+    }
+}

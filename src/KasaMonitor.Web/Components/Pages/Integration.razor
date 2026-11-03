@@ -12,6 +12,7 @@
 @implements IDisposable
 
 <PageTitle>KasaMonitor — Integrare</PageTitle>
+<nav aria-label="breadcrumb" class="small mb-1"><a href="@KasaMonitor.Web.Ui.SettingsTabs.Href(KasaMonitor.Web.Ui.SettingsTabs.Export)"><i class="bi bi-arrow-left me-1"></i>Setări → Export</a></nav>
 <h1 class="h3 mb-3"><i class="bi bi-diagram-3 me-2"></i>Integrare: Prometheus și Grafana</h1>
 <p class="lead-note">KasaMonitor expune metricile prizelor pe <code>/metrics</code>. Lanțul complet: <b>KasaMonitor</b> → <b>Prometheus</b> (colectează și păstrează istoricul) → <b>Grafana</b> (dashboard și alerte). Pașii de mai jos sunt completați cu adresa acestui server; fișierele se descarcă gata de folosit.</p>
 
@@ -61,7 +62,7 @@
     }
 
     <h3>Metrici <code>kasa_*</code></h3>
-    <p class="note">Etichete pe toate seriile: @foreach (var l in KasaMetrics.LabelNames) { <code>@l</code><span> </span> } (protocol: legacy, klap, aes, shelly-rpc; <code>role</code>: <code>plug</code> = priză, <code>main</code> = contorul general al casei, <code>sub</code> = sub-contor, setat în pagina Prize; pentru canalele ≥ 1 ale unui contor Shelly <code>mac</code> = <code>&lt;mac&gt;-&lt;canal&gt;</code>). Valorile se actualizează la fiecare citire a prizelor (implicit 10 s); fluxul live (1–10 s, pagina Contor) nu ajunge în /metrics.</p>
+    <p class="note">Etichete pe toate seriile: @foreach (var l in KasaMetrics.LabelNames) { <code>@l</code><span> </span> } (protocol: legacy, klap, aes, shelly-rpc; <code>role</code>: <code>plug</code> = priză, <code>main</code> = contorul general al casei, <code>sub</code> = sub-contor, setat în pagina Dispozitive; pentru canalele ≥ 1 ale unui contor Shelly <code>mac</code> = <code>&lt;mac&gt;-&lt;canal&gt;</code>). Valorile se actualizează la fiecare citire a prizelor (implicit 10 s); fluxul live (1–10 s, pagina Contor) nu ajunge în /metrics.</p>
     @if (_families is null)
     {
         <p><em>Se încarcă…</em></p>

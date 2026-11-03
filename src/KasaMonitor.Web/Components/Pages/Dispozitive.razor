@@ -1,0 +1,475 @@
+@page "/dispozitive"
+@rendermode InteractiveServer
+@using KasaMonitor.Workers
+@using KasaMonitor.Web.Ui
+@using KasaMonitor.Core.Devices
+@using KasaMonitor.Core.Climate
+@using KasaMonitor.Core.Protocol.Tapo
+@inject DeviceCatalog Catalog
+@inject PlugDiscoveryService Discovery
+@inject ClimateState Climate
+@inject IClimateSettingsService ClimateSettings
+@inject ClimateWorker ClimateWorker
+@inject IServiceProvider Services
+@implements IDisposable
+
+@* /dispozitive (0.10.0, replaces /plugs): every device of every integration in one table, filtered by category, vendor,
+   state and „arată retrase”; the expanded row is the single place where a device is configured (name, room, role,
+   links). Above it: the state of each integration (chip → its settings tab), „+ Adaugă” per integration and what was
+   found but not added („Descoperite”). *@
+<PageTitle>KasaMonitor — Dispozitive</PageTitle>
+
+<div class="d-flex flex-wrap align-items-center justify-content-between gap-2 mb-2">
+    <h1 class="h3 mb-0"><i class="bi bi-outlet me-2"></i>Dispozitive</h1>
+    <button type="button" class="btn btn-success btn-sm" @onclick="ToggleAdd" aria-expanded="@(_addOpen ? "true" : "false")" aria-controls="add-panel">
+        <i class="bi bi-plus-lg me-1"></i>Adaugă
+    </button>
+</div>
+
+<nav class="integration-strip d-flex flex-wrap gap-2 mb-3" aria-label="Starea integrărilor">
+    @foreach (var i in Integrations.All)
+    {
+        var st = _status.GetValueOrDefault(i.Key);
+        <a class="integration-chip" href="@i.SettingsUrl" title="@($"{i.Name}: {st?.Text ?? "se citește…"} (Setări → {i.Name})")">
+            <i class="bi @i.Icon" aria-hidden="true"></i>
+            <span class="fw-semibold">@i.Name</span>
+            @if (st is not null)
+            {
+                <span class="badge @IntegrationStatus.Badge(st.Level)">@IntegrationStatus.LevelName(st.Level)</span>
+                <span class="chip-text">@st.Text</span>
+            }
+        </a>
+    }
+</nav>
+
+@if (_addOpen)
+{
+    <div class="card mb-3" id="add-panel">
+        <div class="card-header d-flex flex-wrap align-items-center gap-2">
+            <span class="fw-semibold"><i class="bi bi-plus-circle me-1"></i>Adaugă</span>
+            <div class="btn-group btn-group-sm flex-wrap" role="group" aria-label="Integrarea prin care adaugi">
+                @foreach (var i in Integrations.All.Where(i => i.AddComponent is not null))
+                {
+                    <button type="button" class="btn @(_addKey == i.Key ? "btn-primary" : "btn-outline-secondary")" aria-pressed="@(_addKey == i.Key ? "true" : "false")"
+                            @onclick="() => _addKey = i.Key"><i class="bi @i.Icon me-1" aria-hidden="true"></i>@i.Name</button>
+                }
+            </div>
+            <button type="button" class="btn-close ms-auto" aria-label="Închide" @onclick="ToggleAdd"></button>
+        </div>
+        <div class="card-body">
+            @if (Integrations.Get(_addKey) is { AddComponent: { } addType } add)
+            {
+                <DynamicComponent @key="add.Key" Type="addType" Parameters="@AddParameters(add)" />
+            }
+            else
+            {
+                <span class="text-secondary small">Alege integrarea prin care adaugi.</span>
+            }
+        </div>
+    </div>
+}
+
+@if (_discovered.Count > 0 || _goveeNew.Count > 0)
+{
+    <div class="card mb-3">
+        <div class="card-header d-flex flex-wrap gap-3 align-items-center small">
+            <span class="fw-semibold"><i class="bi bi-broadcast me-1"></i>Descoperite (neadăugate)</span>
+            @if (Discovery.LastScan is { } scan)
+            {
+                <span title="@UiFormat.FullLocal(scan.AtUtc)">ultima scanare @UiFormat.RelativeRo(scan.AtUtc, DateTimeOffset.UtcNow)</span>
+                <span class="text-secondary">adăugare automată @(scan.AutoAdd ? "pornită" : "oprită")</span>
+            }
+        </div>
+        <div class="table-responsive">
+            <table class="table table-sm table-hover align-middle mb-0">
+                <thead class="table-light"><tr><th scope="col">Firmă</th><th scope="col">Nume</th><th scope="col">Model</th><th scope="col">Adresă</th><th scope="col">Stare</th><th scope="col" class="text-end"><span class="visually-hidden">Acțiuni</span></th></tr></thead>
+                <tbody>
+                    @foreach (var i in _discovered)
+                    {
+                        <tr>
+                            <td>@Integrations.NameOf(PlugProtocols.Integration(i.Plug.Protocol))</td>
+                            <td>@i.Plug.Info.Alias</td>
+                            <td><span class="badge text-bg-light border" title="@UiFormat.ModelTitle(i.Plug.Info.Model, i.Plug.Info.HwVer, i.Plug.Protocol)">@PlugModelName.Short(i.Plug.Info.Model)</span> <span class="badge @UiFormat.ProtocolBadge(i.Plug.Protocol)">@i.Plug.Protocol</span></td>
+                            <td>@i.Plug.IpAddress <code class="text-secondary small ms-1">@i.Plug.Info.Mac</code></td>
+                            <td>
+                                @if (i.Plug.IsSupported) { <span class="badge text-bg-primary">nouă</span> }
+                                else
+                                {
+                                    <span class="badge text-bg-warning text-wrap text-start">@TapoSupport.Describe(i.Plug.Info.Model, i.Plug.UnsupportedReason ?? "")</span>
+                                    @if (TapoSupport.IsUnknownProtocolReason(i.Plug.UnsupportedReason)) { <div class="form-text text-warning-emphasis">@TapoSupport.ThirdPartyCompatibilityHint</div> }
+                                }
+                            </td>
+                            <td class="text-end"><button class="btn btn-outline-success btn-sm" @onclick="() => AddDiscoveredAsync(i)" title="Adaugă în listă"><i class="bi bi-plus-lg me-1"></i>Adaugă</button></td>
+                        </tr>
+                    }
+                    @foreach (var g in _goveeNew)
+                    {
+                        <tr>
+                            <td>Govee</td>
+                            <td>@g.Name</td>
+                            <td><span class="badge text-bg-light border">@g.Sku</span></td>
+                            <td><span class="text-secondary">cont Govee</span></td>
+                            <td><span class="badge text-bg-primary">în cont, nebifat</span></td>
+                            <td class="text-end"><button class="btn btn-outline-success btn-sm" @onclick="() => AddGoveeAsync(g)" title="Bifează „acasă”: citit la 10 min și salvat"><i class="bi bi-plus-lg me-1"></i>Adaugă</button></td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    </div>
+}
+
+@if (_message is not null)
+{
+    <div class="alert alert-info py-2 d-flex align-items-center gap-2" role="status"><i class="bi bi-info-circle"></i>@_message</div>
+}
+
+<div class="device-filters d-flex flex-wrap align-items-end gap-2 mb-2" role="search" aria-label="Filtrează dispozitivele">
+    <div>
+        <label class="form-label small mb-0" for="fCat">Categorie</label>
+        <select class="form-select form-select-sm" id="fCat" @bind="CatValue" @bind:after="Changed">
+            <option value="">toate</option>
+            @foreach (var c in DeviceCategories.All)
+            {
+                <option value="@DeviceCategories.Slug(c)">@DeviceCategories.Name(c)</option>
+            }
+        </select>
+    </div>
+    <div>
+        <label class="form-label small mb-0" for="fFirma">Firmă</label>
+        <select class="form-select form-select-sm" id="fFirma" @bind="_firma" @bind:after="Changed">
+            <option value="">toate</option>
+            @foreach (var i in Integrations.All)
+            {
+                <option value="@i.Key">@i.Name</option>
+            }
+        </select>
+    </div>
+    <div>
+        <label class="form-label small mb-0" for="fStare">Stare</label>
+        <select class="form-select form-select-sm" id="fStare" @bind="StareValue" @bind:after="Changed">
+            <option value="">toate</option>
+            @foreach (var h in DeviceHealths.All)
+            {
+                <option value="@DeviceHealths.Slug(h)">@DeviceHealths.Name(h)</option>
+            }
+        </select>
+    </div>
+    <div class="form-check form-switch mb-1 ms-1">
+        <input class="form-check-input" type="checkbox" role="switch" id="fRetrase" @bind="_showRetired" @bind:after="Changed" />
+        <label class="form-check-label small" for="fRetrase">Arată retrase</label>
+    </div>
+    <span class="small text-secondary ms-auto mb-1" aria-live="polite">@CountText</span>
+</div>
+
+@if (!_loaded)
+{
+    <p class="text-secondary"><span class="spinner-border spinner-border-sm me-2"></span>Se încarcă…</p>
+}
+else if (_rows.Count == 0)
+{
+    <div class="alert alert-secondary">Niciun dispozitiv încă. Apasă „Adaugă”: scanează rețeaua (TP-Link, Shelly), conectează un cont (Viessmann, Miele) sau bifează termometrele Govee.</div>
+}
+else
+{
+    var now = DateTimeOffset.UtcNow;
+    <div class="card">
+        <div class="table-responsive">
+            <table class="table table-hover align-middle mb-0 device-table">
+                <thead class="table-light">
+                    <tr>
+                        <th scope="col">Nume</th><th scope="col">Firmă</th><th scope="col">Categorie</th><th scope="col">Model</th><th scope="col">Cameră</th>
+                        <th scope="col">Stare</th><th scope="col">Ultima citire</th><th scope="col" class="text-end">Acțiuni</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var r in Shown)
+                    {
+                        var open = _openKey == r.Key;
+                        var integration = Integrations.Get(r.Integration);
+                        var rowId = "dev-" + ((uint)r.Key.GetHashCode()).ToString(System.Globalization.CultureInfo.InvariantCulture);
+                        <tr @key="r.Key" class="@(r.IsArchived ? "opacity-50" : "") @(open ? "table-active" : "")" data-key="@r.Key">
+                            <td style="min-width: 12rem;">
+                                <span class="fw-semibold">@r.Name</span>
+                                @if (r.NameIsCustom) { <span class="badge text-bg-light border ms-1" title="Nume setat aici, nu cel din dispozitiv">personalizat</span> }
+                                @if (r.LinkedTo is { } linked) { <div class="small text-secondary">@linked</div> }
+                            </td>
+                            <td class="text-nowrap">@(integration?.Name ?? r.Integration)</td>
+                            <td class="text-nowrap"><i class="bi @DeviceCategories.Icon(r.Category) me-1 text-secondary" aria-hidden="true"></i>@DeviceCategories.Name(r.Category)</td>
+                            <td class="small">@r.Model</td>
+                            <td class="small">@(r.Room ?? "—")</td>
+                            <td>
+                                <span class="badge @HealthBadge(r.Health)">@DeviceHealths.Name(r.Health)</span>
+                                @if (r.Health == DeviceHealth.Unsupported && r.Note is { } why) { <div class="small text-warning-emphasis">@why</div> }
+                            </td>
+                            <td class="small text-nowrap">
+                                @if (r.LastReadUtc is { } read)
+                                {
+                                    <span title="@UiFormat.FullLocal(read)">@UiFormat.RelativeRo(read, now)</span>
+                                }
+                                else { <span class="text-secondary">—</span> }
+                            </td>
+                            <td class="text-end text-nowrap">
+                                <button type="button" class="btn btn-outline-secondary btn-sm" @onclick="() => Toggle(r.Key)" aria-expanded="@(open ? "true" : "false")" aria-controls="@rowId"
+                                        title="Detalii și configurare"><i class="bi @(open ? "bi-chevron-up" : "bi-chevron-down")"></i><span class="visually-hidden">Detalii @r.Name</span></button>
+                                <a class="btn btn-outline-secondary btn-sm" href="@r.DataUrl" title="Datele (istoric, pagina dispozitivului)"><i class="bi bi-bar-chart"></i><span class="visually-hidden">Date @r.Name</span></a>
+                                @if (integration is not null)
+                                {
+                                    <a class="btn btn-outline-secondary btn-sm" href="@integration.SettingsUrl" title="Setări → @integration.Name"><i class="bi bi-gear"></i><span class="visually-hidden">Setări @integration.Name</span></a>
+                                }
+                                @if (r.IsArchived)
+                                {
+                                    <button type="button" class="btn btn-outline-success btn-sm" @onclick="() => SetRetiredAsync(r, false)" title="Readu: citit din nou și afișat"><i class="bi bi-arrow-counterclockwise"></i><span class="visually-hidden">Readu @r.Name</span></button>
+                                }
+                                else
+                                {
+                                    <button type="button" class="btn btn-outline-secondary btn-sm" @onclick="() => RetireAsync(r)" title="Retrage: nu mai e citit și nu mai apare (istoricul rămâne)"><i class="bi bi-archive"></i><span class="visually-hidden">Retrage @r.Name</span></button>
+                                }
+                            </td>
+                        </tr>
+                        @if (_confirmKey == r.Key && r.RetireWarning is { } warning)
+                        {
+                            <tr @key="@(r.Key + ":confirm")" class="device-confirm">
+                                <td colspan="8">
+                                    <div class="alert alert-warning d-flex flex-wrap align-items-center gap-2 mb-0 py-2" role="alertdialog" aria-label="@($"Retragi {r.Name}?")">
+                                        <i class="bi bi-exclamation-triangle-fill"></i>
+                                        <span>Retragi „@r.Name”? @warning</span>
+                                        <button type="button" class="btn btn-outline-secondary btn-sm ms-auto" @onclick="() => _confirmKey = null">Rămân</button>
+                                        <button type="button" class="btn btn-warning btn-sm" @onclick="() => SetRetiredAsync(r, true)"><i class="bi bi-archive me-1"></i>Retrage</button>
+                                    </div>
+                                </td>
+                            </tr>
+                        }
+                        @if (open)
+                        {
+                            <tr @key="@(r.Key + ":detail")" class="device-detail" id="@rowId">
+                                <td colspan="8">
+                                    @switch (r.Category)
+                                    {
+                                        case DeviceCategory.Plug or DeviceCategory.Meter when Guid.TryParse(r.Key[DeviceRow.PlugPrefix.Length..], out var plugId):
+                                            <PlugDeviceEditor PlugId="plugId" Archived="r.IsArchived" OnChanged="ReloadAsync" />
+                                            break;
+                                        case DeviceCategory.ClimateSensor or DeviceCategory.Weather when Guid.TryParse(r.Key[DeviceRow.ClimatePrefix.Length..], out var sensorId):
+                                            <ClimateSensorEditor SensorId="sensorId" OnChanged="ReloadAsync" />
+                                            break;
+                                        case DeviceCategory.Appliance:
+                                            <MieleDeviceEditor DeviceId="@r.Key[DeviceRow.MielePrefix.Length..]" Archived="r.IsArchived" OnChanged="ReloadAsync" />
+                                            break;
+                                        case DeviceCategory.Boiler:
+                                            <HeatingDeviceEditor Row="r" />
+                                            break;
+                                    }
+                                </td>
+                            </tr>
+                        }
+                    }
+                </tbody>
+            </table>
+        </div>
+    </div>
+}
+
+@code {
+    [SupplyParameterFromQuery(Name = "cat")] public string? Cat { get; set; }
+    [SupplyParameterFromQuery(Name = "firma")] public string? Firma { get; set; }
+    [SupplyParameterFromQuery(Name = "stare")] public string? Stare { get; set; }
+    [SupplyParameterFromQuery(Name = "retrase")] public string? Retrase { get; set; }
+    /// <summary>The row to open (<c>plug:{id}</c>, <c>climate:{id}</c>, …): the ✎ links of /clima, /aparate, /prize.</summary>
+    [SupplyParameterFromQuery(Name = "d")] public string? Open { get; set; }
+    /// <summary>The „+ Adaugă” panel open on one integration (<c>?adauga=govee</c>).</summary>
+    [SupplyParameterFromQuery(Name = "adauga")] public string? Adauga { get; set; }
+
+    private IReadOnlyList<DeviceRow> _rows = Array.Empty<DeviceRow>();
+    private readonly Dictionary<string, IntegrationStatus> _status = new();
+    private IReadOnlyList<DiscoveryResultItem> _discovered = Array.Empty<DiscoveryResultItem>();
+    private IReadOnlyList<GoveeDevice> _goveeNew = Array.Empty<GoveeDevice>();
+    private bool _loaded;
+    private DeviceCategory? _cat;
+    private string _firma = "";
+    private DeviceHealth? _stare;
+    private bool _showRetired;
+    private string? _openKey;
+    private bool _addOpen;
+    private string _addKey = Integrations.All[0].Key;
+    private string? _message;
+    /// <summary>The row whose „Retrage” waits for a confirmation (main meter, boiler).</summary>
+    private string? _confirmKey;
+    private System.Threading.Timer? _timer;
+    private int _ticks;
+    private const int StatesEveryTicks = 6;
+    private readonly Dictionary<string, IDictionary<string, object>> _addParameters = new();
+
+    /// <summary>The parameters of an add panel, built once (a new dictionary would re-parameterise it at every render).</summary>
+    private IDictionary<string, object> AddParameters(IntegrationInfo add)
+    {
+        if (!_addParameters.TryGetValue(add.Key, out var p))
+            _addParameters[add.Key] = p = new Dictionary<string, object>
+            {
+                ["Integration"] = add,
+                ["OnChanged"] = EventCallback.Factory.Create(this, () => ReloadAsync(withStates: true)),
+            };
+        return p;
+    }
+
+    private string CatValue
+    {
+        get => _cat is { } c ? DeviceCategories.Slug(c) : "";
+        set => _cat = DeviceCategories.FromSlug(value);
+    }
+
+    private string StareValue
+    {
+        get => _stare is { } h ? DeviceHealths.Slug(h) : "";
+        set => _stare = DeviceHealths.FromSlug(value);
+    }
+
+    private DeviceFilter Filter => new(_cat, _firma.Length == 0 ? null : _firma, _stare, _showRetired);
+
+    private IReadOnlyList<DeviceRow> Shown
+    {
+        get
+        {
+            var shown = Filter.Apply(_rows);
+            // A row opened from a link stays visible even when a filter would hide it.
+            return _openKey is { } k && shown.All(r => r.Key != k) && _rows.FirstOrDefault(r => r.Key == k) is { } opened
+                ? shown.Prepend(opened).ToList()
+                : shown;
+        }
+    }
+
+    protected override async Task OnInitializedAsync()
+    {
+        _cat = DeviceCategories.FromSlug(Cat);
+        _firma = Integrations.Get(Firma)?.Key ?? "";
+        _stare = DeviceHealths.FromSlug(Stare);
+        _showRetired = Retrase is "1" or "true" or "da";
+        _openKey = string.IsNullOrWhiteSpace(Open) ? null : Open;
+        if (Integrations.Get(Adauga) is { AddComponent: not null } add)
+        {
+            _addOpen = true;
+            _addKey = add.Key;
+        }
+        await ReloadAsync(withStates: true);
+        if (_openKey is { } k && _rows.FirstOrDefault(r => r.Key == k) is { IsArchived: true }) _showRetired = true;
+        _timer = new System.Threading.Timer(_ => InvokeAsync(async () =>
+        {
+            // The lists every 5 s (the states are in memory, four small queries); the integrations' states, which read
+            // every settings block (and decrypt the secrets), every 30 s.
+            await ReloadAsync(withStates: ++_ticks % StatesEveryTicks == 0);
+            StateHasChanged();
+        }), null, 5000, 5000);
+    }
+
+    private Task ReloadAsync() => ReloadAsync(withStates: false);
+
+    private async Task ReloadAsync(bool withStates)
+    {
+        var now = DateTimeOffset.UtcNow;
+        try
+        {
+            _rows = await Catalog.ListAsync(now, CancellationToken.None);
+            if (withStates)
+            {
+                foreach (var i in Integrations.All)
+                {
+                    try { _status[i.Key] = await i.Status(Services, now, CancellationToken.None); }
+                    catch (Exception ex) { _status[i.Key] = new IntegrationStatus(IntegrationLevel.Error, "starea nu a putut fi citită: " + ex.Message); }
+                }
+            }
+            _discovered = Discovery.LastScan?.Items.Where(i => i.PlugId is null).OrderBy(i => i.Plug.Info.Alias, StringComparer.CurrentCultureIgnoreCase).ToList()
+                          ?? (IReadOnlyList<DiscoveryResultItem>)Array.Empty<DiscoveryResultItem>();
+            var climate = await ClimateSettings.GetAsync(CancellationToken.None);
+            _goveeNew = climate.HasGoveeKey && Climate.GoveeDevices is { } devices
+                ? devices.Where(d => d.IsThermometer && !climate.GoveeHomeDevices.Contains(d.Device)).ToList()
+                : Array.Empty<GoveeDevice>();
+        }
+        catch (Exception ex)
+        {
+            _message = "Lista nu a putut fi citită: " + ex.Message;
+        }
+        _loaded = true;
+    }
+
+    private void Changed() => _message = null;
+
+    /// <summary>„N din M dispozitive (+K retrase)”: M counts what the filters can show (the retired ones too when shown).</summary>
+    private string CountText
+    {
+        get
+        {
+            var retired = _rows.Count(r => r.Health == DeviceHealth.Retired);
+            var withRetired = _showRetired || _stare == DeviceHealth.Retired;
+            var total = withRetired ? _rows.Count : _rows.Count - retired;
+            return $"{Shown.Count} din {total} dispozitive" + (!withRetired && retired > 0 ? $" (+{retired} retrase)" : "");
+        }
+    }
+
+    /// <summary>R10: withdrawing the main meter or the boiler stops whole pages, so it asks first (inline).</summary>
+    private Task RetireAsync(DeviceRow r)
+    {
+        if (r.RetireWarning is not null)
+        {
+            _confirmKey = r.Key;
+            return Task.CompletedTask;
+        }
+        return SetRetiredAsync(r, true);
+    }
+
+    private void ToggleAdd() => _addOpen = !_addOpen;
+
+    private void Toggle(string key) => _openKey = _openKey == key ? null : key;
+
+    private static string HealthBadge(DeviceHealth h) => h switch
+    {
+        DeviceHealth.Online => "text-bg-success",
+        DeviceHealth.Late => "text-bg-warning",
+        DeviceHealth.Offline => "text-bg-danger",
+        DeviceHealth.Unsupported => "text-bg-warning",
+        _ => "text-bg-secondary",
+    };
+
+    private async Task SetRetiredAsync(DeviceRow r, bool retired)
+    {
+        _confirmKey = null;
+        try
+        {
+            _message = $"„{r.Name}”: " + await Catalog.SetRetiredAsync(r.Key, retired, CancellationToken.None);
+        }
+        catch (Exception ex)
+        {
+            _message = $"„{r.Name}”: nu s-a putut {(retired ? "retrage" : "readuce")}: {ex.Message}";
+        }
+        await ReloadAsync(withStates: true);
+    }
+
+    private async Task AddDiscoveredAsync(DiscoveryResultItem item)
+    {
+        try
+        {
+            await Discovery.AddAsync(item.Plug, CancellationToken.None);
+            _message = $"Adăugată: {item.Plug.Info.Alias} ({item.Plug.IpAddress}).";
+        }
+        catch (Exception ex)
+        {
+            _message = $"„{item.Plug.Info.Alias}” nu a putut fi adăugată: {ex.Message}";
+        }
+        await ReloadAsync(withStates: true);
+    }
+
+    private async Task AddGoveeAsync(GoveeDevice d)
+    {
+        try
+        {
+            await ClimateSettings.SetGoveeHomeAsync(d.Device, true, CancellationToken.None);
+            ClimateWorker.Wake();
+            _message = $"Govee „{d.Name}” bifat „acasă”: apare după prima citire (≤ 10 min).";
+        }
+        catch (Exception ex)
+        {
+            _message = $"Govee „{d.Name}” nu a putut fi adăugat: {ex.Message}";
+        }
+        await ReloadAsync(withStates: true);
+    }
+
+    public void Dispose() => _timer?.Dispose();
+}

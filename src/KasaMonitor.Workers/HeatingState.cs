@@ -63,6 +63,17 @@ public sealed class HeatingState
         Raise();
     }
 
+    /// <summary>Replaces the device record (withdrawn / brought back on /dispozitive) keeping the values read.</summary>
+    public void UpdateDevice(HeatingDevice device)
+    {
+        lock (_sync)
+        {
+            if (_current is null || _current.Device.Id != device.Id) return;
+            _current = _current with { Device = device };
+        }
+        Raise();
+    }
+
     public void SetStatus(string? status)
     {
         lock (_sync)

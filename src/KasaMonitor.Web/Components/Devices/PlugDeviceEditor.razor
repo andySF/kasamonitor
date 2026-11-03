@@ -1,0 +1,254 @@
+@using KasaMonitor.Workers
+@using KasaMonitor.Core.Protocol.Tapo
+@using KasaMonitor.Web.Ui
+@inject IServiceScopeFactory ScopeFactory
+@inject KasaMonitor.Workers.Nilm.NilmService Nilm
+@inject DeviceDetailsService Details
+
+@* The expanded row of a plug / meter channel on /dispozitive (its single config owner since 0.10.0): alias, role, live
+   stream, appliance learning, single appliance, relay and the settings read from the device (formerly the „Details”
+   card of /prize). Extracted from the former /plugs page. *@
+@if (_plug is not { } p)
+{
+    <span class="text-secondary small">Priza nu mai există.</span>
+}
+else
+{
+    <div class="row g-3 small">
+        <div class="col-xl-7">
+            <div class="fw-semibold mb-1"><i class="bi bi-pencil me-1"></i>Nume</div>
+            <div class="input-group input-group-sm mb-1" style="max-width: 28rem;">
+                <input class="form-control" @bind="_alias" aria-label="Aliasul prizei" />
+                <button class="btn btn-outline-primary" @onclick="SaveAliasAsync" disabled="@(_alias.Trim() == p.Alias || _alias.Trim().Length == 0)">Salvează numele</button>
+            </div>
+            <div class="text-secondary mb-2">@(p.AliasIsCustom ? "Alias setat manual: nu se mai preia de pe priză." : "Aliasul vine de pe priză; după salvare nu se mai preia de acolo.")</div>
+
+            <div class="fw-semibold mb-1"><i class="bi bi-diagram-2 me-1"></i>Rol</div>
+            <div class="d-flex flex-wrap align-items-center gap-2 mb-1">
+                <div class="btn-group btn-group-sm" role="group" aria-label="Rol">
+                    @foreach (var role in PlugRoles.All)
+                    {
+                        <button class="btn @(p.Role == role ? "btn-primary" : "btn-outline-secondary")" @onclick="() => SetRoleAsync(p, role)" disabled="@p.IsArchived"
+                                title="@PlugRoles.Name(role): @PlugRoles.Description(role)" aria-pressed="@(p.Role == role)"><i class="bi @PlugRoles.Icon(role) me-1"></i>@PlugRoles.Name(role)</button>
+                    }
+                </div>
+            </div>
+            <div class="text-secondary mb-2">@PlugRoles.Description(p.Role) Canalele noi de contor Shelly (em1/em) pornesc ca sub-contor; prizele (Kasa, Tapo, Shelly switch/pm1) ca priză.</div>
+
+            @if (p.IsSupported && !p.IsArchived)
+            {
+                <div class="form-check form-switch mb-1" title="Flux live: contorul general la 1 s, prizele 1–10 s (adaptiv); un rând brut doar la schimbare sau o dată pe minut">
+                    <input class="form-check-input" type="checkbox" id="stream-@p.Id" checked="@p.StreamEnabled" @onchange="e => SetStreamAsync(p, e.Value is true)" />
+                    <label class="form-check-label" for="stream-@p.Id">flux 1 s (implicit pornit pentru contorul general și prize, oprit pentru sub-contoare)</label>
+                </div>
+            }
+            @if (p.IsSupported && !p.IsArchived && p.Role == PlugRole.Plug)
+            {
+                var nilmIgnored = KasaMonitor.Core.Nilm.PlugNilmStates.IsIgnored(p.NilmState);
+                <div class="form-check form-switch mb-1" title="Schimbările prizei etichetează evenimentele contorului general și antrenează modelul (pagina Consumatori)">
+                    <input class="form-check-input" type="checkbox" id="nilm-@p.Id" checked="@(!nilmIgnored)" @onchange="e => SetNilmAsync(p, e.Value is true)" />
+                    <label class="form-check-label" for="nilm-@p.Id">învățare consumatori</label>
+                    @if (KasaMonitor.Core.Nilm.PlugNilmStates.Badge(p.NilmState) is { } nilmBadge)
+                    {
+                        <span class="badge text-bg-warning ms-1" title="O priză cu sarcină variabilă (ex. UPS) se potrivește cu prea multe evenimente; bifează „învățare consumatori” ca să anulezi">@nilmBadge</span>
+                    }
+                </div>
+                <div class="form-check form-switch mb-1" title="Pe priză e un singur aparat (ex. frigiderul): evenimentele contorului confirmate de priză primesc numele aparatului și nu intră în antrenarea modelului ML; aliasul prizei rămâne">
+                    <input class="form-check-input" type="checkbox" id="single-@p.Id" checked="@p.SingleAppliance" @onchange="e => SetApplianceAsync(p, e.Value is true, p.ApplianceName, p.ApplianceCategory)" />
+                    <label class="form-check-label" for="single-@p.Id">un singur aparat pe priză</label>
+                </div>
+                @if (p.SingleAppliance)
+                {
+                    <div class="input-group input-group-sm mb-1" style="max-width: 28rem;">
+                        <span class="input-group-text" title="Aparatul de pe priză"><i class="bi @KasaMonitor.Core.Nilm.ApplianceCategories.Get(p.ApplianceCategory).Icon"></i></span>
+                        <input class="form-control" value="@p.Appliance" placeholder="@p.Alias" maxlength="@KasaMonitor.Core.Nilm.SignatureNaming.MaxNameLength" aria-label="Numele aparatului"
+                               title="Numele aparatului (gol = aliasul prizei); apare în Acasă, Sankey și Consumatori" @onchange="e => SetApplianceAsync(p, true, e.Value?.ToString(), p.ApplianceCategory)" />
+                        <select class="form-select" aria-label="Categoria aparatului" @onchange="e => SetApplianceAsync(p, true, p.ApplianceName, e.Value?.ToString())">
+                            @foreach (var c in KasaMonitor.Core.Nilm.ApplianceCategories.All)
+                            {
+                                <option value="@c.Key" selected="@(c.Key == KasaMonitor.Core.Nilm.ApplianceCategories.Normalize(p.ApplianceCategory))">@c.Name</option>
+                            }
+                        </select>
+                    </div>
+                }
+            }
+            @if (!p.IsSupported)
+            {
+                <div class="mt-2"><span class="badge text-bg-warning text-wrap text-start">@TapoSupport.Describe(p.Model, p.UnsupportedReason!)</span></div>
+                @if (TapoSupport.IsUnknownProtocolReason(p.UnsupportedReason))
+                {
+                    <div class="form-text text-warning-emphasis">@TapoSupport.ThirdPartyCompatibilityHint</div>
+                }
+            }
+            <div class="text-secondary mt-2">
+                IP @p.IpAddress · <code>@p.MacLabel</code>@(string.IsNullOrEmpty(p.SwVer) ? "" : " · firmware " + p.SwVer.Split(' ')[0])
+                · văzută la descoperire @UiFormat.RelativeRo(p.LastSeenUtc, DateTimeOffset.UtcNow) · din @p.FirstSeenUtc.ToLocalTime().ToString("yyyy-MM-dd")
+            </div>
+            @if (_message is not null) { <div class="text-success mt-1" role="status">@_message</div> }
+        </div>
+        <div class="col-xl-5">
+            <div class="fw-semibold mb-1"><i class="bi bi-toggle-on me-1"></i>Releu</div>
+            @if (p.Protocol == PlugProtocols.ShellyRpc && p.IsPolled)
+            {
+                <RelaySwitch PlugId="p.Id" />
+                <div class="text-secondary mt-1 mb-2">Doar pe canalele Shelly cu releu și când „Permite comanda releului” e pornită în <a href="@SettingsTabs.Href(KasaMonitor.Core.Devices.IntegrationKeys.Shelly)">Setări → Shelly</a>. Fiecare comandă e confirmată și trecută în jurnal (pagina Contor).</div>
+            }
+            else
+            {
+                <div class="text-secondary mb-2">Fără comandă: doar dispozitivele Shelly cu releu pot fi comandate (Kasa/Tapo nu, deocamdată).</div>
+            }
+            @if (p.IsPolled)
+            {
+                <div class="d-flex align-items-center gap-2 mb-1">
+                    <span class="fw-semibold"><i class="bi bi-cpu me-1"></i>Setările dispozitivului</span>
+                    <button class="btn btn-outline-secondary btn-sm py-0" @onclick="() => LoadDetailsAsync(p, _details is not null)" disabled="@_loadingDetails">
+                        <i class="bi @(_details is null ? "bi-download" : "bi-arrow-clockwise") me-1"></i>@(_details is null ? "Citește" : "Citește din nou")
+                    </button>
+                </div>
+                @if (_loadingDetails)
+                {
+                    <span class="text-secondary"><span class="spinner-border spinner-border-sm me-2"></span>Se citește priza…</span>
+                }
+                else if (_details is { } d)
+                {
+                    @foreach (var section in d.Items.GroupBy(i => i.Section))
+                    {
+                        <div class="text-uppercase text-secondary fw-semibold mt-2" style="font-size: .7rem;"><i class="bi @SectionIcon(section.Key) me-1"></i>@section.Key</div>
+                        <dl class="row mb-0">
+                            @foreach (var item in section)
+                            {
+                                <dt class="col-6 fw-normal text-secondary">@item.Label</dt>
+                                <dd class="col-6 mb-1">@item.Value</dd>
+                            }
+                        </dl>
+                    }
+                    @foreach (var err in d.Errors)
+                    {
+                        <div class="text-warning-emphasis mt-1"><i class="bi bi-info-circle me-1"></i>@err</div>
+                    }
+                    <div class="text-secondary mt-1" title="@UiFormat.FullLocal(d.ReadAtUtc)">citit @UiFormat.RelativeRo(d.ReadAtUtc, DateTimeOffset.UtcNow) (doar citire; păstrat 60 s)</div>
+                }
+                else
+                {
+                    <div class="text-secondary">Releu, timp de funcționare, starea după o pană, LED, protecții, Wi-Fi, firmware, ora, programări: citite din priză la cerere.</div>
+                }
+            }
+        </div>
+    </div>
+}
+
+@code {
+    [Parameter, EditorRequired] public Guid PlugId { get; set; }
+    /// <summary>The row's archived flag: a withdraw / restore from the actions column reloads the editor.</summary>
+    [Parameter] public bool Archived { get; set; }
+    /// <summary>Called after a change, so the page reloads its list.</summary>
+    [Parameter] public EventCallback OnChanged { get; set; }
+
+    private Plug? _plug;
+    private string _alias = "";
+    private string? _message;
+    private bool _loadingDetails;
+    private DeviceDetails? _details;
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (_plug?.Id != PlugId || _plug.IsArchived != Archived) await ReloadAsync();
+    }
+
+    private async Task ReloadAsync()
+    {
+        using var scope = ScopeFactory.CreateScope();
+        _plug = (await scope.ServiceProvider.GetRequiredService<IPlugRepository>().ListAllAsync(CancellationToken.None)).FirstOrDefault(x => x.Id == PlugId);
+        _alias = _plug?.Alias ?? "";
+    }
+
+    private async Task AfterChangeAsync(string message)
+    {
+        _message = message;
+        await ReloadAsync();
+        await OnChanged.InvokeAsync();
+    }
+
+    private async Task SaveAliasAsync()
+    {
+        if (_plug is null || _alias.Trim().Length == 0) return;
+        using (var scope = ScopeFactory.CreateScope())
+            await scope.ServiceProvider.GetRequiredService<IPlugRepository>().SetAliasAsync(_plug.Id, _alias.Trim(), isCustom: true, CancellationToken.None);
+        await AfterChangeAsync($"Numele e acum „{_alias.Trim()}”.");
+    }
+
+    private async Task SetStreamAsync(Plug p, bool enabled)
+    {
+        using (var scope = ScopeFactory.CreateScope())
+            await scope.ServiceProvider.GetRequiredService<IPlugRepository>().SetStreamEnabledAsync(p.Id, enabled, CancellationToken.None);
+        await AfterChangeAsync($"Flux live {(enabled ? "pornit" : "oprit")} (se aplică în ≤ 10 s).");
+    }
+
+    private async Task SetNilmAsync(Plug p, bool use)
+    {
+        var state = use ? KasaMonitor.Core.Nilm.PlugNilmState.AlwaysUse : KasaMonitor.Core.Nilm.PlugNilmState.IgnoredManual;
+        using (var scope = ScopeFactory.CreateScope())
+            await scope.ServiceProvider.GetRequiredService<IPlugRepository>().SetNilmStateAsync(p.Id, state, CancellationToken.None);
+        await AfterChangeAsync(use ? "Priza etichetează din nou consumatorii (nu se mai exclude automat)." : "Priza e exclusă din învățarea consumatorilor.");
+    }
+
+    /// <summary>„Un singur aparat pe priză”: through the detection, so the plug's signatures take the name at once.</summary>
+    private async Task SetApplianceAsync(Plug p, bool single, string? name, string? category)
+    {
+        string message;
+        try
+        {
+            var row = await Nilm.SetPlugApplianceAsync(p.Id, single, name, category, CancellationToken.None);
+            message = row is null ? "Priza nu mai există sau nu e o priză."
+                : single ? $"Un singur aparat pe priză: „{row.ApplianceName}” ({KasaMonitor.Core.Nilm.ApplianceCategories.Get(row.ApplianceCategory).Name}); evenimentele lui nu mai intră în antrenarea modelului."
+                : "Nu mai e marcată cu un singur aparat; evenimentele ei intră din nou în antrenarea modelului.";
+        }
+        catch (KasaMonitor.Workers.Nilm.NilmBusyException ex)
+        {
+            message = ex.Message;
+        }
+        await AfterChangeAsync(message);
+    }
+
+    private async Task SetRoleAsync(Plug p, PlugRole role)
+    {
+        if (p.Role == role || p.IsArchived) return;
+        using (var scope = ScopeFactory.CreateScope())
+            await scope.ServiceProvider.GetRequiredService<IPlugRepository>().SetRoleAsync(p.Id, role, CancellationToken.None);
+        await AfterChangeAsync(role == PlugRole.MainMeter
+            ? "E acum contorul general (cel vechi, dacă exista, a devenit sub-contor). Se aplică la următoarea citire (≤ 10 s)."
+            : $"Rol {PlugRoles.Name(role)}. Se aplică la următoarea citire (≤ 10 s).");
+    }
+
+    private static string SectionIcon(string section) => section switch
+    {
+        DeviceDetails.Sections.State => "bi-power",
+        DeviceDetails.Sections.Timer => "bi-stopwatch",
+        DeviceDetails.Sections.Protection => "bi-shield-check",
+        DeviceDetails.Sections.Network => "bi-wifi",
+        DeviceDetails.Sections.Device => "bi-cpu",
+        DeviceDetails.Sections.Time => "bi-clock",
+        DeviceDetails.Sections.Schedules => "bi-calendar-event",
+        DeviceDetails.Sections.Meter => "bi-speedometer",
+        _ => "bi-info-circle",
+    };
+
+    private async Task LoadDetailsAsync(Plug plug, bool force)
+    {
+        _loadingDetails = true;
+        _details = null;
+        StateHasChanged();
+        try
+        {
+            _details = await Details.GetAsync(plug, force, CancellationToken.None);
+        }
+        catch (Exception ex)
+        {
+            _details = new DeviceDetails(DateTimeOffset.UtcNow, Array.Empty<DeviceDetailItem>(), new[] { ex.Message });
+        }
+        finally
+        {
+            _loadingDetails = false;
+        }
+    }
+}

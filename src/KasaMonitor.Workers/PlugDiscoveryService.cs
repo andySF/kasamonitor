@@ -35,7 +35,7 @@ public sealed record AddByIpResult(bool Success, string Message, Guid? PlugId);
 /// Single owner of "find plugs and put them in the database": legacy UDP 9999 broadcast + Tapo UDP 20002 probe +
 /// Shelly mDNS / probe hosts, classification (supported / unsupported), auto-add, one-click add and add-by-IP.
 /// A plug's identity is (MAC, channel): a multi-channel Shelly meter yields one entry per measured channel. Used by <see cref="DiscoveryWorker"/>
-/// and by the /plugs page ("Scanează acum").
+/// and by /dispozitive ("Scanează acum", „Adaugă după IP”).
 /// </summary>
 public sealed class PlugDiscoveryService
 {
@@ -72,7 +72,7 @@ public sealed class PlugDiscoveryService
         _log = log;
     }
 
-    /// <summary>Result of the most recent scan (worker or manual), for the /plugs page.</summary>
+    /// <summary>Result of the most recent scan (worker or manual), for /dispozitive („Descoperite”).</summary>
     public DiscoveryScan? LastScan { get; private set; }
 
     public async Task<DiscoveryScan> ScanAsync(CancellationToken ct)
@@ -127,6 +127,35 @@ public sealed class PlugDiscoveryService
         {
             _gate.Release();
         }
+    }
+
+    /// <summary>
+    /// R4 (0.10.0), once: the rows of <c>Plugs</c> that are a Shelly climate sensor (no measuring component, and a Shelly
+    /// climate sensor with the same MAC exists) were saved by an earlier auto-add as unsupported plugs; they are archived
+    /// (the sensor stays in Climă) and the run is remembered in <see cref="SettingKeys.ShellyClimatePlugsArchived"/>.
+    /// Returns how many rows were archived (0 when already done).
+    /// </summary>
+    public async Task<int> ArchiveShellyClimatePlugsOnceAsync(CancellationToken ct)
+    {
+        using var scope = _scopeFactory.CreateScope();
+        var settings = scope.ServiceProvider.GetRequiredService<ISettingsRepository>();
+        if (await settings.GetAsync(SettingKeys.ShellyClimatePlugsArchived, ct) == "true") return 0;
+        var climateMacs = (await scope.ServiceProvider.GetRequiredService<IClimateRepository>().ListSensorsAsync(includeArchived: true, ct))
+            .Where(s => s.Source == KasaMonitor.Core.Climate.ClimateSources.Shelly)
+            .Select(s => s.ExternalId.Split(':')[0])
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var repo = scope.ServiceProvider.GetRequiredService<IPlugRepository>();
+        var rows = (await repo.ListAllAsync(ct))
+            .Where(p => p is { Protocol: PlugProtocols.ShellyRpc, IsArchived: false, UnsupportedReason: ShellySupport.NoMeterReason } && climateMacs.Contains(p.Mac))
+            .ToList();
+        foreach (var p in rows)
+        {
+            await repo.SetArchivedAsync(p.Id, true, ct);
+            _log.LogInformation("Archived plug {Alias} ({Mac}): a Shelly climate sensor without a meter, shown in Climă, not a plug", p.Alias, p.Mac);
+        }
+        _log.LogInformation("Shelly climate sensors stored as plugs: {Count} archived (once)", rows.Count);
+        await settings.SetAsync(SettingKeys.ShellyClimatePlugsArchived, "true", ct);
+        return rows.Count;
     }
 
     /// <summary>Adds (or refreshes) one plug from the last scan, from the UI.</summary>
@@ -238,7 +267,7 @@ public sealed class PlugDiscoveryService
         if (dp is null)
             return new AddByIpResult(false,
                 $"{ip}: nu răspunde nici pe protocolul legacy (TCP 9999: {legacyError}), nici la descoperirea Tapo (UDP 20002) / KLAP / AES" +
-                (_shelly is null ? "." : ", nici ca Shelly Gen2+ (HTTP /rpc/Shelly.GetDeviceInfo)."), null);
+                (_shelly is null ? "." : ", nici ca Shelly Gen2+ cu contor (HTTP /rpc/Shelly.GetDeviceInfo; un Shelly H&T sau Plus Add-on fără contor e senzor de climă și apare singur în Climă)."), null);
 
         var id = await AddAsync(dp, ct);
         var msg = dp.IsSupported

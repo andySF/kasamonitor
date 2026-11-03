@@ -47,12 +47,12 @@
 }
 else if (!_overview.Settings.Enabled)
 {
-    <div class="alert alert-secondary">Detecția consumatorilor e oprită în <a href="/settings">Setări</a> („Consumatori detectați”).</div>
+    <div class="alert alert-secondary">Detecția consumatorilor e oprită în <a href="@KasaMonitor.Web.Ui.SettingsTabs.Href(KasaMonitor.Web.Ui.SettingsTabs.App)">Setări → Aplicație</a> („Consumatori detectați”).</div>
 }
 else if (_overview.MainMeterAlias is null)
 {
     <div class="alert alert-secondary">
-        Detecția pornește din puterea casei la secundă: setează întâi contorul general în <a href="/plugs">Prize</a>.
+        Detecția pornește din puterea casei la secundă: setează întâi contorul general în <a href="@KasaMonitor.Web.Ui.DevicePages.Href(KasaMonitor.Core.Devices.IntegrationKeys.Shelly)">Dispozitive</a>.
     </div>
 }
 else
@@ -382,7 +382,7 @@ else
         <div class="card-body small">
             <div class="text-secondary mb-2">
                 O priză care se potrivește cu peste @PlugNilmStates.MaxMatchesPerHour evenimente într-o oră (o sarcină variabilă, ex. un UPS) e exclusă automat:
-                etichetele ei nu se mai pun și nu intră în antrenarea modelului. Poți anula excluderea sau exclude o priză oricând (și din pagina Prize).
+                etichetele ei nu se mai pun și nu intră în antrenarea modelului. Poți anula excluderea sau exclude o priză oricând (și din pagina Dispozitive).
             </div>
             <div class="d-flex flex-wrap gap-2">
                 @foreach (var p in _overview.Plugs)

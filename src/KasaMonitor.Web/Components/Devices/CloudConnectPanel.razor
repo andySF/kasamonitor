@@ -1,0 +1,64 @@
+@using KasaMonitor.Workers
+@using KasaMonitor.Web.Ui
+@using KasaMonitor.Core.Devices
+@inject IHeatingSettingsService HeatingSettings
+@inject IMieleSettingsService MieleSettings
+
+@* „+ Adaugă” for the cloud accounts (Viessmann, Miele): the devices come from the account, so adding = connecting it,
+   through the existing OAuth endpoints (/centrala/connect, /miele/connect; redirects and callbacks unchanged). Without
+   a Client ID (or the Miele secret) the panel links the integration's settings tab. *@
+@if (_loaded)
+{
+    <div class="d-flex flex-wrap align-items-center gap-2">
+        @if (_canConnect)
+        {
+            <a class="btn btn-primary btn-sm" href="@ConnectPath"><i class="bi bi-box-arrow-in-right me-1"></i>@(_connected ? "Reconectează " : "Conectează ") @Integration.Name</a>
+        }
+        <a class="btn btn-outline-secondary btn-sm" href="@Integration.SettingsUrl"><i class="bi bi-gear me-1"></i>Setări → @Integration.Name</a>
+    </div>
+    <div class="form-text">
+        @if (!_canConnect)
+        {
+            <span>@_missing Completează în <a href="@Integration.SettingsUrl">Setări → @Integration.Name</a>, apoi conectează contul.</span>
+        }
+        else if (_connected)
+        {
+            <span>Contul e conectat: @(Integration.Key == IntegrationKeys.Miele ? "aparatele bifate la consimțământ" : "centrala din contul ViCare") apar singure în listă.</span>
+        }
+        else
+        {
+            <span>După autorizarea în pagina @Integration.Name, @(Integration.Key == IntegrationKeys.Miele ? "aparatele bifate la consimțământ" : "centrala și termostatul de cameră") apar singure în listă.</span>
+        }
+    </div>
+}
+
+@code {
+    [Parameter, EditorRequired] public IntegrationInfo Integration { get; set; } = default!;
+    [Parameter] public EventCallback OnChanged { get; set; }
+
+    private bool _loaded;
+    private bool _canConnect;
+    private bool _connected;
+    private string _missing = "";
+
+    private string ConnectPath => Integration.Key == IntegrationKeys.Miele ? KasaMonitor.Core.Miele.MieleApi.ConnectPath : "/centrala/connect";
+
+    protected override async Task OnInitializedAsync()
+    {
+        if (Integration.Key == IntegrationKeys.Miele)
+        {
+            var s = await MieleSettings.GetAsync(CancellationToken.None);
+            _canConnect = s.CanConnect;
+            _connected = s.IsConnected;
+            _missing = !s.HasClientId ? "Lipsește Client ID-ul." : !s.HasSecret ? "Lipsește secretul clientului (fișierul montat)." : "";
+        }
+        else
+        {
+            var s = await HeatingSettings.GetAsync(CancellationToken.None);
+            _canConnect = s.HasClientId;
+            _connected = s.IsConnected;
+            _missing = "Lipsește Client ID-ul.";
+        }
+        _loaded = true;
+    }
+}

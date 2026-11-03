@@ -1,0 +1,93 @@
+@using KasaMonitor.Workers
+@using KasaMonitor.Core.Climate
+@using KasaMonitor.Web.Ui
+@inject IServiceScopeFactory ScopeFactory
+@inject ClimateRecorder Recorder
+@inject ClimateState Climate
+
+@* The expanded row of a climate sensor on /dispozitive (name, room, „afară”; formerly edited on the /clima cards). *@
+@if (_sensor is not { } s)
+{
+    <span class="text-secondary small">Senzorul nu mai există.</span>
+}
+else
+{
+    <div class="row g-2 align-items-end small">
+        <div class="col-md-4">
+            <label class="form-label mb-0" for="cName-@s.Id">Nume</label>
+            <input class="form-control form-control-sm" id="cName-@s.Id" @bind="_name" />
+        </div>
+        <div class="col-md-3">
+            <label class="form-label mb-0" for="cRoom-@s.Id">Cameră</label>
+            <input class="form-control form-control-sm" id="cRoom-@s.Id" @bind="_room" list="deviceRooms-@s.Id" />
+            <datalist id="deviceRooms-@s.Id">
+                @foreach (var room in _rooms) { <option value="@room"></option> }
+            </datalist>
+        </div>
+        <div class="col-md-2">
+            <div class="form-check mb-1">
+                <input class="form-check-input" type="checkbox" id="cOut-@s.Id" @bind="_outdoor" />
+                <label class="form-check-label" for="cOut-@s.Id">afară (temperatura exterioară)</label>
+            </div>
+        </div>
+        <div class="col-md-3">
+            <button class="btn btn-outline-primary btn-sm" @onclick="SaveAsync"><i class="bi bi-save me-1"></i>Salvează senzorul</button>
+        </div>
+    </div>
+    <div class="small text-secondary mt-2">
+        Sursa: @ClimateSources.DisplayName(s.Source)@(s.BatteryPercent is { } b ? $" · baterie {b} %" : "")
+        @if (Climate.Get(s.Id) is { } live)
+        {
+            <span> · acum @(live.TemperatureC is { } t ? HeatingFormat.Number(t, 1) + " °C" : "—")@(live.HumidityPercent is { } h ? ", " + HeatingFormat.Number(h, 0) + " %" : "")</span>
+        }
+        · camera grupează senzorii în <a href="/clima">Climă</a> și în Istoric.
+    </div>
+    @if (_message is not null) { <div class="small text-success mt-1" role="status">@_message</div> }
+    @if (_error is not null) { <div class="small text-danger mt-1">@_error</div> }
+}
+
+@code {
+    [Parameter, EditorRequired] public Guid SensorId { get; set; }
+    [Parameter] public EventCallback OnChanged { get; set; }
+
+    private ClimateSensor? _sensor;
+    private string _name = "";
+    private string _room = "";
+    private bool _outdoor;
+    private IReadOnlyList<string> _rooms = Array.Empty<string>();
+    private string? _message;
+    private string? _error;
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (_sensor?.Id != SensorId) await ReloadAsync();
+    }
+
+    private async Task ReloadAsync()
+    {
+        using var scope = ScopeFactory.CreateScope();
+        var all = await scope.ServiceProvider.GetRequiredService<IClimateRepository>().ListSensorsAsync(includeArchived: true, CancellationToken.None);
+        _sensor = all.FirstOrDefault(x => x.Id == SensorId);
+        _rooms = all.Select(x => x.Room).Where(x => x.Length > 0).Distinct(StringComparer.CurrentCultureIgnoreCase).OrderBy(x => x, StringComparer.CurrentCultureIgnoreCase).ToList();
+        _name = _sensor?.Name ?? "";
+        _room = _sensor?.Room ?? "";
+        _outdoor = _sensor?.IsOutdoor ?? false;
+    }
+
+    private async Task SaveAsync()
+    {
+        _error = null;
+        _message = null;
+        try
+        {
+            await Recorder.UpdateSensorAsync(SensorId, _name, _room, _outdoor, CancellationToken.None);
+            await ReloadAsync();
+            _message = "Salvat.";
+            await OnChanged.InvokeAsync();
+        }
+        catch (Exception ex) when (ex is ArgumentException or KeyNotFoundException)
+        {
+            _error = ex.Message;
+        }
+    }
+}

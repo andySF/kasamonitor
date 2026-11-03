@@ -1,0 +1,12 @@
+@using KasaMonitor.Web.Ui
+
+@* „+ Adaugă” for Open-Meteo: the outdoor sensor „Afară” appears by itself once the coordinates are set. *@
+<div class="d-flex flex-wrap align-items-center gap-2">
+    <a class="btn btn-outline-primary btn-sm" href="@Integration.SettingsUrl"><i class="bi bi-geo-alt me-1"></i>Setează latitudinea și longitudinea</a>
+</div>
+<div class="form-text">Open-Meteo e un serviciu meteo gratuit, fără cont: cu coordonatele din <a href="@Integration.SettingsUrl">Setări → Open-Meteo</a>, senzorul „Afară” apare singur (citit la 15 min).</div>
+
+@code {
+    [Parameter, EditorRequired] public IntegrationInfo Integration { get; set; } = default!;
+    [Parameter] public EventCallback OnChanged { get; set; }
+}

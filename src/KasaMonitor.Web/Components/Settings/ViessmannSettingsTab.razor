@@ -1,0 +1,152 @@
+@using KasaMonitor.Workers
+@using KasaMonitor.Web.Ui
+@using KasaMonitor.Core.Heating
+@using KasaMonitor.Core.Devices
+@inject IHeatingSettingsService HeatingSettings
+@inject HeatingPollWorker HeatingWorker
+@inherits SettingsTabBase
+
+@* /settings/viessmann: how the app talks to the ViCare cloud (on/off, Client ID, connection, interval and call budget,
+   retention of the boiler's readings, the boiler's time zone). The gas tariff is in „Aplicație”. Tokens are never shown. *@
+<IntegrationStatusLine Integration="@(Integrations.Get(IntegrationKeys.Viessmann)!)" />
+@if (_s is null)
+{
+    <p class="text-secondary"><span class="spinner-border spinner-border-sm me-2"></span>Se încarcă…</p>
+}
+else
+{
+    <div class="row g-3">
+        <div class="col-xl-6">
+            <div class="card h-100">
+                <div class="card-header fw-semibold"><i class="bi bi-fire me-2"></i>Cont ViCare</div>
+                <div class="card-body">
+                    <div class="form-check form-switch mb-2">
+                        <input class="form-check-input" type="checkbox" id="heatingOn" @bind="_enabled" />
+                        <label class="form-check-label" for="heatingOn">Citește centrala din contul ViCare (API-ul cloud Viessmann)</label>
+                    </div>
+                    <div class="mb-2">
+                        <label class="form-label" for="vClient">Client ID (portalul de dezvoltator Viessmann)</label>
+                        <input class="form-control" id="vClient" @bind="_clientId" autocomplete="off" spellcheck="false" />
+                    </div>
+                    <div class="mb-2 small">
+                        <span class="me-1">Token:</span>
+                        @if (_s.Token is { } t)
+                        {
+                            <span class="badge text-bg-success">conectat</span>
+                            <span class="ms-1 text-secondary">acces •••••••• valabil până la @t.ExpiresAtUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm"); refresh @(string.IsNullOrEmpty(t.RefreshToken) ? "lipsă" : "••••••••")</span>
+                        }
+                        else
+                        {
+                            <span class="badge text-bg-secondary">neconectat</span>
+                            @if (_s.AuthError is { } err) { <span class="ms-1 text-danger">@err</span> }
+                        }
+                        <div class="mt-1">
+                            <a class="btn btn-outline-primary btn-sm @(_s.HasClientId ? "" : "disabled")" href="/centrala/connect" aria-disabled="@(!_s.HasClientId)"><i class="bi bi-box-arrow-in-right me-1"></i>@(_s.Token is null ? "Conectează ViCare" : "Reconectează")</a>
+                            @if (_s.Token is not null)
+                            {
+                                <button class="btn btn-outline-secondary btn-sm ms-1" @onclick="DisconnectAsync"><i class="bi bi-x-circle me-1"></i>Deconectează</button>
+                            }
+                        </div>
+                        @if (!_s.HasClientId) { <div class="text-secondary mt-1">Salvează întâi Client ID-ul, apoi conectează contul.</div> }
+                    </div>
+                    <div class="form-text">
+                        Redirect URI de înregistrat pe portal: adresa aplicației + <code>@ViessmannApi.CallbackPath</code> (ex. <code>http://192.168.1.10:8910@(ViessmannApi.CallbackPath)</code>).
+                        Tokenurile se păstrează criptate și nu se afișează. Datele centralei sunt pe pagina <a href="/centrala">Centrală</a>; dispozitivul (activ / retras)
+                        e pe pagina <a href="@DevicePages.Href(IntegrationKeys.Viessmann)">Dispozitive</a>.
+                    </div>
+                </div>
+            </div>
+        </div>
+        <div class="col-xl-6">
+            <div class="card h-100">
+                <div class="card-header fw-semibold"><i class="bi bi-clock-history me-2"></i>Citire și date</div>
+                <div class="card-body">
+                    <div class="mb-2">
+                        <label class="form-label" for="vInterval">Interval de citire (secunde, minim @ViessmannApi.MinPollIntervalSeconds)</label>
+                        <input class="form-control" id="vInterval" @bind="_interval" type="number" min="@ViessmannApi.MinPollIntervalSeconds" max="@ViessmannApi.MaxPollIntervalSeconds" />
+                        <div class="form-text">
+                            Un apel pe citire: @ViessmannApi.CallsPerDay(HeatingSettingsService.ClampInterval(_interval)).ToString("N0") apeluri pe zi din @ViessmannApi.DailyCallLimit.ToString("N0")
+                            (limita planului gratuit al clientului de pe portal; după o eroare, apelurile se răresc: 1×, 2×, 4× intervalul, cel mult 30 min).
+                        </div>
+                    </div>
+                    <div class="mb-2">
+                        <label class="form-label" for="hRetention">Păstrează citirile centralei (zile, 0 = nelimitat)</label>
+                        <input class="form-control" id="hRetention" @bind="_retentionDays" type="number" min="0" max="@HeatingSettingsService.MaxReadingsRetentionDays" />
+                    </div>
+                    <div class="mb-1">
+                        <label class="form-label" for="boilerTz">Fusul orar al centralei</label>
+                        <input class="form-control" id="boilerTz" @bind="_boilerTz" autocomplete="off" spellcheck="false" placeholder="@BoilerClock.DefaultTimeZoneId" />
+                        <div class="form-text">
+                            Ziua de consum a centralei se încheie la miezul nopții în acest fus; Viessmann folosește ora Europei Centrale
+                            (<code>@BoilerClock.DefaultTimeZoneId</code>: 00:00 CET = 01:00 ora României). Nume IANA. Prețul gazului, kWh/m³ și unitatea sunt în tabul
+                            <TabLink To="@SettingsTabs.App">Aplicație</TabLink>.
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <div class="col-12 d-flex align-items-center gap-3">
+            <button class="btn btn-primary" @onclick="SaveAsync"><i class="bi bi-save me-1"></i>Salvează „Viessmann”</button>
+            @if (IsDirty) { <span class="text-warning-emphasis small"><i class="bi bi-pencil-square me-1"></i>modificări nesalvate</span> }
+            @if (_saved) { <span class="text-success"><i class="bi bi-check-circle me-1"></i>Salvat.</span> }
+            @if (_error is not null) { <span class="text-danger"><i class="bi bi-x-circle me-1"></i>@_error</span> }
+        </div>
+    </div>
+}
+
+@code {
+    private HeatingRuntimeSettings? _s;
+    private string? _loaded;
+    private bool _enabled;
+    private string _clientId = "";
+    private int _interval;
+    private int _retentionDays;
+    private string _boilerTz = BoilerClock.DefaultTimeZoneId;
+    private bool _saved;
+    private string? _error;
+
+    public override bool IsDirty => _loaded is not null && _loaded != Fingerprint();
+
+    private string Fingerprint() => string.Join("|", _enabled, _clientId.Trim(), _interval, _retentionDays, _boilerTz.Trim());
+
+    protected override async Task OnInitializedAsync() => await LoadAsync();
+
+    private async Task LoadAsync()
+    {
+        _s = await HeatingSettings.GetAsync(CancellationToken.None);
+        _enabled = _s.HeatingEnabled;
+        _clientId = _s.ClientId;
+        _interval = _s.PollIntervalSeconds;
+        _retentionDays = _s.ReadingsRetentionDays;
+        _boilerTz = _s.BoilerTimeZoneId;
+        _loaded = Fingerprint();
+    }
+
+    /// <summary>Only this tab's keys (R1): the gas tariff saved from „Aplicație” is left as stored.</summary>
+    private async Task SaveAsync()
+    {
+        _error = null;
+        try
+        {
+            await HeatingSettings.SaveAsync(new HeatingSettingsUpdate(HeatingEnabled: _enabled, ClientId: _clientId, PollIntervalSeconds: _interval,
+                ReadingsRetentionDays: _retentionDays,
+                BoilerTimeZone: string.IsNullOrWhiteSpace(_boilerTz) ? BoilerClock.DefaultTimeZoneId : _boilerTz), CancellationToken.None);
+            HeatingWorker.Wake();
+            await LoadAsync();
+            _saved = true;
+            StateHasChanged();
+            await Task.Delay(2000);
+            _saved = false;
+        }
+        catch (FormatException ex)
+        {
+            _error = ex.Message;
+        }
+    }
+
+    private async Task DisconnectAsync()
+    {
+        await HeatingSettings.DisconnectAsync("Deconectat din Setări.", CancellationToken.None);
+        await LoadAsync();
+    }
+}

@@ -10,6 +10,9 @@ public interface IHeatingRepository
     /// <summary>Insert or update by (Provider, InstallationId, GatewaySerial, DeviceId); returns the stored device (its Id).</summary>
     Task<HeatingDevice> UpsertDeviceAsync(HeatingDevice device, CancellationToken ct);
 
+    /// <summary>Withdraws (false) or brings back (true) a device: a disabled device is not polled (/dispozitive, 0.10.0). False when it does not exist.</summary>
+    Task<bool> SetDeviceEnabledAsync(Guid deviceId, bool enabled, CancellationToken ct);
+
     /// <summary>Sets LastError and, when given, LastSeenUtc.</summary>
     Task UpdateDeviceStatusAsync(Guid deviceId, DateTimeOffset? lastSeenUtc, string? lastError, CancellationToken ct);
 

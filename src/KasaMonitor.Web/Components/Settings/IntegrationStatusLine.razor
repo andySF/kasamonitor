@@ -1,0 +1,46 @@
+@using KasaMonitor.Web.Ui
+@inject IServiceProvider Services
+@implements IDisposable
+
+@* The state of one integration (the same IntegrationStatus as the chips of /dispozitive), refreshed every 5 s. *@
+<div class="integration-status small d-flex flex-wrap align-items-center gap-2 mb-3" role="status" aria-live="polite">
+    <span class="fw-semibold">Stare:</span>
+    @if (_status is { } st)
+    {
+        <span class="badge @IntegrationStatus.Badge(st.Level)"><i class="bi @IntegrationStatus.Icon(st.Level) me-1"></i>@IntegrationStatus.LevelName(st.Level)</span>
+        <span>@st.Text</span>
+        @if (st.LastSuccessUtc is { } ok)
+        {
+            <span class="text-secondary" title="@UiFormat.FullLocal(ok)">ultima citire @UiFormat.RelativeRo(ok, DateTimeOffset.UtcNow)</span>
+        }
+        @if (st.CallsToday is { } calls)
+        {
+            <span class="text-secondary">cereri azi: <b>@calls.ToString("N0")</b>@(st.DailyLimit is { } lim ? $" / {lim:N0}" : "")</span>
+        }
+    }
+    else
+    {
+        <span class="text-secondary">se citește…</span>
+    }
+</div>
+
+@code {
+    [Parameter, EditorRequired] public IntegrationInfo Integration { get; set; } = default!;
+
+    private IntegrationStatus? _status;
+    private System.Threading.Timer? _timer;
+
+    protected override async Task OnParametersSetAsync()
+    {
+        await LoadAsync();
+        _timer ??= new System.Threading.Timer(_ => InvokeAsync(async () => { await LoadAsync(); StateHasChanged(); }), null, 5000, 5000);
+    }
+
+    private async Task LoadAsync()
+    {
+        try { _status = await Integration.Status(Services, DateTimeOffset.UtcNow, CancellationToken.None); }
+        catch (Exception ex) { _status = new IntegrationStatus(IntegrationLevel.Error, "starea nu a putut fi citită: " + ex.Message); }
+    }
+
+    public void Dispose() => _timer?.Dispose();
+}

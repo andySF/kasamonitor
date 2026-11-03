@@ -6,7 +6,7 @@ namespace KasaMonitor.Web.Ui;
 /// <summary>Small presentation helpers shared by the pages (badges, relative times).</summary>
 public static class UiFormat
 {
-    /// <summary>"acum 12 s", "acum 3 min", "acum 5 h", "acum 2 zile", "peste 1 min" (Romanian, like /plugs).</summary>
+    /// <summary>"acum 12 s", "acum 3 min", "acum 5 h", "acum 2 zile", "peste 1 min" (Romanian).</summary>
     public static string RelativeRo(DateTimeOffset when, DateTimeOffset now)
     {
         var d = now - when;

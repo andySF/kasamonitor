@@ -5,8 +5,6 @@
 @inject IPlugStateBroadcaster Broadcaster
 @inject KasaMonitor.Core.Costing.TariffCalculator DefaultTariff
 @inject IKasaSettingsService KasaSettings
-@inject DeviceDetailsService Details
-@inject IServiceScopeFactory ScopeFactory
 @inject ILiveStreamBroadcaster MeterStream
 @inject HouseRestService HouseRest
 @implements IDisposable
@@ -77,7 +75,6 @@ else
     <div class="row row-cols-1 row-cols-sm-2 row-cols-lg-3 row-cols-xxl-4 g-3">
         @foreach (var s in _states.Values.OrderBy(s => s.Alias))
         {
-            var open = _openId == s.PlugId;
             <div class="col">
                 <div class="card h-100 border-start border-4 @(s.IsOnline ? "border-success" : "border-danger")">
                     <div class="card-body pb-2">
@@ -132,41 +129,11 @@ else
                     </div>
                     <div class="card-footer bg-transparent d-flex justify-content-between align-items-center small">
                         <span class="text-secondary" title="@UiFormat.FullLocal(s.LastSampleUtc)"><i class="bi bi-clock me-1"></i>@((_now - s.LastSampleUtc).TotalSeconds.ToString("0")) s ago</span>
-                        <button class="btn btn-sm btn-outline-secondary" @onclick="() => ToggleDetailsAsync(s.PlugId)" title="Device settings read from the plug">
-                            <i class="bi bi-gear me-1"></i>Details <i class="bi @(open ? "bi-chevron-up" : "bi-chevron-down")"></i>
-                        </button>
+                        @* R6 (0.10.0): the settings read from the device moved to its row on /dispozitive. *@
+                        <a class="btn btn-sm btn-outline-secondary" href="@DevicePages.Row(DeviceRow.PlugKey(s.PlugId))" title="Configurare și setările citite din priză (Dispozitive)">
+                            <i class="bi bi-gear me-1"></i>Detalii
+                        </a>
                     </div>
-                    @if (open)
-                    {
-                        <div class="card-body border-top pt-2 small">
-                            @if (_loadingDetails)
-                            {
-                                <span class="text-secondary"><span class="spinner-border spinner-border-sm me-2"></span>Reading the plug…</span>
-                            }
-                            else if (_details is { } d)
-                            {
-                                @foreach (var section in d.Items.GroupBy(i => i.Section))
-                                {
-                                    <div class="text-uppercase text-secondary fw-semibold mt-2" style="font-size: .7rem;"><i class="bi @SectionIcon(section.Key) me-1"></i>@section.Key</div>
-                                    <dl class="row mb-0">
-                                        @foreach (var item in section)
-                                        {
-                                            <dt class="col-6 fw-normal text-secondary">@item.Label</dt>
-                                            <dd class="col-6 mb-1">@item.Value</dd>
-                                        }
-                                    </dl>
-                                }
-                                @foreach (var err in d.Errors)
-                                {
-                                    <div class="text-warning-emphasis mt-1"><i class="bi bi-info-circle me-1"></i>@err</div>
-                                }
-                                <div class="d-flex justify-content-between align-items-center mt-2 text-secondary">
-                                    <span title="@UiFormat.FullLocal(d.ReadAtUtc)">read @((DateTimeOffset.UtcNow - d.ReadAtUtc).TotalSeconds.ToString("0")) s ago</span>
-                                    <button class="btn btn-link btn-sm p-0" @onclick="() => LoadDetailsAsync(s.PlugId, true)" title="Read again"><i class="bi bi-arrow-clockwise"></i></button>
-                                </div>
-                            }
-                        </div>
-                    }
                 </div>
             </div>
         }
@@ -185,9 +152,6 @@ else
         catch (Exception) { _rest = null; }
     }
     private System.Threading.Timer? _refreshTimer;
-    private Guid? _openId;
-    private bool _loadingDetails;
-    private DeviceDetails? _details;
 
     /// <summary>"inversat?" is shown below -10 W (small negative readings of an idle channel are noise).</summary>
     private const long ReversedBelowMw = -10_000;
@@ -237,56 +201,6 @@ else
                 StateHasChanged();
             }),
             null, 1000, 1000);
-    }
-
-    private static string SectionIcon(string section) => section switch
-    {
-        DeviceDetails.Sections.State => "bi-power",
-        DeviceDetails.Sections.Timer => "bi-stopwatch",
-        DeviceDetails.Sections.Protection => "bi-shield-check",
-        DeviceDetails.Sections.Network => "bi-wifi",
-        DeviceDetails.Sections.Device => "bi-cpu",
-        DeviceDetails.Sections.Time => "bi-clock",
-        DeviceDetails.Sections.Schedules => "bi-calendar-event",
-        DeviceDetails.Sections.Meter => "bi-speedometer",
-        _ => "bi-info-circle",
-    };
-
-    private async Task ToggleDetailsAsync(Guid plugId)
-    {
-        if (_openId == plugId)
-        {
-            _openId = null;
-            return;
-        }
-        _openId = plugId;
-        await LoadDetailsAsync(plugId, false);
-    }
-
-    private async Task LoadDetailsAsync(Guid plugId, bool force)
-    {
-        _loadingDetails = true;
-        _details = null;
-        StateHasChanged();
-        try
-        {
-            Plug? plug;
-            using (var scope = ScopeFactory.CreateScope())
-                plug = (await scope.ServiceProvider.GetRequiredService<IPlugRepository>().ListAllAsync(CancellationToken.None))
-                    .FirstOrDefault(p => p.Id == plugId);
-            var details = plug is null
-                ? new DeviceDetails(DateTimeOffset.UtcNow, Array.Empty<DeviceDetailItem>(), new[] { "Plug not found." })
-                : await Details.GetAsync(plug, force, CancellationToken.None);
-            if (_openId == plugId) _details = details;
-        }
-        catch (Exception ex)
-        {
-            _details = new DeviceDetails(DateTimeOffset.UtcNow, Array.Empty<DeviceDetailItem>(), new[] { ex.Message });
-        }
-        finally
-        {
-            _loadingDetails = false;
-        }
     }
 
     private void OnStateChanged(PlugLiveState state)

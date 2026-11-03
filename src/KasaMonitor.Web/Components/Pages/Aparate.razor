@@ -5,9 +5,7 @@
 @using KasaMonitor.Web.Ui
 @inject IServiceScopeFactory ScopeFactory
 @inject IMieleSettingsService MieleSettings
-@inject MieleAuthService MieleAuth
 @inject MieleState State
-@inject MieleRecorder Recorder
 @inject IKasaSettingsService KasaSettings
 @inject ILiveStreamBroadcaster Live
 @inject IPlugStateBroadcaster PlugStates
@@ -62,18 +60,8 @@ else
                     <div class="text-secondary" title="@UiFormat.FullLocal(lr)">ultima citire a aparatelor: @UiFormat.RelativeRo(lr, DateTimeOffset.UtcNow)</div>
                 }
                 <div class="ms-auto">
-                    @if (_settings.CanConnect)
-                    {
-                        <a class="btn btn-primary btn-sm" href="@MieleApi.ConnectPath"><i class="bi bi-box-arrow-in-right me-1"></i>@(_settings.Token is null ? "Conectează Miele" : "Reconectează")</a>
-                    }
-                    else
-                    {
-                        <a class="btn btn-outline-primary btn-sm" href="/settings"><i class="bi bi-gear me-1"></i>Setări → Miele</a>
-                    }
-                    @if (_settings.Token is not null)
-                    {
-                        <button class="btn btn-outline-secondary btn-sm ms-1" @onclick="DisconnectAsync"><i class="bi bi-x-circle me-1"></i>Deconectează</button>
-                    }
+                    @* The connection has one owner: Setări → Miele (connect, reconnect, disconnect). *@
+                    <a class="btn @(_settings.IsConnected ? "btn-outline-secondary" : "btn-outline-primary") btn-sm" href="@SettingsTabs.Href(KasaMonitor.Core.Devices.IntegrationKeys.Miele)"><i class="bi bi-gear me-1"></i>Setări → Miele</a>
                 </div>
             </div>
             @if ((_settings.AuthError ?? State.Status) is { } why)
@@ -88,8 +76,8 @@ else
             {
                 <ol class="mt-2 mb-0">
                     <li>Pe <a href="https://developer.miele.com/get-involved" target="_blank" rel="noopener">developer.miele.com</a> obții Client ID și Client Secret (un set per e-mail).</li>
-                    <li>Secretul se montează în container ca fișier (<code>@MieleApi.DefaultClientSecretFile</code>), Client ID-ul se pune în <a href="/settings">Setări → Miele</a>.</li>
-                    <li>Deschide KasaMonitor la adresa folosită de obicei (redirect URI = <code>@CallbackExample</code>), apasă „Conectează Miele”, autentifică-te cu contul Miele
+                    <li>Secretul se montează în container ca fișier (<code>@MieleApi.DefaultClientSecretFile</code>), Client ID-ul se pune în <a href="@SettingsTabs.Href(KasaMonitor.Core.Devices.IntegrationKeys.Miele)">Setări → Miele</a>.</li>
+                    <li>Deschide KasaMonitor la adresa folosită de obicei (redirect URI = <code>@CallbackExample</code>), apasă „Conectează Miele” în <a href="@SettingsTabs.Href(KasaMonitor.Core.Devices.IntegrationKeys.Miele)">Setări → Miele</a>, autentifică-te cu contul Miele
                         (țara: România) și bifează aparatele la consimțământ.</li>
                 </ol>
             }
@@ -106,7 +94,6 @@ else
         {
             var v = a.Values;
             var online = State.IsOnline(a, DateTimeOffset.UtcNow);
-            var edit = Edit(a.Device);
             <div class="col-xl-6">
                 <div class="card h-100 border-start border-4 @StatusBorder(v)">
                     <div class="card-body">
@@ -163,25 +150,6 @@ else
                             @PhaseBand(oc, DateTimeOffset.UtcNow)
                         }
 
-                        <div class="row g-2 align-items-end small mt-2">
-                            <div class="col-sm-5">
-                                <label class="form-label mb-0" for="alias-@a.Device.Id.GetHashCode()">Alias</label>
-                                <input class="form-control form-control-sm" id="alias-@a.Device.Id.GetHashCode()" @bind="edit.Alias" />
-                            </div>
-                            <div class="col-sm-5">
-                                <label class="form-label mb-0" for="plug-@a.Device.Id.GetHashCode()">Priza care îl alimentează</label>
-                                <select class="form-select form-select-sm" id="plug-@a.Device.Id.GetHashCode()" @bind="edit.PlugId">
-                                    <option value="">— niciuna —</option>
-                                    @foreach (var p in _plugs)
-                                    {
-                                        <option value="@p.Id">@p.Alias</option>
-                                    }
-                                </select>
-                            </div>
-                            <div class="col-sm-2">
-                                <button class="btn btn-outline-primary btn-sm w-100" @onclick="() => SaveDeviceAsync(a.Device.Id)">Salvează</button>
-                            </div>
-                        </div>
                         <div class="small mt-1 text-secondary">
                             @if (a.Device.PlugId is { } plug)
                             {
@@ -191,8 +159,9 @@ else
                             {
                                 <span>Fără priză legată: energia măsurată pe ciclu și adevărul de teren NILM lipsesc.</span>
                             }
+                            @* R6 (0.10.0): alias and plug are set on /dispozitive (the appliance's row). *@
+                            <a class="ms-1" href="@DevicePages.Row(DeviceRow.MieleKey(a.Device.Id))"><i class="bi bi-pencil me-1"></i>Alias și priza: Dispozitive</a>
                         </div>
-                        @if (_saveMessage.TryGetValue(a.Device.Id, out var msg)) { <div class="small text-success">@msg</div> }
                         <div class="small text-secondary mt-1">Cicluri încheiate: @a.CyclesTotal@(a.Device.LastSeenUtc is { } seen ? " · văzut " + UiFormat.RelativeRo(seen, DateTimeOffset.UtcNow) : "")</div>
                     </div>
                 </div>
@@ -304,12 +273,6 @@ else
 }
 
 @code {
-    private sealed class DeviceEdit
-    {
-        public string Alias { get; set; } = "";
-        public string PlugId { get; set; } = "";
-    }
-
     [SupplyParameterFromQuery(Name = "auth")] public string? Auth { get; set; }
 
     private MieleRuntimeSettings? _settings;
@@ -321,8 +284,6 @@ else
     private readonly HashSet<long> _expanded = new();
     private readonly Dictionary<long, CycleDetail> _details = new();
     private IReadOnlyList<Plug> _plugs = Array.Empty<Plug>();
-    private readonly Dictionary<string, DeviceEdit> _edits = new();
-    private readonly Dictionary<string, string> _saveMessage = new();
     private (bool Ok, string Text)? _authMessage;
     private decimal _tariff;
     private string? _loadError;
@@ -373,42 +334,6 @@ else
         {
             _loadError = ex.Message;
         }
-    }
-
-    private DeviceEdit Edit(MieleDevice d)
-    {
-        if (!_edits.TryGetValue(d.Id, out var e))
-            _edits[d.Id] = e = new DeviceEdit { Alias = d.Alias, PlugId = d.PlugId?.ToString() ?? "" };
-        return e;
-    }
-
-    private async Task SaveDeviceAsync(string deviceId)
-    {
-        if (!_edits.TryGetValue(deviceId, out var e)) return;
-        try
-        {
-            using (var scope = ScopeFactory.CreateScope())
-            {
-                var repo = scope.ServiceProvider.GetRequiredService<IMieleRepository>();
-                var alias = e.Alias.Trim();
-                if (alias.Length > 0) await repo.SetAliasAsync(deviceId, alias.Length > 64 ? alias[..64] : alias, CancellationToken.None);
-                await repo.SetPlugAsync(deviceId, Guid.TryParse(e.PlugId, out var plug) ? plug : null, CancellationToken.None);
-            }
-            await Recorder.ReloadDeviceAsync(deviceId, CancellationToken.None);
-            _edits.Remove(deviceId);
-            _saveMessage[deviceId] = "Salvat.";
-            await LoadAsync();
-        }
-        catch (Exception ex)
-        {
-            _saveMessage[deviceId] = "Eroare: " + ex.Message;
-        }
-    }
-
-    private async Task DisconnectAsync()
-    {
-        await MieleAuth.LogoutAsync(CancellationToken.None);
-        await LoadAsync();
     }
 
     private int PageCount => Math.Max(1, (_page.Total + PageSize - 1) / PageSize);

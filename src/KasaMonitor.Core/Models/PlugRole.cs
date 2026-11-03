@@ -58,7 +58,7 @@ public static class PlugRoles
         _ => "bi-plug",
     };
 
-    /// <summary>One-line Romanian explanation (tooltip and the roles help on /plugs).</summary>
+    /// <summary>One-line Romanian explanation (tooltip and the plug row of /dispozitive).</summary>
     public static string Description(PlugRole role) => role switch
     {
         PlugRole.MainMeter =>

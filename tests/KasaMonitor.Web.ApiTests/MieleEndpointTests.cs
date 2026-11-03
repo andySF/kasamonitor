@@ -71,7 +71,7 @@ public class MieleEndpointTests : IClassFixture<MieleFactory>
         var c = _f.CreateClient();
         var aparate = await c.GetStringAsync("/aparate");
         aparate.Should().Contain("Aparate Miele").And.Contain("Istoric cicluri").And.Contain("Miele oferă ultimele 5 rulări; de la conectare încolo KasaMonitor păstrează tot.");
-        var settings = await c.GetStringAsync("/settings");
+        var settings = await c.GetStringAsync("/settings/miele");
         settings.Should().Contain("Miele (mașină de spălat, uscător)").And.Contain("încărcat").And.NotContain(MieleFactory.FakeSecret);
         (await c.GetStringAsync("/integration")).Should().Contain("miele_program_phase_info");
         (await c.GetStringAsync("/metrics")).Should().Contain("miele_connected 0");

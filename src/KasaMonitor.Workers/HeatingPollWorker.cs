@@ -184,8 +184,8 @@ public sealed class HeatingPollWorker : BackgroundService
     public async Task<HeatingPollResult> PollOnceAsync(CancellationToken ct)
     {
         var s = await _settings.GetAsync(ct);
-        if (!s.HeatingEnabled) { _state.SetStatus("Centrala e dezactivată în Setări."); return HeatingPollResult.NotCalled; }
-        if (!s.HasClientId) { _state.SetStatus("Lipsește Client ID-ul Viessmann (Setări → Centrală)."); return HeatingPollResult.NotCalled; }
+        if (!s.HeatingEnabled) { _state.SetStatus("Citirea centralei e oprită în Setări → Viessmann."); return HeatingPollResult.NotCalled; }
+        if (!s.HasClientId) { _state.SetStatus("Lipsește Client ID-ul Viessmann (Setări → Viessmann)."); return HeatingPollResult.NotCalled; }
         if (s.Token is null) { _state.SetStatus(s.AuthError ?? "Contul ViCare nu e conectat."); return HeatingPollResult.NotCalled; }
         var boilerTz = s.BoilerTimeZone;
         _state.BoilerTimeZone = boilerTz;
@@ -204,7 +204,7 @@ public sealed class HeatingPollWorker : BackgroundService
                     device = found;
                 }
             }
-            if (!device.Enabled) { _state.SetStatus("Dispozitivul e dezactivat."); return HeatingPollResult.NotCalled; }
+            if (!device.Enabled) { _state.SetStatus("Centrala e retrasă (Dispozitive)."); return HeatingPollResult.NotCalled; }
 
             var json = await CallAsync(token => _client.GetFeaturesJsonAsync(token, device.InstallationId, device.GatewaySerial, ct), ct);
             if (json is null) return HeatingPollResult.NotCalled;

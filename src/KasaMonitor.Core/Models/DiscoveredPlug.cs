@@ -7,7 +7,7 @@ namespace KasaMonitor.Core.Models;
 /// <param name="Channel">Measured channel of a multi-channel device (Shelly EM: 0 and 1); 0 for single-channel plugs.
 /// The identity of a plug is (MAC, channel).</param>
 /// <param name="Role">Role given to a newly added plug (Shelly em/em1 channels: <see cref="PlugRole.SubMeter"/>); an existing
-/// plug keeps the role chosen in /plugs.</param>
+/// plug keeps the role chosen in /dispozitive.</param>
 public sealed record DiscoveredPlug(
     IPAddress IpAddress,
     PlugInfo Info,

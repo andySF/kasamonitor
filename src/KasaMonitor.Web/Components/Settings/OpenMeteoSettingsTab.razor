@@ -1,0 +1,95 @@
+@using System.Globalization
+@using KasaMonitor.Workers
+@using KasaMonitor.Web.Ui
+@using KasaMonitor.Core.Climate
+@using KasaMonitor.Core.Devices
+@inject IClimateSettingsService ClimateSettings
+@inject ClimateWorker Worker
+@inherits SettingsTabBase
+
+@* /settings/openmeteo: latitude/longitude for the outdoor weather (empty = off). The base of the degree days is in
+   „Aplicație” (an analysis setting, not Open-Meteo's). *@
+<IntegrationStatusLine Integration="@(Integrations.Get(IntegrationKeys.OpenMeteo)!)" />
+@if (_s is null)
+{
+    <p class="text-secondary"><span class="spinner-border spinner-border-sm me-2"></span>Se încarcă…</p>
+}
+else
+{
+    <div class="row g-3">
+        <div class="col-xl-6">
+            <div class="card h-100">
+                <div class="card-header fw-semibold"><i class="bi bi-cloud-sun me-2"></i>Temperatura exterioară (Open-Meteo)</div>
+                <div class="card-body">
+                    <div class="row g-2 mb-2">
+                        <div class="col-sm-6">
+                            <label class="form-label" for="cLat">Latitudine</label>
+                            <input class="form-control" id="cLat" @bind="_lat" placeholder="ex. 44.4268" inputmode="decimal" autocomplete="off" />
+                        </div>
+                        <div class="col-sm-6">
+                            <label class="form-label" for="cLon">Longitudine</label>
+                            <input class="form-control" id="cLon" @bind="_lon" placeholder="ex. 26.1025" inputmode="decimal" autocomplete="off" />
+                        </div>
+                    </div>
+                    <div class="form-text">
+                        Open-Meteo e gratuit și fără cheie (<code>api.open-meteo.com</code>); se trimit doar coordonatele. Lasă ambele câmpuri goale ca să-l oprești.
+                        Senzorul „Afară” apare în <a href="/clima">Climă</a> și ca rândul „Afară” în <a href="/centrala">Centrală</a>. Baza gradelor-zile e în tabul
+                        <TabLink To="@SettingsTabs.App">Aplicație</TabLink>.
+                    </div>
+                    <div class="d-flex align-items-center gap-3 mt-3">
+                        <button class="btn btn-primary" @onclick="SaveAsync"><i class="bi bi-save me-1"></i>Salvează „Open-Meteo”</button>
+                        @if (IsDirty) { <span class="text-warning-emphasis small"><i class="bi bi-pencil-square me-1"></i>modificări nesalvate</span> }
+                        @if (_saved) { <span class="text-success"><i class="bi bi-check-circle me-1"></i>Salvat.</span> }
+                        @if (_error is not null) { <span class="text-danger"><i class="bi bi-x-circle me-1"></i>@_error</span> }
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+}
+
+@code {
+    private ClimateRuntimeSettings? _s;
+    private string? _loaded;
+    private string _lat = "";
+    private string _lon = "";
+    private bool _saved;
+    private string? _error;
+
+    public override bool IsDirty => _loaded is not null && _loaded != Fingerprint();
+
+    private string Fingerprint() => _lat.Trim() + "|" + _lon.Trim();
+
+    protected override async Task OnInitializedAsync() => await LoadAsync();
+
+    private async Task LoadAsync()
+    {
+        _s = await ClimateSettings.GetAsync(CancellationToken.None);
+        _lat = _s.Latitude?.ToString("0.#####", CultureInfo.InvariantCulture) ?? "";
+        _lon = _s.Longitude?.ToString("0.#####", CultureInfo.InvariantCulture) ?? "";
+        _loaded = Fingerprint();
+    }
+
+    private async Task SaveAsync()
+    {
+        _error = null;
+        try
+        {
+            var lat = ClimateSettingsService.ParseCoordinate(_lat);
+            var lon = ClimateSettingsService.ParseCoordinate(_lon);
+            if (lat is null && !string.IsNullOrWhiteSpace(_lat) || lon is null && !string.IsNullOrWhiteSpace(_lon))
+                throw new ArgumentException("Coordonatele trebuie să fie numere (ex. 44.4268).");
+            await ClimateSettings.SaveLocationAsync(lat, lon, CancellationToken.None);
+            Worker.Wake();
+            await LoadAsync();
+            _saved = true;
+            StateHasChanged();
+            await Task.Delay(2000);
+            _saved = false;
+        }
+        catch (ArgumentException ex)
+        {
+            _error = ex.Message;
+        }
+    }
+}

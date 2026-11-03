@@ -1,0 +1,22 @@
+@using KasaMonitor.Workers
+@using KasaMonitor.Web.Ui
+@inject HeatingState State
+
+@* The expanded row of the boiler on /dispozitive: what was found in the ViCare account; „Retrage” (actions column)
+   stops reading it (HeatingDevices.Enabled), without touching the account in Setări → Viessmann. *@
+<div class="small">
+    @if (Row is { } r)
+    {
+        <div>@r.Model · @(r.Health == DeviceHealth.Retired ? "retrasă: nu se fac apeluri la Viessmann" : "citită din contul ViCare")</div>
+        @if (State.Status is { } st) { <div class="text-warning-emphasis">@st</div> }
+        @if (r.Note is { } err) { <div class="text-danger">Ultima eroare: @err</div> }
+    }
+    <div class="text-secondary mt-1">
+        Termostatul de cameră apare ca senzor de climă separat. Contul (Client ID, conectare, interval, buget API) e în
+        <a href="@SettingsTabs.Href(KasaMonitor.Core.Devices.IntegrationKeys.Viessmann)">Setări → Viessmann</a>; datele sunt pe pagina <a href="/centrala">Centrală</a>.
+    </div>
+</div>
+
+@code {
+    [Parameter] public DeviceRow? Row { get; set; }
+}

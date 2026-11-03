@@ -283,7 +283,7 @@ public sealed class HistoryService
     /// <summary>
     /// The consumers of a period. The cache key holds a fingerprint of the labels (signatures: name, label source, plug,
     /// hidden; plugs: single appliance and its name), so naming a signature on /consumatori or ticking „un singur aparat” on
-    /// /plugs shows at the next load instead of after the cache expires (two small reads per call).
+    /// /dispozitive shows at the next load instead of after the cache expires (two small reads per call).
     /// </summary>
     public async Task<HistoryDetected> GetDetectedAsync(ReportPeriod period, CancellationToken ct)
     {

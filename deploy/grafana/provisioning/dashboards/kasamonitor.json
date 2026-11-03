@@ -31,13 +31,13 @@
       },
       "options": {
         "mode": "markdown",
-        "content": "**KasaMonitor** — TP-Link Kasa (legacy), Tapo (KLAP / AES) and Shelly Gen2/Gen3 (protocol `shelly-rpc`) devices with energy metering: power (W), voltage (V), current (A), energy (kWh) and cost per plug. KasaMonitor polls the plugs every 10 s and exposes `/metrics`; Prometheus scrapes it (job `kasa`). `kasa_power_total` is **cumulative Wh**; kWh = Wh / 1000. Energy over a range = sum of the counter's 5-minute increases (a drop, e.g. after a restart or a plug reset, is not counted; a scrape gap longer than 5 minutes loses the energy of that gap). Cost = kWh × **$tariff $currency/kWh** (dashboard variables, top left). 30-day windows are complete only after 30 days of data. A plug that is unplugged or off Wi-Fi shows **offline** (red); W/V/A/relay keep the last good reading. A plug withdrawn in KasaMonitor (/plugs, \"Retrage\") is no longer polled and disappears from the metrics. Voltage and current appear only for plugs that report them. Every series has a `role` label (`plug` | `main` | `sub`, set per channel in KasaMonitor /plugs). The totals at the top count only `role=\"plug\"`: the main meter and the sub-meters already include the plugs behind them. The house (main meter) is in the **Contor general** row at the bottom (power, rest of the house = house − plugs, voltage, power factor, energy per day); other meter channels are in **Sub-contoare**."
+        "content": "**KasaMonitor** — TP-Link Kasa (legacy), Tapo (KLAP / AES) and Shelly Gen2/Gen3 (protocol `shelly-rpc`) devices with energy metering: power (W), voltage (V), current (A), energy (kWh) and cost per plug. KasaMonitor polls the plugs every 10 s and exposes `/metrics`; Prometheus scrapes it (job `kasa`). `kasa_power_total` is **cumulative Wh**; kWh = Wh / 1000. Energy over a range = sum of the counter's 5-minute increases (a drop, e.g. after a restart or a plug reset, is not counted; a scrape gap longer than 5 minutes loses the energy of that gap). Cost = kWh × **$tariff $currency/kWh** (dashboard variables, top left). 30-day windows are complete only after 30 days of data. A plug that is unplugged or off Wi-Fi shows **offline** (red); W/V/A/relay keep the last good reading. A plug withdrawn in KasaMonitor (/dispozitive, \"Retrage\") is no longer polled and disappears from the metrics. Voltage and current appear only for plugs that report them. Every series has a `role` label (`plug` | `main` | `sub`, set per channel in KasaMonitor /dispozitive). The totals at the top count only `role=\"plug\"`: the main meter and the sub-meters already include the plugs behind them. The house (main meter) is in the **Contor general** row at the bottom (power, rest of the house = house − plugs, voltage, power factor, energy per day); other meter channels are in **Sub-contoare**."
       }
     },
     {
       "type": "stat",
       "title": "Power now",
-      "description": "Sum of instantaneous power (W) of all plugs: sum(sum by (alias) (kasa_power_load{role=\"plug\"})). Only channels with role=\"plug\" are counted: the main meter (role=\"main\") and the sub-meters (role=\"sub\") already include the plugs behind them; the role is set per channel in KasaMonitor (/plugs). Meters have their own rows at the bottom.",
+      "description": "Sum of instantaneous power (W) of all plugs: sum(sum by (alias) (kasa_power_load{role=\"plug\"})). Only channels with role=\"plug\" are counted: the main meter (role=\"main\") and the sub-meters (role=\"sub\") already include the plugs behind them; the role is set per channel in KasaMonitor (/dispozitive). Meters have their own rows at the bottom.",
       "id": 2,
       "datasource": {
         "type": "prometheus",
@@ -94,7 +94,7 @@
     {
       "type": "stat",
       "title": "Plugs online / total",
-      "description": "Plugs answering right now, and all plugs exported by KasaMonitor (offline included). Only channels with role=\"plug\" are counted: the main meter (role=\"main\") and the sub-meters (role=\"sub\") already include the plugs behind them; the role is set per channel in KasaMonitor (/plugs). Meters have their own rows at the bottom.",
+      "description": "Plugs answering right now, and all plugs exported by KasaMonitor (offline included). Only channels with role=\"plug\" are counted: the main meter (role=\"main\") and the sub-meters (role=\"sub\") already include the plugs behind them; the role is set per channel in KasaMonitor (/dispozitive). Meters have their own rows at the bottom.",
       "id": 3,
       "datasource": {
         "type": "prometheus",
@@ -163,7 +163,7 @@
     {
       "type": "stat",
       "title": "Energy (24 h)",
-      "description": "kWh used by all plugs in the last 24 hours. Energy = sum of the counter's 5-minute increases, clamped at 0: sum_over_time(clamp_min(max by (alias) (kasa_power_total) - max by (alias) (kasa_power_total offset 5m), 0)[RANGE:5m]). Not increase(): kasa_power_total is re-seeded from the plug's own total when KasaMonitor restarts (and Tapo plugs report month-to-date energy), so the series can drop a little; increase() treats any drop as a counter reset and would add the whole cumulative value as new consumption. A gap longer than 5 minutes loses the energy of that gap. Only channels with role=\"plug\" are counted: the main meter (role=\"main\") and the sub-meters (role=\"sub\") already include the plugs behind them; the role is set per channel in KasaMonitor (/plugs). Meters have their own rows at the bottom.",
+      "description": "kWh used by all plugs in the last 24 hours. Energy = sum of the counter's 5-minute increases, clamped at 0: sum_over_time(clamp_min(max by (alias) (kasa_power_total) - max by (alias) (kasa_power_total offset 5m), 0)[RANGE:5m]). Not increase(): kasa_power_total is re-seeded from the plug's own total when KasaMonitor restarts (and Tapo plugs report month-to-date energy), so the series can drop a little; increase() treats any drop as a counter reset and would add the whole cumulative value as new consumption. A gap longer than 5 minutes loses the energy of that gap. Only channels with role=\"plug\" are counted: the main meter (role=\"main\") and the sub-meters (role=\"sub\") already include the plugs behind them; the role is set per channel in KasaMonitor (/dispozitive). Meters have their own rows at the bottom.",
       "id": 4,
       "datasource": {
         "type": "prometheus",
@@ -220,7 +220,7 @@
     {
       "type": "stat",
       "title": "Cost (24 h, $currency)",
-      "description": "Cost of the last 24 hours: kWh × $tariff. Only channels with role=\"plug\" are counted: the main meter (role=\"main\") and the sub-meters (role=\"sub\") already include the plugs behind them; the role is set per channel in KasaMonitor (/plugs). Meters have their own rows at the bottom.",
+      "description": "Cost of the last 24 hours: kWh × $tariff. Only channels with role=\"plug\" are counted: the main meter (role=\"main\") and the sub-meters (role=\"sub\") already include the plugs behind them; the role is set per channel in KasaMonitor (/dispozitive). Meters have their own rows at the bottom.",
       "id": 5,
       "datasource": {
         "type": "prometheus",
@@ -277,7 +277,7 @@
     {
       "type": "stat",
       "title": "Energy (30 days)",
-      "description": "kWh used by all plugs in the last 30 days (complete only after 30 days of data). Energy = sum of the counter's 5-minute increases, clamped at 0: sum_over_time(clamp_min(max by (alias) (kasa_power_total) - max by (alias) (kasa_power_total offset 5m), 0)[RANGE:5m]). Not increase(): kasa_power_total is re-seeded from the plug's own total when KasaMonitor restarts (and Tapo plugs report month-to-date energy), so the series can drop a little; increase() treats any drop as a counter reset and would add the whole cumulative value as new consumption. A gap longer than 5 minutes loses the energy of that gap. Only channels with role=\"plug\" are counted: the main meter (role=\"main\") and the sub-meters (role=\"sub\") already include the plugs behind them; the role is set per channel in KasaMonitor (/plugs). Meters have their own rows at the bottom.",
+      "description": "kWh used by all plugs in the last 30 days (complete only after 30 days of data). Energy = sum of the counter's 5-minute increases, clamped at 0: sum_over_time(clamp_min(max by (alias) (kasa_power_total) - max by (alias) (kasa_power_total offset 5m), 0)[RANGE:5m]). Not increase(): kasa_power_total is re-seeded from the plug's own total when KasaMonitor restarts (and Tapo plugs report month-to-date energy), so the series can drop a little; increase() treats any drop as a counter reset and would add the whole cumulative value as new consumption. A gap longer than 5 minutes loses the energy of that gap. Only channels with role=\"plug\" are counted: the main meter (role=\"main\") and the sub-meters (role=\"sub\") already include the plugs behind them; the role is set per channel in KasaMonitor (/dispozitive). Meters have their own rows at the bottom.",
       "id": 6,
       "datasource": {
         "type": "prometheus",
@@ -334,7 +334,7 @@
     {
       "type": "stat",
       "title": "Cost (30 days, $currency)",
-      "description": "Cost of the last 30 days: kWh × $tariff. Only channels with role=\"plug\" are counted: the main meter (role=\"main\") and the sub-meters (role=\"sub\") already include the plugs behind them; the role is set per channel in KasaMonitor (/plugs). Meters have their own rows at the bottom.",
+      "description": "Cost of the last 30 days: kWh × $tariff. Only channels with role=\"plug\" are counted: the main meter (role=\"main\") and the sub-meters (role=\"sub\") already include the plugs behind them; the role is set per channel in KasaMonitor (/dispozitive). Meters have their own rows at the bottom.",
       "id": 7,
       "datasource": {
         "type": "prometheus",
@@ -807,7 +807,7 @@
     {
       "type": "timeseries",
       "title": "Energy per day (30 days)",
-      "description": "kWh per plug and day (stacked bars = daily total). Each bar covers the 24 h before its timestamp; days are aligned to 00:00 UTC and the current day is not shown. Energy = sum of the counter's 5-minute increases, clamped at 0: sum_over_time(clamp_min(max by (alias) (kasa_power_total) - max by (alias) (kasa_power_total offset 5m), 0)[RANGE:5m]). Not increase(): kasa_power_total is re-seeded from the plug's own total when KasaMonitor restarts (and Tapo plugs report month-to-date energy), so the series can drop a little; increase() treats any drop as a counter reset and would add the whole cumulative value as new consumption. A gap longer than 5 minutes loses the energy of that gap. Only channels with role=\"plug\" are counted: the main meter (role=\"main\") and the sub-meters (role=\"sub\") already include the plugs behind them; the role is set per channel in KasaMonitor (/plugs). Meters have their own rows at the bottom.",
+      "description": "kWh per plug and day (stacked bars = daily total). Each bar covers the 24 h before its timestamp; days are aligned to 00:00 UTC and the current day is not shown. Energy = sum of the counter's 5-minute increases, clamped at 0: sum_over_time(clamp_min(max by (alias) (kasa_power_total) - max by (alias) (kasa_power_total offset 5m), 0)[RANGE:5m]). Not increase(): kasa_power_total is re-seeded from the plug's own total when KasaMonitor restarts (and Tapo plugs report month-to-date energy), so the series can drop a little; increase() treats any drop as a counter reset and would add the whole cumulative value as new consumption. A gap longer than 5 minutes loses the energy of that gap. Only channels with role=\"plug\" are counted: the main meter (role=\"main\") and the sub-meters (role=\"sub\") already include the plugs behind them; the role is set per channel in KasaMonitor (/dispozitive). Meters have their own rows at the bottom.",
       "id": 10,
       "datasource": {
         "type": "prometheus",
@@ -1264,7 +1264,7 @@
     {
       "type": "stat",
       "title": "House power now",
-      "description": "Active power (W) of the main meter: sum(kasa_power_load{role=\"main\"}). Set the main meter in KasaMonitor /plugs (one per installation).",
+      "description": "Active power (W) of the main meter: sum(kasa_power_load{role=\"main\"}). Set the main meter in KasaMonitor /dispozitive (one per installation).",
       "id": 18,
       "datasource": {
         "type": "prometheus",

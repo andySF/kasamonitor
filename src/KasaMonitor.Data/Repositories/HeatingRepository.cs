@@ -44,6 +44,16 @@ public sealed class HeatingRepository : IHeatingRepository
         return ToModel(row);
     }
 
+    public async Task<bool> SetDeviceEnabledAsync(Guid deviceId, bool enabled, CancellationToken ct)
+    {
+        var row = await _db.HeatingDevices.FindAsync(new object?[] { deviceId }, ct);
+        if (row is null) return false;
+        row.Enabled = enabled;
+        await _db.SaveChangesAsync(ct);
+        _db.ChangeTracker.Clear();
+        return true;
+    }
+
     public async Task UpdateDeviceStatusAsync(Guid deviceId, DateTimeOffset? lastSeenUtc, string? lastError, CancellationToken ct)
     {
         var row = await _db.HeatingDevices.FindAsync(new object?[] { deviceId }, ct);

@@ -33,10 +33,10 @@ stack has no repository directory. Keep `network_mode: host`.
 ## Local build & push to Docker Hub
 
 ```powershell
-docker build -t duobit/kasamonitor:latest -t duobit/kasamonitor:0.9.4 -f deploy/Dockerfile .
+docker build -t duobit/kasamonitor:latest -t duobit/kasamonitor:0.10.0 -f deploy/Dockerfile .
 docker login
 docker push duobit/kasamonitor:latest
-docker push duobit/kasamonitor:0.9.4
+docker push duobit/kasamonitor:0.10.0
 ```
 
 ## Configuration
@@ -105,8 +105,8 @@ the rest of KasaMonitor (and the other climate sources) work as before.
 
 - **No plugs discovered** → confirm `network_mode: host` is set (some NAS UIs reset it). Without host networking the
   UDP broadcast cannot reach the LAN. Check that `BroadcastNetworks` is your LAN's broadcast address; for plugs in
-  another subnet use "Add by IP" on `/plugs`.
-- **Tapo plug "unsupported"** → see the reason on `/plugs`: missing/wrong TP-Link credentials, or a protocol such
+  another subnet use "Add by IP" on `/dispozitive` (Adaugă).
+- **Tapo plug "unsupported"** → see the reason on `/dispozitive`: missing/wrong TP-Link credentials, or a protocol such
   as TPAP (toggle *Third-Party Compatibility* in the Tapo app and restart the plug).
 - **Prometheus target `kasa` DOWN** → see "Reaching KasaMonitor from Prometheus" in `../README.md`
   (`host.docker.internal` vs. the host's LAN IP).

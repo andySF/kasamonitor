@@ -1,0 +1,148 @@
+@using KasaMonitor.Workers
+@inject IKasaSettingsService KasaSettings
+@inject PrometheusRemoteWriter RemoteWriter
+@inherits SettingsTabBase
+@implements IDisposable
+
+@* /settings/export: Prometheus remote write of the live stream, plus the link to /integration (scrape, dashboard,
+   alerts), which left the top menu. The credentials are never shown. *@
+@if (_loaded is null)
+{
+    <p class="text-secondary"><span class="spinner-border spinner-border-sm me-2"></span>Se încarcă…</p>
+}
+else
+{
+    <div class="row g-3">
+        <div class="col-xl-7">
+            <div class="card h-100">
+                <div class="card-header fw-semibold"><i class="bi bi-diagram-3 me-2"></i>Prometheus remote write</div>
+                <div class="card-body">
+                    <div class="form-check form-switch mb-2">
+                        <input class="form-check-input" type="checkbox" id="rwOn" @bind="_rwEnabled" />
+                        <label class="form-check-label" for="rwOn">Trimite eșantioanele fluxului live (<code>kasa_live_*</code>) la Prometheus</label>
+                    </div>
+                    <div class="mb-2">
+                        <label class="form-label" for="rwUrl">Adresa remote write</label>
+                        <input class="form-control" id="rwUrl" @bind="_rwUrl" placeholder="http://192.168.1.10:9090/api/v1/write" />
+                    </div>
+                    <div class="row g-2 mb-1">
+                        <div class="col-sm-6">
+                            <label class="form-label" for="rwUser">Utilizator (opțional, basic auth)</label>
+                            <input class="form-control" id="rwUser" @bind="_rwUser" autocomplete="off" placeholder="@(_hasRwAuth ? "•••• (setat; lasă gol ca să rămână)" : "nesetat")" />
+                        </div>
+                        <div class="col-sm-6">
+                            <label class="form-label" for="rwPassword">Parolă</label>
+                            <input class="form-control" id="rwPassword" @bind="_rwPassword" type="password" autocomplete="new-password" placeholder="@(_hasRwAuth ? "•••••••• (setată)" : "nesetată")" />
+                        </div>
+                    </div>
+                    @if (_hasRwAuth)
+                    {
+                        <div class="form-check mb-2">
+                            <input class="form-check-input" type="checkbox" id="clearRw" @bind="_clearRwAuth" />
+                            <label class="form-check-label" for="clearRw">Șterge utilizatorul și parola</label>
+                        </div>
+                    }
+                    @{ var st = RemoteWriter.Status; }
+                    <div class="small mt-2" role="status">
+                        <span class="badge @(st.Enabled ? (st.LastError is null ? "text-bg-success" : "text-bg-warning") : "text-bg-secondary")">@(st.Enabled ? (st.LastError is null ? "activ" : "eroare") : "oprit")</span>
+                        <span class="ms-2">ultimul succes: @(st.LastSuccessUtc is { } ls ? KasaMonitor.Web.Ui.UiFormat.RelativeRo(ls, DateTimeOffset.UtcNow) : "—")</span>
+                        <span class="ms-2">trimise: @st.SentSamples.ToString("N0")</span>
+                        <span class="ms-2">pierdute: @st.DroppedSamples.ToString("N0")</span>
+                        <span class="ms-2">eșecuri: @st.Failures.ToString("N0")</span>
+                        <span class="ms-2">în coadă: @st.Buffered.ToString("N0")</span>
+                        @if (st.LastError is not null) { <div class="text-danger mt-1">@st.LastError</div> }
+                    </div>
+                    <div class="form-text">
+                        Trimite doar eșantioanele scrise și în baza de date (la schimbare &gt; 1 W și &gt; 1 % sau o dată pe minut), cu ora reală a
+                        eșantionului: <code>kasa_live_power_w</code>, iar unde există și <code>kasa_live_voltage_v</code>, <code>kasa_live_current_a</code>,
+                        <code>kasa_live_power_factor</code>. Prometheus trebuie pornit cu <code>--web.enable-remote-write-receiver</code>. Coada ține
+                        cel mult 5 minute; ce e mai vechi se pierde (contorul „pierdute”).
+                    </div>
+                    <div class="d-flex align-items-center gap-3 mt-3">
+                        <button class="btn btn-primary" @onclick="SaveAsync"><i class="bi bi-save me-1"></i>Salvează „Export”</button>
+                        @if (IsDirty) { <span class="text-warning-emphasis small"><i class="bi bi-pencil-square me-1"></i>modificări nesalvate</span> }
+                        @if (_saved) { <span class="text-success"><i class="bi bi-check-circle me-1"></i>Salvat.</span> }
+                        @if (_error is not null) { <span class="text-danger"><i class="bi bi-x-circle me-1"></i>@_error</span> }
+                    </div>
+                </div>
+            </div>
+        </div>
+        <div class="col-xl-5">
+            <div class="card h-100">
+                <div class="card-header fw-semibold"><i class="bi bi-graph-up me-2"></i>Prometheus și Grafana</div>
+                <div class="card-body">
+                    <p class="mb-2">
+                        Configurația de scrape (<code>prometheus.yml</code>), dashboard-ul Grafana, regulile de alertă și lista metricilor expuse pe
+                        <code>/metrics</code> sunt pe pagina <b>Integrare</b>.
+                    </p>
+                    <a class="btn btn-outline-primary btn-sm" href="/integration"><i class="bi bi-box-arrow-up-right me-1"></i>Deschide pagina Integrare</a>
+                    <div class="form-text mt-2">Linkul Grafana din subsolul paginii Acasă e în tabul <TabLink To="@KasaMonitor.Web.Ui.SettingsTabs.App">Aplicație</TabLink>.</div>
+                </div>
+            </div>
+        </div>
+    </div>
+}
+
+@code {
+    private string? _loaded;
+    private bool _saved;
+    private string? _error;
+    private bool _rwEnabled;
+    private string _rwUrl = "";
+    private string _rwUser = "";
+    private string _rwPassword = "";
+    private bool _hasRwAuth;
+    private bool _clearRwAuth;
+    private System.Threading.Timer? _statusTimer;
+
+    public override bool IsDirty => _loaded is not null && (_loaded != Fingerprint() || _rwUser.Length > 0 || _rwPassword.Length > 0 || _clearRwAuth);
+
+    private string Fingerprint() => string.Join("|", _rwEnabled, _rwUrl.Trim());
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadAsync();
+        // Remote write status (sent / dropped / last success) refreshed every 5 s.
+        _statusTimer = new System.Threading.Timer(_ => InvokeAsync(StateHasChanged), null, 5000, 5000);
+    }
+
+    private async Task LoadAsync()
+    {
+        var s = await KasaSettings.GetAsync(CancellationToken.None);
+        _rwEnabled = s.RemoteWriteEnabled;
+        _rwUrl = s.RemoteWriteUrl;
+        _hasRwAuth = s.HasRemoteWriteAuth;
+        _rwUser = "";
+        _rwPassword = "";
+        _clearRwAuth = false;
+        _loaded = Fingerprint();
+    }
+
+    private async Task SaveAsync()
+    {
+        _error = null;
+        try
+        {
+            await KasaSettings.SaveAsync(new KasaSettingsUpdate(
+                RemoteWriteEnabled: _rwEnabled,
+                RemoteWriteUrl: _rwUrl,
+                NewRemoteWriteUser: _rwUser,
+                NewRemoteWritePassword: _rwPassword,
+                ClearRemoteWriteAuth: _clearRwAuth), CancellationToken.None);
+            await RemoteWriter.RefreshSettingsAsync(CancellationToken.None);
+        }
+        catch (FormatException ex)
+        {
+            _error = ex.Message;
+            return;
+        }
+        await LoadAsync();
+        _saved = true;
+        StateHasChanged();
+        await Task.Delay(2000);
+        _saved = false;
+        StateHasChanged();
+    }
+
+    public void Dispose() => _statusTimer?.Dispose();
+}

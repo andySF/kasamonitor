@@ -58,6 +58,11 @@ public static class SettingKeys
     public const string NilmLastProcessedTs = "NilmLastProcessedTs";
     /// <summary>Internal: JSON with the last training of the classifier (time, examples, accuracy, confusion matrix).</summary>
     public const string NilmModelInfo = "NilmModelInfo";
+    /// <summary>
+    /// Internal (0.10.0): "true" once the Shelly climate sensors stored as unsupported plugs (H&amp;T saved by an earlier
+    /// auto-add) were archived at startup; a row brought back later on /dispozitive stays back.
+    /// </summary>
+    public const string ShellyClimatePlugsArchived = "ShellyClimatePlugsArchived";
     /// <summary>Internal: unix second of the last re-clustering (nightly, at startup after a missed night, or „Regrupează acum”).</summary>
     public const string NilmLastReclusterTs = "NilmLastReclusterTs";
 }
@@ -133,20 +138,20 @@ public sealed record KasaRuntimeSettings(
     public IReadOnlyList<IPAddress> ShellyProbeList => ShellyProbeAddresses ?? Array.Empty<IPAddress>();
 }
 
+/// <summary>
+/// A partial save: every field is optional and null (or false for the „clear” flags) keeps the stored value, so each
+/// /settings tab sends only its own fields and never overwrites what another tab saved.
+/// </summary>
 /// <param name="NewTapoPassword">Null or empty keeps the stored password.</param>
-/// <param name="ReadingsRetentionMonths">Null keeps the stored value.</param>
-/// <param name="ShellyDiscoveryEnabled">Null keeps the stored value.</param>
-/// <param name="ShellyProbeHosts">Null keeps the stored value.</param>
-/// <param name="NewShellyPassword">Null or empty keeps the stored password.</param>
-/// <param name="LiveStreamEnabled">Null keeps the stored value (likewise the other live-stream settings).</param>
+/// <param name="TariffRonPerKwh">Price of electricity (RON/kWh, &gt; 0); null keeps the stored value.</param>
 public sealed record KasaSettingsUpdate(
-    bool AutoDiscoveryEnabled,
-    int AutoDiscoveryIntervalMinutes,
-    string BroadcastNetworks,
-    bool AutoAddDiscoveredPlugs,
-    string TapoUsername,
-    string? NewTapoPassword,
-    bool ClearTapoPassword,
+    bool? AutoDiscoveryEnabled = null,
+    int? AutoDiscoveryIntervalMinutes = null,
+    string? BroadcastNetworks = null,
+    bool? AutoAddDiscoveredPlugs = null,
+    string? TapoUsername = null,
+    string? NewTapoPassword = null,
+    bool ClearTapoPassword = false,
     int? ReadingsRetentionMonths = null,
     bool? ShellyDiscoveryEnabled = null,
     string? ShellyProbeHosts = null,
@@ -166,7 +171,8 @@ public sealed record KasaSettingsUpdate(
     int? MinEventDeltaW = null,
     int? ClusterWindowDays = null,
     bool? MlEnabled = null,
-    string? GrafanaUrl = null);
+    string? GrafanaUrl = null,
+    decimal? TariffRonPerKwh = null);
 
 public interface IKasaSettingsService
 {
@@ -188,6 +194,7 @@ public sealed class KasaSettingsService : IKasaSettingsService
     public const int MinEventDeltaWMax = 10_000;
     public const int MinClusterWindowDays = 1;
     public const int MaxClusterWindowDays = 365;
+    public const decimal MaxTariffRonPerKwh = 1000m;
 
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly KasaSettingsDefaults _defaults;
@@ -306,25 +313,36 @@ public sealed class KasaSettingsService : IKasaSettingsService
 
     public async Task SaveAsync(KasaSettingsUpdate update, CancellationToken ct)
     {
-        var (_, invalid) = ParseBroadcastNetworks(update.BroadcastNetworks);
-        if (invalid.Count > 0)
+        if (update.BroadcastNetworks is { } broadcast && ParseBroadcastNetworks(broadcast).Invalid is { Count: > 0 } invalid)
             throw new FormatException($"Adrese broadcast invalide: {string.Join(", ", invalid)}");
         if (update.ShellyProbeHosts is { } probe && ShellySupport.ParseProbeHosts(probe).Invalid is { Count: > 0 } badHosts)
             throw new FormatException($"Adrese Shelly invalide: {string.Join(", ", badHosts)} (IP, interval a.b.c.d-e sau CIDR /{ShellySupport.MinCidrPrefix}–/32, max. {ShellySupport.MaxProbeHosts} adrese)");
+        if (update.TariffRonPerKwh is { } tariffValue && (tariffValue <= 0 || tariffValue > MaxTariffRonPerKwh))
+            throw new FormatException($"Tariful la curent trebuie să fie între 0 și {MaxTariffRonPerKwh} RON/kWh.");
 
-        if (update.RemoteWriteEnabled == true && ValidateRemoteWriteUrl(update.RemoteWriteUrl) is { } badUrl)
+        if (update.RemoteWriteEnabled == true && update.RemoteWriteUrl is not null && ValidateRemoteWriteUrl(update.RemoteWriteUrl) is { } badUrl)
             throw new FormatException(badUrl);
         if (ValidateGrafanaUrl(update.GrafanaUrl) is { } badGrafana)
             throw new FormatException(badGrafana);
 
         using var scope = _scopeFactory.CreateScope();
         var repo = scope.ServiceProvider.GetRequiredService<ISettingsRepository>();
-        await repo.SetAsync(SettingKeys.AutoDiscoveryEnabled, update.AutoDiscoveryEnabled ? "true" : "false", ct);
-        await repo.SetAsync(SettingKeys.AutoDiscoveryIntervalMinutes,
-            Math.Clamp(update.AutoDiscoveryIntervalMinutes, MinIntervalMinutes, MaxIntervalMinutes).ToString(CultureInfo.InvariantCulture), ct);
-        await repo.SetAsync(SettingKeys.BroadcastNetworks, update.BroadcastNetworks.Trim(), ct);
-        await repo.SetAsync(SettingKeys.AutoAddDiscoveredPlugs, update.AutoAddDiscoveredPlugs ? "true" : "false", ct);
-        await repo.SetAsync(SettingKeys.TapoUsername, update.TapoUsername.Trim(), ct);
+        if (update.RemoteWriteEnabled == true && update.RemoteWriteUrl is null
+            && ValidateRemoteWriteUrl(await repo.GetAsync(SettingKeys.RemoteWriteUrl, ct) ?? _defaults.RemoteWriteUrl) is { } storedBad)
+            throw new FormatException(storedBad);
+        if (update.AutoDiscoveryEnabled is { } discoveryOn)
+            await repo.SetAsync(SettingKeys.AutoDiscoveryEnabled, discoveryOn ? "true" : "false", ct);
+        if (update.AutoDiscoveryIntervalMinutes is { } intervalMinutes)
+            await repo.SetAsync(SettingKeys.AutoDiscoveryIntervalMinutes,
+                Math.Clamp(intervalMinutes, MinIntervalMinutes, MaxIntervalMinutes).ToString(CultureInfo.InvariantCulture), ct);
+        if (update.BroadcastNetworks is { } networks)
+            await repo.SetAsync(SettingKeys.BroadcastNetworks, networks.Trim(), ct);
+        if (update.AutoAddDiscoveredPlugs is { } autoAdd)
+            await repo.SetAsync(SettingKeys.AutoAddDiscoveredPlugs, autoAdd ? "true" : "false", ct);
+        if (update.TapoUsername is { } tapoUser)
+            await repo.SetAsync(SettingKeys.TapoUsername, tapoUser.Trim(), ct);
+        if (update.TariffRonPerKwh is { } tariff)
+            await repo.SetAsync(SettingKeys.TariffRonPerKwh, tariff.ToString(CultureInfo.InvariantCulture), ct);
         if (update.ReadingsRetentionMonths is { } months)
             await repo.SetAsync(SettingKeys.ReadingsRetentionMonths,
                 Math.Clamp(months, 0, MaxRetentionMonths).ToString(CultureInfo.InvariantCulture), ct);

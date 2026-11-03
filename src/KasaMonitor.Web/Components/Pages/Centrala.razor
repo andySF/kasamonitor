@@ -45,17 +45,11 @@ else if (!_settings.HasClientId || _settings.Token is null)
         <ol class="mb-2 small">
             <li>Pe <a href="https://developer.viessmann-climatesolutions.com" target="_blank" rel="noopener">portalul de dezvoltator Viessmann</a> (cu contul ViCare): „Your clients” → „+ Add”, reCAPTCHA dezactivat,
                 redirect URI <code>@CallbackExample</code>. Activarea clientului poate dura până la o oră.</li>
-            <li>Client ID-ul se pune în <a href="/settings">Setări → Centrală (Viessmann)</a>.</li>
-            <li>Apasă „Conectează ViCare” și autorizează accesul în pagina Viessmann.</li>
+            <li>Client ID-ul se pune în <a href="@SettingsTabs.Href(KasaMonitor.Core.Devices.IntegrationKeys.Viessmann)">Setări → Viessmann</a>.</li>
+            <li>Tot acolo apeși „Conectează ViCare” și autorizezi accesul în pagina Viessmann.</li>
         </ol>
-        @if (_settings.HasClientId)
-        {
-            <a class="btn btn-primary btn-sm" href="/centrala/connect"><i class="bi bi-box-arrow-in-right me-1"></i>@(_settings.AuthError is null ? "Conectează ViCare" : "Reconectează")</a>
-        }
-        else
-        {
-            <a class="btn btn-outline-primary btn-sm" href="/settings"><i class="bi bi-gear me-1"></i>Setări</a>
-        }
+        @* The connection has one owner: Setări → Viessmann. *@
+        <a class="btn btn-outline-primary btn-sm" href="@SettingsTabs.Href(KasaMonitor.Core.Devices.IntegrationKeys.Viessmann)"><i class="bi bi-gear me-1"></i>Setări → Viessmann</a>
     </div>
 }
 

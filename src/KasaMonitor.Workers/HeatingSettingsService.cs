@@ -66,15 +66,19 @@ public sealed record HeatingRuntimeSettings(
     public string GasUnitText => GasUnit == EnergyUnit.KilowattHour ? HeatingKinds.UnitKwh : HeatingKinds.UnitM3;
 }
 
+/// <summary>
+/// A partial save: every null field keeps the stored value, so the „Viessmann” tab (account, interval, retention, zone)
+/// and the „Aplicație” tab (gas price, kWh/m³, unit) save without overwriting each other.
+/// </summary>
 /// <param name="ClientId">Null keeps the stored value.</param>
 /// <param name="BoilerTimeZone">IANA id of the boiler's zone; null keeps the stored value.</param>
 public sealed record HeatingSettingsUpdate(
-    bool HeatingEnabled,
-    string? ClientId,
-    int PollIntervalSeconds,
-    decimal GasPricePerKwh,
-    string GasUnit,
-    double GasKwhPerM3,
+    bool? HeatingEnabled = null,
+    string? ClientId = null,
+    int? PollIntervalSeconds = null,
+    decimal? GasPricePerKwh = null,
+    string? GasUnit = null,
+    double? GasKwhPerM3 = null,
     int? ReadingsRetentionDays = null,
     string? BoilerTimeZone = null);
 
@@ -142,18 +146,29 @@ public sealed class HeatingSettingsService : IHeatingSettingsService
         return new HeatingRuntimeSettings(enabled, clientId.Trim(), token, authError, interval, price, unit, factor, retention, boilerZone);
     }
 
+    /// <summary>
+    /// The checks of <see cref="SaveAsync"/>, without writing anything: a Romanian error text, or null when the update is
+    /// valid. The „Aplicație” tab calls it before its first write, so an invalid gas value saves nothing at all.
+    /// </summary>
+    public static string? Validate(HeatingSettingsUpdate u)
+    {
+        if (u.GasPricePerKwh is { } price && (price < 0 || price > MaxGasPrice))
+            return $"Prețul gazului trebuie să fie între 0 și {MaxGasPrice} RON/kWh.";
+        if (u.GasKwhPerM3 is { } factor && (double.IsNaN(factor) || factor < MinKwhPerM3 || factor > MaxKwhPerM3))
+            return $"Factorul de conversie trebuie să fie între {MinKwhPerM3} și {MaxKwhPerM3} kWh/m³ (uzual 10,5–10,6).";
+        if (u.BoilerTimeZone is { } zone && !BoilerClock.TryResolve(zone, out _))
+            return $"Fusul orar „{zone}” nu e cunoscut; folosește un nume IANA, ex. {BoilerClock.DefaultTimeZoneId}.";
+        return null;
+    }
+
     public async Task SaveAsync(HeatingSettingsUpdate u, CancellationToken ct)
     {
-        if (u.GasPricePerKwh < 0 || u.GasPricePerKwh > MaxGasPrice)
-            throw new FormatException($"Prețul gazului trebuie să fie între 0 și {MaxGasPrice} RON/kWh.");
-        if (double.IsNaN(u.GasKwhPerM3) || u.GasKwhPerM3 < MinKwhPerM3 || u.GasKwhPerM3 > MaxKwhPerM3)
-            throw new FormatException($"Factorul de conversie trebuie să fie între {MinKwhPerM3} și {MaxKwhPerM3} kWh/m³ (uzual 10,5–10,6).");
-        if (u.BoilerTimeZone is { } zone && !BoilerClock.TryResolve(zone, out _))
-            throw new FormatException($"Fusul orar „{zone}” nu e cunoscut; folosește un nume IANA, ex. {BoilerClock.DefaultTimeZoneId}.");
+        if (Validate(u) is { } error) throw new FormatException(error);
 
         using var scope = _scopeFactory.CreateScope();
         var repo = scope.ServiceProvider.GetRequiredService<ISettingsRepository>();
-        await repo.SetAsync(HeatingSettingKeys.HeatingEnabled, u.HeatingEnabled ? "true" : "false", ct);
+        if (u.HeatingEnabled is { } enabled)
+            await repo.SetAsync(HeatingSettingKeys.HeatingEnabled, enabled ? "true" : "false", ct);
         if (u.ClientId is { } cid)
         {
             var previous = await repo.GetAsync(HeatingSettingKeys.ViessmannClientId, ct) ?? _defaults.ViessmannClientId;
@@ -164,10 +179,14 @@ public sealed class HeatingSettingsService : IHeatingSettingsService
             if (hasToken && previous.Trim().Length > 0 && !string.Equals(previous.Trim(), cid.Trim(), StringComparison.Ordinal))
                 await ClearTokensAsync(repo, "Client ID schimbat: conectează din nou contul ViCare.", ct);
         }
-        await repo.SetAsync(HeatingSettingKeys.ViessmannPollIntervalSeconds, ClampInterval(u.PollIntervalSeconds).ToString(CultureInfo.InvariantCulture), ct);
-        await repo.SetAsync(HeatingSettingKeys.GasPricePerKwh, u.GasPricePerKwh.ToString(CultureInfo.InvariantCulture), ct);
-        await repo.SetAsync(HeatingSettingKeys.GasUnit, ParseGasUnit(u.GasUnit) == EnergyUnit.KilowattHour ? HeatingKinds.UnitKwh : HeatingKinds.UnitM3, ct);
-        await repo.SetAsync(HeatingSettingKeys.GasKwhPerM3, u.GasKwhPerM3.ToString(CultureInfo.InvariantCulture), ct);
+        if (u.PollIntervalSeconds is { } interval)
+            await repo.SetAsync(HeatingSettingKeys.ViessmannPollIntervalSeconds, ClampInterval(interval).ToString(CultureInfo.InvariantCulture), ct);
+        if (u.GasPricePerKwh is { } gasPrice)
+            await repo.SetAsync(HeatingSettingKeys.GasPricePerKwh, gasPrice.ToString(CultureInfo.InvariantCulture), ct);
+        if (u.GasUnit is { } unit)
+            await repo.SetAsync(HeatingSettingKeys.GasUnit, ParseGasUnit(unit) == EnergyUnit.KilowattHour ? HeatingKinds.UnitKwh : HeatingKinds.UnitM3, ct);
+        if (u.GasKwhPerM3 is { } kwhPerM3)
+            await repo.SetAsync(HeatingSettingKeys.GasKwhPerM3, kwhPerM3.ToString(CultureInfo.InvariantCulture), ct);
         if (u.ReadingsRetentionDays is { } days)
             await repo.SetAsync(HeatingSettingKeys.HeatingReadingsRetentionDays,
                 Math.Clamp(days, 0, MaxReadingsRetentionDays).ToString(CultureInfo.InvariantCulture), ct);

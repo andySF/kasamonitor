@@ -1,0 +1,21 @@
+@using KasaMonitor.Web.Ui
+@inject NavigationManager Nav
+
+@* A link to a /settings tab. Inside /settings it goes through SettingsNavigation (unsaved-changes question); the click's
+   default and Blazor's enhanced navigation are off, the address stays in href (middle click, copy link). *@
+<a href="@SettingsTabs.Href(To)" data-enhance-nav="false" @onclick="ClickAsync" @onclick:preventDefault="true" @attributes="Attributes">@ChildContent</a>
+
+@code {
+    [CascadingParameter] public SettingsNavigation? Navigation { get; set; }
+    [Parameter, EditorRequired] public string To { get; set; } = "";
+    [Parameter] public RenderFragment? ChildContent { get; set; }
+    [Parameter(CaptureUnmatchedValues = true)] public IReadOnlyDictionary<string, object>? Attributes { get; set; }
+
+    private Task ClickAsync(MouseEventArgs e)
+    {
+        var newWindow = e.CtrlKey || e.MetaKey || e.ShiftKey;
+        if (Navigation is not null) return Navigation.SelectAsync(To, newWindow);
+        Nav.NavigateTo(SettingsTabs.Href(To));
+        return Task.CompletedTask;
+    }
+}

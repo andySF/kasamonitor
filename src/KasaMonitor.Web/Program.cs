@@ -138,7 +138,7 @@ builder.Services.AddSingleton(sp => new LiveStreamWorker(
     sp.GetRequiredService<ILogger<LiveStreamWorker>>()));
 builder.Services.AddHostedService(sp => sp.GetRequiredService<LiveStreamWorker>());
 
-// Prometheus remote write of the live samples (kasa_live_*), off by default (/settings → Integrare).
+// Prometheus remote write of the live samples (kasa_live_*), off by default (/settings/export).
 builder.Services.AddSingleton(sp => new PrometheusRemoteWriter(
     sp.GetRequiredService<IServiceScopeFactory>(),
     sp.GetRequiredService<IKasaSettingsService>(),
@@ -300,6 +300,19 @@ builder.Services.AddSingleton(sp => new DeviceDetailsService(
     sp.GetRequiredService<ITapoClient>(),
     sp.GetRequiredService<IKasaSettingsService>(),
     shelly: sp.GetRequiredService<IShellyClient>()));
+// /dispozitive: every device of every integration in one list (a projection, no table of its own) and the uniform
+// „Retrage / Readu”, which writes through each kind's owner.
+builder.Services.AddSingleton(sp => new DeviceCatalog(
+    sp.GetRequiredService<IServiceScopeFactory>(),
+    sp.GetRequiredService<IPlugStateBroadcaster>(),
+    sp.GetRequiredService<ClimateState>(),
+    sp.GetRequiredService<HeatingState>(),
+    sp.GetRequiredService<MieleState>(),
+    sp.GetRequiredService<ClimateRecorder>(),
+    sp.GetRequiredService<MieleRecorder>(),
+    sp.GetRequiredService<IClimateSettingsService>(),
+    wakeHeating: () => sp.GetRequiredService<HeatingPollWorker>().Wake(),
+    wakeClimate: () => sp.GetRequiredService<ClimateWorker>().Wake()));
 builder.Services.AddSingleton<MetricsScrapeLog>();
 builder.Services.AddSingleton<KasaMonitor.Web.Diagnostics.ClientErrorEndpoint>();
 builder.Services.AddSingleton<PrometheusTargetsChecker>();
@@ -325,6 +338,9 @@ app.UseStaticFiles();
 app.UseRouting();
 app.UseAntiforgery();
 app.MapRazorComponents<App>().AddInteractiveServerRenderMode();
+
+// /plugs became /dispozitive in 0.10.0 (every device of every integration); old bookmarks are sent there for good.
+app.MapGet("/plugs", () => Results.Redirect(KasaMonitor.Web.Ui.DevicePages.Path, permanent: true));
 
 app.MapGet("/health", async (KasaDbContext ctx) =>
 {

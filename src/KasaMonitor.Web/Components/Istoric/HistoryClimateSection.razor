@@ -50,7 +50,7 @@
             <div class="tile">
                 <div class="lbl" title="Grade-zile de încălzire = bază − T medie afară, în zilele cu media ≤ @HeatingFormat.Number(Data.Rule.ThresholdC, 1) °C (metoda Eurostat; SR 4839 folosește altă metodă); doar zilele încheiate">Grade-zile, metoda Eurostat (bază @HeatingFormat.Number(Data.Rule.BaseC, 1) °C) ⓘ</div>
                 <div class="val num">@HeatingFormat.Number(Data.DegreeDaysTotal, 1) <small>°C·zi</small></div>
-                <div class="meta">@(Data.PartialDegreeDays is { } pd ? $"azi, parțial (neinclus): {HeatingFormat.Number(pd, 1)} · " : "")<a href="/settings">baza în Setări → Climă</a></div>
+                <div class="meta">@(Data.PartialDegreeDays is { } pd ? $"azi, parțial (neinclus): {HeatingFormat.Number(pd, 1)} · " : "")<a href="@KasaMonitor.Web.Ui.SettingsTabs.Href(KasaMonitor.Web.Ui.SettingsTabs.App)">baza în Setări → Aplicație</a></div>
             </div>
         </div>
         @if (Data.FirstReadingDay is { } first && first > Period.Start)

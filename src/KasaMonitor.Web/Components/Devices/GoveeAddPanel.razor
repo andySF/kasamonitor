@@ -1,0 +1,99 @@
+@using KasaMonitor.Workers
+@using KasaMonitor.Web.Ui
+@using KasaMonitor.Core.Climate
+@inject IClimateSettingsService ClimateSettings
+@inject ClimateState Climate
+@inject ClimateWorker Worker
+@implements IDisposable
+
+@* „+ Adaugă” for Govee (moved from Setări → Govee in 0.10.0): the account's devices with the „acasă” tick. Only the
+   ticked thermometers are read (every 10 min) and stored; unticking hides the sensor (its history stays). *@
+@if (_s is null)
+{
+    <span class="text-secondary small">Se încarcă…</span>
+}
+else if (!_s.HasGoveeKey)
+{
+    <div class="small">Lipsește cheia API Govee (@_s.GoveeKeyProblem). Vezi <a href="@Integration.SettingsUrl">Setări → Govee</a>.</div>
+}
+else
+{
+    var devices = Climate.GoveeDevices;
+    <div class="d-flex align-items-center gap-2 small mb-1">
+        <span class="fw-semibold">Dispozitivele din contul Govee</span>
+        @if (Climate.GoveeDevicesUtc is { } at) { <span class="text-secondary">(listă citită @at.ToLocalTime().ToString("yyyy-MM-dd HH:mm"))</span> }
+        <button class="btn btn-outline-secondary btn-sm ms-auto py-0" @onclick="Refresh" title="Citește din nou lista dispozitivelor din contul Govee"><i class="bi bi-arrow-clockwise me-1"></i>Reîncarcă lista</button>
+    </div>
+    @if (devices is null)
+    {
+        <div class="small text-secondary">Lista nu a fost citită încă.</div>
+    }
+    else if (devices.Count == 0)
+    {
+        <div class="small text-secondary">Contul nu are dispozitive.</div>
+    }
+    else
+    {
+        <table class="table table-sm align-middle mb-1 small" style="max-width: 40rem;">
+            <thead><tr><th scope="col">Acasă</th><th scope="col">Nume</th><th scope="col">Model</th></tr></thead>
+            <tbody>
+                @foreach (var d in devices)
+                {
+                    var home = _s.GoveeHomeDevices.Contains(d.Device);
+                    <tr>
+                        <td>
+                            <input class="form-check-input" type="checkbox" checked="@home" disabled="@(!d.IsThermometer)"
+                                   @onchange="e => ToggleAsync(d, e.Value is true)" aria-label="@("Acasă: " + d.Name)" />
+                        </td>
+                        <td>@d.Name</td>
+                        <td>@d.Sku@(d.IsThermometer ? "" : " (fără temperatură)")</td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    }
+    <div class="form-text">
+        Doar termometrele bifate „acasă” sunt citite (la 10 min) și salvate; restul (ex. ale altor locuri din același cont) nu sunt atinse.
+        La @_s.GoveeHomeDevices.Count bifat(e) ≈ @GoveeApi.RequestsPerDay(_s.GoveeHomeDevices.Count).ToString("N0") cereri/zi din @GoveeApi.DailyRequestLimit.ToString("N0").
+        Debifarea (sau „Retrage” în listă) ascunde senzorul; istoricul rămâne.
+    </div>
+    @if (_error is not null) { <div class="text-danger small mt-1">@_error</div> }
+}
+
+@code {
+    [Parameter, EditorRequired] public IntegrationInfo Integration { get; set; } = default!;
+    [Parameter] public EventCallback OnChanged { get; set; }
+
+    private ClimateRuntimeSettings? _s;
+    private string? _error;
+
+    protected override async Task OnInitializedAsync()
+    {
+        Climate.Changed += OnClimateChanged;
+        await LoadAsync();
+    }
+
+    private void OnClimateChanged() => InvokeAsync(StateHasChanged);
+
+    private async Task LoadAsync() => _s = await ClimateSettings.GetAsync(CancellationToken.None);
+
+    private async Task ToggleAsync(GoveeDevice d, bool home)
+    {
+        _error = null;
+        try
+        {
+            await ClimateSettings.SetGoveeHomeAsync(d.Device, home, CancellationToken.None);
+            await LoadAsync();
+            Worker.Wake();
+            await OnChanged.InvokeAsync();
+        }
+        catch (Exception ex)
+        {
+            _error = ex.Message;
+        }
+    }
+
+    private void Refresh() => Worker.Wake(refreshGoveeList: true);
+
+    public void Dispose() => Climate.Changed -= OnClimateChanged;
+}

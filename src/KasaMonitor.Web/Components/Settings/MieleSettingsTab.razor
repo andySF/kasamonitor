@@ -1,0 +1,125 @@
+@using KasaMonitor.Workers
+@using KasaMonitor.Web.Ui
+@using KasaMonitor.Core.Miele
+@using KasaMonitor.Core.Devices
+@inject IMieleSettingsService MieleSettings
+@inject MieleAuthService MieleAuth
+@inject MieleStreamWorker MieleWorker
+@inject NavigationManager Nav
+@inherits SettingsTabBase
+
+@* /settings/miele: how the app talks to the Miele 3rd Party API (Client ID, the secret's state, the connection). The
+   secret comes from a mounted file and is never written to the database or shown. *@
+<IntegrationStatusLine Integration="@(Integrations.Get(IntegrationKeys.Miele)!)" />
+@if (_s is null)
+{
+    <p class="text-secondary"><span class="spinner-border spinner-border-sm me-2"></span>Se încarcă…</p>
+}
+else
+{
+    <div class="row g-3">
+        <div class="col-xl-7">
+            <div class="card h-100">
+                <div class="card-header fw-semibold"><i class="bi bi-water me-2"></i>Miele (mașină de spălat, uscător)</div>
+                <div class="card-body">
+                    <div class="mb-2">
+                        <label class="form-label" for="mClient">Client ID (portalul de dezvoltator Miele)</label>
+                        <input class="form-control" id="mClient" @bind="_clientId" autocomplete="off" spellcheck="false" />
+                    </div>
+                    <div class="mb-2 small">
+                        <span class="me-1">Secretul clientului:</span>
+                        @if (_s.HasSecret)
+                        {
+                            <span class="badge text-bg-success">încărcat</span>
+                            <span class="ms-1 text-secondary">•••••••• din @_s.SecretSource</span>
+                        }
+                        else
+                        {
+                            <span class="badge text-bg-warning">lipsă</span>
+                            <span class="ms-1 text-secondary">@_s.SecretProblem</span>
+                        }
+                    </div>
+                    <div class="mb-2 small">
+                        <span class="me-1">Token:</span>
+                        @if (_s.Token is { } t && _s.AuthError is null)
+                        {
+                            <span class="badge text-bg-success">conectat</span>
+                            <span class="ms-1 text-secondary">acces •••••••• valabil până la @t.ExpiresAtUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm"), reînnoire de la @t.RefreshDueUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm"); refresh @(string.IsNullOrEmpty(t.RefreshToken) ? "lipsă" : "••••••••")</span>
+                        }
+                        else
+                        {
+                            <span class="badge text-bg-secondary">neconectat</span>
+                            @if (_s.AuthError is { } err) { <span class="ms-1 text-danger">@err</span> }
+                        }
+                        <div class="mt-1">
+                            <a class="btn btn-outline-primary btn-sm @(_s.CanConnect ? "" : "disabled")" href="@MieleApi.ConnectPath" aria-disabled="@(!_s.CanConnect)"><i class="bi bi-box-arrow-in-right me-1"></i>@(_s.Token is null ? "Conectează Miele" : "Reconectează")</a>
+                            @if (_s.Token is not null)
+                            {
+                                <button class="btn btn-outline-secondary btn-sm ms-1" @onclick="DisconnectAsync"><i class="bi bi-x-circle me-1"></i>Deconectează</button>
+                            }
+                        </div>
+                    </div>
+                    <div class="form-text">
+                        Redirect URI: adresa la care e deschis KasaMonitor + <code>@MieleApi.CallbackPath</code> (acum <code>@CallbackExample</code>).
+                        Secretul nu se scrie în bază și nu se afișează: vine din fișierul montat în container
+                        (<code>KasaMonitor__MieleClientSecretFile</code>, implicit <code>@MieleApi.DefaultClientSecretFile</code>) sau din <code>KasaMonitor__MieleClientSecret</code>,
+                        citit la pornire. Doar citire (scope <code>@MieleApi.Scope</code>); un singur token activ, fără reautorizări automate.
+                        Aparatele (nume, priza legată, retragere) sunt pe pagina <a href="@DevicePages.Href(IntegrationKeys.Miele)">Dispozitive</a>; datele pe pagina <a href="/aparate">Aparate</a>.
+                    </div>
+                    <div class="d-flex align-items-center gap-3 mt-3">
+                        <button class="btn btn-primary" @onclick="SaveAsync"><i class="bi bi-save me-1"></i>Salvează „Miele”</button>
+                        @if (IsDirty) { <span class="text-warning-emphasis small"><i class="bi bi-pencil-square me-1"></i>modificări nesalvate</span> }
+                        @if (_saved) { <span class="text-success"><i class="bi bi-check-circle me-1"></i>Salvat.</span> }
+                        @if (_error is not null) { <span class="text-danger"><i class="bi bi-x-circle me-1"></i>@_error</span> }
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+}
+
+@code {
+    private MieleRuntimeSettings? _s;
+    private string? _loaded;
+    private string _clientId = "";
+    private bool _saved;
+    private string? _error;
+
+    public override bool IsDirty => _loaded is not null && _loaded != _clientId.Trim();
+
+    private string CallbackExample => Nav.BaseUri.TrimEnd('/') + MieleApi.CallbackPath;
+
+    protected override async Task OnInitializedAsync() => await LoadAsync();
+
+    private async Task LoadAsync()
+    {
+        _s = await MieleSettings.GetAsync(CancellationToken.None);
+        _clientId = _s.ClientId;
+        _loaded = _clientId.Trim();
+    }
+
+    private async Task SaveAsync()
+    {
+        _error = null;
+        try
+        {
+            await MieleSettings.SaveClientIdAsync(_clientId, CancellationToken.None);
+            MieleWorker.Wake();
+            await LoadAsync();
+            _saved = true;
+            StateHasChanged();
+            await Task.Delay(2000);
+            _saved = false;
+        }
+        catch (Exception ex)
+        {
+            _error = ex.Message;
+        }
+    }
+
+    private async Task DisconnectAsync()
+    {
+        await MieleAuth.LogoutAsync(CancellationToken.None);
+        await LoadAsync();
+    }
+}

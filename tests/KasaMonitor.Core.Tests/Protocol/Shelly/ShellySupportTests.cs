@@ -82,6 +82,19 @@ public class ShellySupportTests
         plug.Protocol.Should().Be(PlugProtocols.ShellyRpc);
     }
 
+    [Fact]
+    public void ClimateSensorWithoutMeter_IsNoPlugAtAll()
+    {
+        // R4 (0.10.0): a Shelly H&T Gen3 (temperature:0, humidity:0, no meter) is read by the climate worker; the plug
+        // discovery skips it instead of listing (and, with auto-add, storing) an unsupported plug.
+        var status = KasaMonitor.Core.Tests.Climate.ClimateFixtures.Json("shelly_htg3_status.json");
+        var info = ShellyDeviceInfo.Parse(KasaMonitor.Core.Tests.Climate.ClimateFixtures.Json("shelly_htg3_deviceinfo.json"));
+
+        ShellySupport.IsClimateSensor(status).Should().BeTrue();
+        ShellySupport.ToPlugs(Ip, info, status, null).Should().BeEmpty();
+        ShellySupport.IsClimateSensor(ShellyFixtures.Parse("""{"switch:0":{"id":0,"output":true}}""")).Should().BeFalse("no temperature: still listed as unsupported");
+    }
+
     [Theory]
     [InlineData("S3EM-002CXCEU", "EMG3", "Shelly EM Gen3 (EMG3)")]
     [InlineData("XYZ-1", "NewThing", "Shelly NewThing (NewThing)")]

@@ -55,9 +55,11 @@ public class ClimaPageTests : IClassFixture<ClimaFactory>
         var clima = await c.GetStringAsync("/clima");
         clima.Should().Contain("Baie").And.Contain("25,7").And.Contain("Min / medie / max").And.Contain("9,4").And.Contain("Open-Meteo");
 
-        var settings = await c.GetStringAsync("/settings");
-        settings.Should().Contain("Govee (termometre Wi-Fi)").And.Contain("încărcată").And.Contain("Climă: temperatura exterioară (Open-Meteo)")
-            .And.NotContain(ClimaFactory.FakeKey);
+        // R2: on the URL of each tab (a tab renders alone; the whole /settings no longer contains them all).
+        var govee = await c.GetStringAsync("/settings/govee");
+        govee.Should().Contain("Govee (termometre Wi-Fi)").And.Contain("încărcată").And.NotContain(ClimaFactory.FakeKey);
+        var meteo = await c.GetStringAsync("/settings/openmeteo");
+        meteo.Should().Contain("Temperatura exterioară (Open-Meteo)").And.NotContain(ClimaFactory.FakeKey);
         (await c.GetStringAsync("/integration")).Should().Contain("climate_temperature_celsius");
         // The prometheus registry is process-wide and the other factories of this assembly register their own (empty)
         // climate state, so only the family is checked here; the series themselves are covered by ClimateMetricsTests.

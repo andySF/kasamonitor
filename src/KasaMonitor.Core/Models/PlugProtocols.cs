@@ -17,4 +17,11 @@ public static class PlugProtocols
 
     /// <summary>A protocol the application cannot speak (TPAP, Kasa-on-KLAP, ...). The plug is listed but never polled.</summary>
     public const string Unsupported = "unsupported";
+
+    /// <summary>The TP-Link protocols (Kasa legacy, Tapo KLAP / AES) and the unsupported placeholders of the TP-Link discovery.</summary>
+    public static bool IsTpLink(string protocol) => protocol is Legacy or Klap or Aes or Unsupported;
+
+    /// <summary>The integration a plug belongs to (<see cref="Devices.IntegrationKeys"/>): Shelly RPC = shelly, the rest = tplink.</summary>
+    public static string Integration(string protocol) =>
+        protocol == ShellyRpc ? Devices.IntegrationKeys.Shelly : Devices.IntegrationKeys.TpLink;
 }

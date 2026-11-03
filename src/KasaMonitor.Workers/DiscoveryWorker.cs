@@ -31,6 +31,8 @@ public sealed class DiscoveryWorker : BackgroundService
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         DateTimeOffset? lastRun = null;
+        try { await _discovery.ArchiveShellyClimatePlugsOnceAsync(stoppingToken); }
+        catch (Exception ex) when (!stoppingToken.IsCancellationRequested) { _log.LogError(ex, "Archiving the Shelly climate sensors stored as plugs failed"); }
         while (!stoppingToken.IsCancellationRequested)
         {
             try

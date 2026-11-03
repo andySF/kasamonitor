@@ -50,10 +50,15 @@ public class HomePageTests : IClassFixture<HomeFactory>
         html.Should().Contain("data-theme-toggle").And.Contain("kasa-theme").And.Contain("css/home.css");
         html.Should().NotContain("id=\"h-clima\"", "without a source the „Climă” card is left out, no placeholder");
 
-        // Menu order, in Romanian: Acasă, Prize, Contor, Centrală, Aparate, Climă, Consumatori, Istoric, Dispozitive, Setări, Integrare.
-        var nav = new[] { ">Acasă</a>", ">Prize</a>", ">Contor</a>", ">Centrală</a>", ">Aparate</a>", ">Climă</a>", ">Consumatori</a>", ">Istoric</a>", ">Dispozitive</a>", ">Setări</a>", ">Integrare</a>" };
+        // Menu order, in Romanian: Acasă, Prize, Contor, Centrală, Aparate, Climă, Consumatori, Istoric, Dispozitive, Setări
+        // (10 entries: „Integrare” is reached from Setări → Export since 0.10.0).
+        var nav = new[] { ">Acasă</a>", ">Prize</a>", ">Contor</a>", ">Centrală</a>", ">Aparate</a>", ">Climă</a>", ">Consumatori</a>", ">Istoric</a>", ">Dispozitive</a>", ">Setări</a>" };
         var positions = nav.Select(n => html.IndexOf(n, StringComparison.Ordinal)).ToList();
         positions.Should().OnlyContain(p => p > 0).And.BeInAscendingOrder();
+        html.Should().NotContain(">Integrare</a>");
+        var menu = html[html.IndexOf("<nav class=\"navbar", StringComparison.Ordinal)..];
+        menu = menu[..menu.IndexOf("</nav>", StringComparison.Ordinal)];
+        System.Text.RegularExpressions.Regex.Matches(menu, "class=\"nav-link").Count.Should().Be(10, "the top menu has 10 entries");
     }
 
     [Fact]
@@ -67,6 +72,9 @@ public class HomePageTests : IClassFixture<HomeFactory>
         (System.Net.WebUtility.HtmlDecode(await c.GetStringAsync("/plugs"))).Should().Contain("<title>KasaMonitor — Dispozitive</title>");
         (System.Net.WebUtility.HtmlDecode(await c.GetStringAsync("/history"))).Should().Contain("<title>KasaMonitor — Istoric</title>");
         (System.Net.WebUtility.HtmlDecode(await c.GetStringAsync("/settings"))).Should().Contain("<title>KasaMonitor — Setări</title>");
+        // Without a Client ID /centrala shows how to connect, with a link to its settings tab (the connection's single owner).
+        (System.Net.WebUtility.HtmlDecode(await c.GetStringAsync("/centrala"))).Should().Contain("href=\"/settings/viessmann\"")
+            .And.NotContain("href=\"/centrala/connect\"");
     }
 
     [Fact]

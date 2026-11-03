@@ -47,7 +47,7 @@
                 }
             </div>
         </div>
-        <div class="foot-note">La tarifele actuale din <a href="/settings">Setări</a>: o scumpire recalculează și trecutul.@(kind == ReportGranularity.Day ? " Gazul e pus pe ora locală în care a fost consumat; ora 00:00–01:00 aparține zilei precedente a centralei (CET)." : "")</div>
+        <div class="foot-note">La tarifele actuale din <a href="@KasaMonitor.Web.Ui.SettingsTabs.Href(KasaMonitor.Web.Ui.SettingsTabs.App)">Setări → Aplicație</a>: o scumpire recalculează și trecutul.@(kind == ReportGranularity.Day ? " Gazul e pus pe ora locală în care a fost consumat; ora 00:00–01:00 aparține zilei precedente a centralei (CET)." : "")</div>
         <div class="hist-grid">
             <div>
                 <HistoryBars Labels="@(buckets.Select(b => ReportFormat.BucketLabel(b, kind)).ToList())" Titles="@(buckets.Select(b => ReportFormat.BucketRow(b, kind)).ToList())"

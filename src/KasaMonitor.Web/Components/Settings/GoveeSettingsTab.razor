@@ -1,0 +1,76 @@
+@using KasaMonitor.Workers
+@using KasaMonitor.Web.Ui
+@using KasaMonitor.Core.Climate
+@using KasaMonitor.Core.Devices
+@inject IClimateSettingsService ClimateSettings
+@inject ClimateState Climate
+@inherits SettingsTabBase
+@implements IDisposable
+
+@* /settings/govee: the key's state (never its value) and the requests today against the account's limit. The account's
+   thermometers with the „acasă” tick moved to /dispozitive → Adaugă → Govee (0.10.0). *@
+<IntegrationStatusLine Integration="@(Integrations.Get(IntegrationKeys.Govee)!)" />
+@if (_s is null)
+{
+    <p class="text-secondary"><span class="spinner-border spinner-border-sm me-2"></span>Se încarcă…</p>
+}
+else
+{
+    <div class="row g-3">
+        <div class="col-xl-7">
+            <div class="card h-100">
+                <div class="card-header fw-semibold"><i class="bi bi-thermometer-half me-2"></i>Govee (termometre Wi-Fi)</div>
+                <div class="card-body">
+                    <div class="mb-2 small">
+                        <span class="me-1">Cheia API:</span>
+                        @if (_s.HasGoveeKey)
+                        {
+                            <span class="badge text-bg-success">încărcată</span>
+                            <span class="ms-1 text-secondary">•••••••• din @_s.GoveeKeySource</span>
+                        }
+                        else
+                        {
+                            <span class="badge text-bg-warning">lipsă</span>
+                            <span class="ms-1 text-secondary">@_s.GoveeKeyProblem</span>
+                        }
+                    </div>
+                    @if (_s.HasGoveeKey)
+                    {
+                        <div class="small mb-2">
+                            Termometre adăugate („acasă”): <b>@_s.GoveeHomeDevices.Count</b>
+                            @if (Climate.GoveeDevices is { } devices) { <span class="text-secondary">din @devices.Count(d => d.IsThermometer) în cont</span> }
+                            · cereri azi: <b>@Climate.GoveeCalls.Today.ToString("N0")</b> / @GoveeApi.DailyRequestLimit.ToString("N0")
+                            (≈ @GoveeApi.RequestsPerDay(_s.GoveeHomeDevices.Count).ToString("N0")/zi)
+                        </div>
+                        <a class="btn btn-outline-primary btn-sm mb-2" href="@DevicePages.Add(IntegrationKeys.Govee)"><i class="bi bi-plus-lg me-1"></i>Alege termometrele: Dispozitive → Adaugă → Govee</a>
+                    }
+                    <div class="form-text">
+                        Lista din cont și bifa „acasă” (ce termometre se citesc, la 10 min) sunt pe pagina Dispozitive, ca orice adăugare; restul nu sunt atinse.
+                        Cheia nu se scrie în bază și nu se afișează: vine din fișierul montat în container
+                        (<code>GOVEE_API_KEY_FILE</code> / <code>KasaMonitor__GoveeApiKeyFile</code>, implicit <code>@GoveeApi.DefaultKeyFile</code>)
+                        sau din <code>KasaMonitor__GoveeApiKey</code>, citită la pornire.
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+}
+
+@code {
+    private ClimateRuntimeSettings? _s;
+
+    /// <summary>Nothing to save on this tab.</summary>
+    public override bool IsDirty => false;
+
+    protected override async Task OnInitializedAsync()
+    {
+        Climate.Changed += OnChanged;
+        await LoadAsync();
+    }
+
+    private void OnChanged() => InvokeAsync(StateHasChanged);
+
+    private async Task LoadAsync() => _s = await ClimateSettings.GetAsync(CancellationToken.None);
+
+    public void Dispose() => Climate.Changed -= OnChanged;
+}

@@ -50,7 +50,8 @@ public static class ShellySupport
 
     /// <summary>
     /// Maps one device to its plugs. A device without measuring components, or one that could not be read, becomes a
-    /// single unsupported channel-0 entry so that it is listed with the reason.
+    /// single unsupported channel-0 entry so that it is listed with the reason, except a climate sensor (no meter but
+    /// <c>temperature:N</c>: H&amp;T Gen3, Plus Add-on), which is no plug at all (0.10.0): the climate worker reads it.
     /// </summary>
     /// <param name="status">Answer of <c>Shelly.GetStatus</c>.</param>
     /// <param name="config">Answer of <c>Shelly.GetConfig</c> (names); optional.</param>
@@ -58,7 +59,7 @@ public static class ShellySupport
     {
         var readings = ShellyStatusParser.Parse(status);
         if (readings.Channels.Count == 0)
-            return new[] { Unsupported(ip, info, NoMeterReason) };
+            return IsClimateSensor(status) ? Array.Empty<DiscoveredPlug>() : new[] { Unsupported(ip, info, NoMeterReason) };
 
         var componentType = ComponentType(readings.Kind);
         var rssi = ShellyStatusParser.Rssi(status);
@@ -74,9 +75,13 @@ public static class ShellySupport
             Role: role)).ToList();
     }
 
+    /// <summary>A device with no measuring component but with <c>temperature:N</c>: a climate sensor, skipped by the plug discovery.</summary>
+    public static bool IsClimateSensor(JsonElement status) =>
+        ShellyStatusParser.Parse(status).Channels.Count == 0 && ShellyClimateParser.Parse(status).Channels.Count > 0;
+
     /// <summary>
     /// Role of a newly found channel: meter channels (<c>em1</c>, <c>em</c>) are <see cref="PlugRole.SubMeter"/> until the
-    /// user picks the main meter in /plugs; <c>switch</c>/<c>pm1</c> channels are plugs.
+    /// user picks the main meter in /dispozitive; <c>switch</c>/<c>pm1</c> channels are plugs.
     /// </summary>
     public static PlugRole DefaultRole(ShellyMeterKind kind) =>
         kind is ShellyMeterKind.Em1 or ShellyMeterKind.Em ? PlugRole.SubMeter : PlugRole.Plug;

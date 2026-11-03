@@ -5,7 +5,6 @@
 @using KasaMonitor.Web.Ui
 @inject IServiceScopeFactory ScopeFactory
 @inject ClimateState Climate
-@inject ClimateRecorder Recorder
 @implements IDisposable
 
 <PageTitle>KasaMonitor — Climă</PageTitle>
@@ -25,10 +24,10 @@
     <div class="alert alert-secondary">
         <p class="mb-2"><b>Niciun senzor încă.</b> Senzorii apar singuri când sursa lor dă prima valoare:</p>
         <ul class="mb-0 small">
-            <li>centrala Viessmann: termostatul de cameră, turul și apa caldă, din citirile centralei (<a href="/centrala">Centrală</a>);</li>
-            <li>Govee: bifează termometrele „acasă” în <a href="/settings">Setări → Govee</a> (cu cheia API montată);</li>
+            <li>centrala Viessmann: termostatul de cameră, din citirile centralei (<a href="/centrala">Centrală</a>);</li>
+            <li>Govee: bifează termometrele „acasă” în <a href="@DevicePages.Add(KasaMonitor.Core.Devices.IntegrationKeys.Govee)">Dispozitive → Adaugă → Govee</a> (cu cheia API montată, <a href="@SettingsTabs.Href(KasaMonitor.Core.Devices.IntegrationKeys.Govee)">Setări → Govee</a>);</li>
             <li>Shelly H&amp;T Gen3 / Plus Add-on: găsite prin mDNS în rețea (un H&amp;T pe baterii apare când se trezește);</li>
-            <li>afară: latitudinea și longitudinea în <a href="/settings">Setări → Climă</a> (Open-Meteo).</li>
+            <li>afară: latitudinea și longitudinea în <a href="@SettingsTabs.Href(KasaMonitor.Core.Devices.IntegrationKeys.OpenMeteo)">Setări → Open-Meteo</a>.</li>
         </ul>
     </div>
 }
@@ -41,57 +40,29 @@ else
             <div class="col">
                 <div class="card h-100 @(s.Sensor.IsOutdoor ? "border-info" : "")">
                     <div class="card-body">
-                        @if (_editId == s.Sensor.Id)
-                        {
-                            <div class="mb-2">
-                                <label class="form-label small mb-0" for="eName">Nume</label>
-                                <input class="form-control form-control-sm" id="eName" @bind="_editName" />
+                        @* R6 (0.10.0): name, room and „afară” are edited on /dispozitive (the row of the sensor). *@
+                        <div class="d-flex align-items-start gap-2">
+                            <div class="me-auto">
+                                <div class="fw-semibold">@s.Sensor.Name</div>
+                                <div class="small text-secondary">@(s.Sensor.Room.Length > 0 ? s.Sensor.Room : "fără cameră")@(s.Sensor.IsOutdoor ? " · afară" : "")</div>
                             </div>
-                            <div class="mb-2">
-                                <label class="form-label small mb-0" for="eRoom">Cameră</label>
-                                <input class="form-control form-control-sm" id="eRoom" @bind="_editRoom" list="climaRooms" />
-                            </div>
-                            <div class="form-check mb-2">
-                                <input class="form-check-input" type="checkbox" id="eOut" @bind="_editOutdoor" />
-                                <label class="form-check-label small" for="eOut">afară (temperatura exterioară)</label>
-                            </div>
-                            <div class="d-flex gap-2">
-                                <button class="btn btn-primary btn-sm" @onclick="SaveEditAsync"><i class="bi bi-save me-1"></i>Salvează</button>
-                                <button class="btn btn-outline-secondary btn-sm" @onclick="CancelEdit">Anulează</button>
-                            </div>
-                            @if (_editError is not null) { <div class="text-danger small mt-1">@_editError</div> }
-                        }
-                        else
-                        {
-                            <div class="d-flex align-items-start gap-2">
-                                <div class="me-auto">
-                                    <div class="fw-semibold">@s.Sensor.Name</div>
-                                    <div class="small text-secondary">@(s.Sensor.Room.Length > 0 ? s.Sensor.Room : "fără cameră")@(s.Sensor.IsOutdoor ? " · afară" : "")</div>
-                                </div>
-                                <span class="badge text-bg-light border" title="Sursa">@ClimateSources.DisplayName(s.Sensor.Source)</span>
-                                <button class="btn btn-link btn-sm p-0" title="Editează numele, camera, „afară”" @onclick="() => StartEdit(s)"><i class="bi bi-pencil"></i></button>
-                            </div>
-                            <div class="d-flex align-items-baseline gap-3 mt-2">
-                                <span class="display-6 fw-semibold">@(s.TemperatureC is { } t ? HeatingFormat.Number(t, 1) : "—")<span class="fs-5"> °C</span></span>
-                                @if (s.HumidityPercent is { } h) { <span class="fs-5 text-secondary" title="Umiditate relativă"><i class="bi bi-droplet me-1"></i>@HeatingFormat.Number(h, 0) %</span> }
-                            </div>
-                            <div class="d-flex flex-wrap align-items-center gap-2 small mt-2">
-                                <span class="badge @FreshnessBadge(level)" title="@FreshnessTitle(s)">@(s.ReadUtc is { } r ? UiFormat.RelativeRo(r, _now) : "necitit")</span>
-                                @if (!s.SourceOnline) { <span class="badge text-bg-danger">offline la sursă</span> }
-                                @if (s.BatteryPercent is { } b) { <span class="@(b <= 20 ? "text-danger" : "text-secondary")" title="Baterie"><i class="bi @BatteryIcon(b) me-1"></i>@b %</span> }
-                            </div>
-                        }
+                            <span class="badge text-bg-light border" title="Sursa">@ClimateSources.DisplayName(s.Sensor.Source)</span>
+                            <a class="btn btn-link btn-sm p-0" href="@DevicePages.Row(DeviceRow.ClimateKey(s.Sensor.Id))" title="Editează numele, camera, „afară” (Dispozitive)"><i class="bi bi-pencil"></i><span class="visually-hidden">Editează @s.Sensor.Name</span></a>
+                        </div>
+                        <div class="d-flex align-items-baseline gap-3 mt-2">
+                            <span class="display-6 fw-semibold">@(s.TemperatureC is { } t ? HeatingFormat.Number(t, 1) : "—")<span class="fs-5"> °C</span></span>
+                            @if (s.HumidityPercent is { } h) { <span class="fs-5 text-secondary" title="Umiditate relativă"><i class="bi bi-droplet me-1"></i>@HeatingFormat.Number(h, 0) %</span> }
+                        </div>
+                        <div class="d-flex flex-wrap align-items-center gap-2 small mt-2">
+                            <span class="badge @FreshnessBadge(level)" title="@FreshnessTitle(s)">@(s.ReadUtc is { } r ? UiFormat.RelativeRo(r, _now) : "necitit")</span>
+                            @if (!s.SourceOnline) { <span class="badge text-bg-danger">offline la sursă</span> }
+                            @if (s.BatteryPercent is { } b) { <span class="@(b <= 20 ? "text-danger" : "text-secondary")" title="Baterie"><i class="bi @BatteryIcon(b) me-1"></i>@b %</span> }
+                        </div>
                     </div>
                 </div>
             </div>
         }
     </div>
-    <datalist id="climaRooms">
-        @foreach (var room in _sensors.Select(x => x.Sensor.Room).Where(x => x.Length > 0).Distinct(StringComparer.CurrentCultureIgnoreCase))
-        {
-            <option value="@room"></option>
-        }
-    </datalist>
 
     <div class="card mb-3">
         <div class="card-header d-flex flex-wrap align-items-center gap-2">
@@ -206,11 +177,6 @@ else
     private ApexChartOptions<ChartPoint> _humOptions = new();
     private System.Threading.Timer? _timer;
 
-    private Guid? _editId;
-    private string _editName = "";
-    private string _editRoom = "";
-    private bool _editOutdoor;
-    private string? _editError;
 
     protected override async Task OnInitializedAsync()
     {
@@ -299,38 +265,6 @@ else
             Y = new TooltipY { Formatter = "function(v) { return v == null ? '' : v.toFixed(1) + ' " + unit + "'; }" },
         },
     };
-
-    private void StartEdit(ClimateSensorLive s)
-    {
-        _editId = s.Sensor.Id;
-        _editName = s.Sensor.Name;
-        _editRoom = s.Sensor.Room;
-        _editOutdoor = s.Sensor.IsOutdoor;
-        _editError = null;
-    }
-
-    private void CancelEdit()
-    {
-        _editId = null;
-        _editError = null;
-    }
-
-    private async Task SaveEditAsync()
-    {
-        if (_editId is not { } id) return;
-        try
-        {
-            await Recorder.UpdateSensorAsync(id, _editName, _editRoom, _editOutdoor, CancellationToken.None);
-            _editId = null;
-            _editError = null;
-            Refresh();
-            await LoadChartAsync();
-        }
-        catch (Exception ex) when (ex is ArgumentException or KeyNotFoundException)
-        {
-            _editError = ex.Message;
-        }
-    }
 
     private string FreshnessTitle(ClimateSensorLive s)
     {

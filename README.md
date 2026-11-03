@@ -7,7 +7,7 @@ plugs and energy meters (e.g. Shelly EM Gen3, local JSON-RPC; the only write is 
 with SQLite, a web UI on port 8910 and a Prometheus `/metrics` endpoint. An optional Prometheus + Grafana stack
 with a ready-made dashboard and alert rules is included.
 
-Version: **0.9.4** (`Directory.Build.props`). Docker image: `duobit/kasamonitor`.
+Version: **0.10.0** (`Directory.Build.props`). Docker image: `duobit/kasamonitor`.
 
 ## Quick start
 
@@ -19,7 +19,7 @@ docker compose -f deploy/docker-compose.yml up -d
 ```
 
 Open `http://<host>:8910/`. Plugs on the same LAN are discovered within a few seconds; for Tapo plugs enter your
-TP-Link (Tapo app) account in `/settings` and press **Scanează acum** on `/plugs`.
+TP-Link (Tapo app) account in `/settings/tplink` and press **Adaugă** → TP-Link → **Scanează acum** on `/dispozitive`.
 
 `network_mode: host` is required: discovery uses UDP broadcasts (9999 for Kasa, 20002 for Tapo) and mDNS multicast
 (224.0.0.251:5353 for Shelly) that do not leave a Docker bridge network. The database and the key ring live in `deploy/data/` (volume `./data:/data`).
@@ -32,24 +32,27 @@ TP-Link (Tapo app) account in `/settings` and press **Scanează acum** on `/plug
   with a bill estimate, the boiler, Miele and temperatures. Light and dark theme. See [Home page](#home-page-acasă).
 - **Plugs page „Prize”** (`/prize`, the former Dashboard): one card per plug with power, voltage, today / month,
   device details and the relay.
+- **Devices** (`/dispozitive`, menu „Dispozitive”): every device of every vendor in one table with filters, the state of
+  each integration and „+ Adaugă”. See [Devices](#devices-dispozitive).
 - **Automatic discovery** every N minutes: UDP broadcast on 9999 (Kasa legacy) and the TP-Link discovery probe
-  on UDP 20002 (Tapo / newer Kasa). New plugs are added automatically (setting "Adaugă automat").
-- **Scan now** (`/plugs`, "Scanează acum"): runs discovery immediately and lists each plug as new / added / known /
+  on UDP 20002 (Tapo / newer Kasa). New plugs are added automatically (setting "Adaugă automat", Setări → Aplicație).
+- **Scan now** (`/dispozitive` → Adaugă, "Scanează acum"): runs discovery immediately and lists each plug as new / added / known /
   unsupported; with auto-add off, new plugs are added with one click.
-- **Add by IP** (`/plugs`): tries legacy TCP 9999, then the UDP 20002 probe (+ KLAP/AES), then KLAP and AES
+- **Add by IP** (`/dispozitive` → Adaugă): tries legacy TCP 9999, then the UDP 20002 probe (+ KLAP/AES), then KLAP and AES
   directly (with TP-Link credentials), then Shelly (`GET /rpc/Shelly.GetDeviceInfo`). Useful for devices on another
   subnet, where broadcasts and mDNS do not reach.
-- **Withdraw / restore** (`/plugs`, "Retrage" / "Readu"): a withdrawn plug is no longer polled and disappears from
+- **Withdraw / restore** (`/dispozitive`, "Retrage" / "Readu"): a withdrawn plug is no longer polled and disappears from
   `/metrics` and the dashboard immediately; "Arată retrase" shows it again in the list.
 - **Unsupported plugs** (they answer discovery but cannot be queried) are listed with IP/MAC and the reason:
   missing TP-Link credentials, authentication failed, Kasa firmware on KLAP (not implemented), or an unknown
   protocol such as TPAP. For TPAP the UI shows the usual fix: in the Tapo app, device settings → *Third-Party
   Compatibility* off and on again, then restart the plug; it normally comes back on KLAP.
 
-- **Device details** (`/prize`, "Details" on a plug card): settings read from the plug on demand (cached 60 s) —
-  relay, uptime, default state after power loss, LED, auto-off / countdown, power protection, Wi-Fi signal, firmware,
-  device time, cloud, schedules. Read-only; see `docs/device-api-capabilities.md` for everything the local APIs offer.
-- **Roles** (`/plugs`): every channel is a *plug* (counts in the totals), the *main meter* of the house (one per
+- **Device details** (`/dispozitive`, the plug's row; „Detalii” on a `/prize` card links there): settings read from the
+  plug on demand (cached 60 s) — relay, uptime, default state after power loss, LED, auto-off / countdown, power
+  protection, Wi-Fi signal, firmware, device time, cloud, schedules. Read-only; see `docs/device-api-capabilities.md`
+  for everything the local APIs offer.
+- **Roles** (`/dispozitive`, the plug's row): every channel is a *plug* (counts in the totals), the *main meter* of the house (one per
   installation) or a *sub-meter*. See [Roles, live stream, Contor page, relay](#roles-live-stream-contor-page-relay).
 - **Live stream**: the main meter every second, plugs (Shelly, Kasa, Tapo) every 1–10 s (adaptive), raw rows only on
   change; minute aggregates from every reading.
@@ -73,7 +76,7 @@ TP-Link (Tapo app) account in `/settings` and press **Scanează acum** on `/plug
   in the address) for electricity, gas and boiler, Miele, detected consumers, climate (with heating degree days and the
   energy signature), costs and events; Δ at the same share of the previous period, drill-down, CSV per section; and
   „Rapoarte” on `/centrala` (gas, boiler electricity, heat produced). See [History](#history-history-istoric).
-- **Version in the menu**: „v0.9.4” at the right of the navigation bar; the tooltip shows the commit and the build time.
+- **Version in the menu**: „v0.10.0” at the right of the navigation bar; the tooltip shows the commit and the build time.
 - **Browser errors in the server log**: JavaScript errors and the Blazor error banner are reported to
   `POST /api/client-error` and logged at Warning (category `KasaMonitor.ClientErrors`), so `docker logs` shows them.
 - **HTTP API for the appliance detection** (`/api/nilm/*`, LAN only): list, sheet, label, merge, add to, hide, regroup,
@@ -81,56 +84,93 @@ TP-Link (Tapo app) account in `/settings` and press **Scanează acum** on `/plug
 
 The web UI uses Bootstrap 5 and Bootstrap Icons, served locally (no CDN). Texts on Plugs/Settings/Integration are in Romanian.
 
+## Devices (`/dispozitive`)
+
+One table of every device of every integration (since 0.10.0; `/plugs` redirects here with 301): plugs and meter
+channels (TP-Link, Shelly), the boiler (Viessmann), the Miele appliances, the climate sensors (Govee, Shelly H&T / Plus
+Add-on, the boiler's room thermostat) and the outdoor weather (Open-Meteo). Columns: name, vendor, category, model,
+room, state (*Online* / *Întârziat* / *Offline* / *Nesuportat* / *Retras*), last reading (the last real value: for a
+plug its last poll, not the last discovery), actions (details, data page, the vendor's settings tab, withdraw /
+restore). Filters by category, vendor, state and „Arată retrase”, kept in the address (`?cat=`, `?firma=`, `?stare=`,
+`?retrase=1`); `?d=<kind>:<id>` opens one row (the ✎ links of `/clima`, `/aparate`, `/prize`).
+
+- **Expanded row = the only place a device is configured**: plug / meter (alias, role, „flux 1 s”, appliance learning,
+  „un singur aparat pe priză”, relay, the settings read from the device), climate sensor (name, room, „afară”), Miele
+  appliance (alias, the plug that feeds it), boiler (what was found in the ViCare account). The data pages keep their
+  data and link the row.
+- **Withdraw / restore** is the same for every kind and calls each owner: plug → no longer polled, gone from
+  `/metrics`; Miele → hidden; boiler → no API calls (`HeatingDevices.Enabled`); climate sensor → hidden in Climă and
+  not stored (a Govee thermometer through its „acasă” tick). History stays.
+- **State of the integrations**: one chip per vendor above the table (OK / Atenție / Eroare / Oprit / Neconfigurat,
+  with a short reason) linking its settings tab. The online rules stay those of each integration (and of their
+  `*_online` metrics); the page only maps them to one state. No table of its own: a projection of `Plugs`,
+  `MieleDevices`, `HeatingDevices` and `ClimateSensors`.
+- **„+ Adaugă”** per integration: TP-Link and Shelly = scan now / add by IP; Viessmann and Miele = connect the account
+  (the existing OAuth endpoints; without a Client ID, a link to the settings tab); Govee = the account's thermometers
+  with the „acasă” tick (moved from the settings); Open-Meteo = the coordinates in its tab. **„Descoperite”** lists what
+  was found but not added (the last scan, the Govee thermometers not ticked), each with „Adaugă”.
+- A Shelly without a meter but with `temperature:N` (H&T Gen3, Plus Add-on) is a climate sensor, not a plug: the plug
+  discovery skips it, and the rows an earlier auto-add stored in `Plugs` were archived once at the first start of
+  0.10.0 (logged; a row brought back stays back).
+
 ## Settings
 
-Discovery settings and the TP-Link account are edited in `/settings`, stored in the SQLite `Settings` table and
-applied without a restart. Environment variables are **initial values only**: they are used while the key has
-not been saved from `/settings`.
+`/settings` has one tab per address (`/settings/<tab>`, deep links): **Aplicație** (`aplicatie`: tariffs for electricity
+and gas, LAN discovery, live stream, data retention, appliance detection, degree days, Grafana; the poll interval is shown
+read-only, it comes from the configuration), **Export** (`export`: Prometheus remote write, and the link to the
+`/integration` page, which left the top menu), then one tab per integration of the registry (`Ui/Integrations.cs`):
+**TP-Link (Kasa, Tapo)** (`tplink`), **Shelly**, **Viessmann**, **Miele**, **Govee**, **Open-Meteo** (`openmeteo`). An
+integration's tab starts with its state (OK / Atenție / Eroare / Oprit / Neconfigurat, last reading, requests today) and
+holds only how the app talks to that vendor (account, key, intervals, API budget); what is done with each device
+(name, room, role, links, withdraw) is on the devices page. Each tab has its own „Salvează” and writes only its own keys
+(the other tabs' values are kept even if they were changed meanwhile); leaving a tab with unsaved changes asks first.
+Values are stored in the SQLite `Settings` table and applied without a restart. Environment variables are **initial
+values only**: they are used while the key has not been saved from `/settings`.
 
-| Setting (`/settings`) | Environment variable (initial value) | Default | Notes |
-|---|---|---|---|
-| Automatic discovery | `KasaMonitor__AutoDiscoveryEnabled` | `true` | |
-| Discovery interval (minutes) | `KasaMonitor__AutoDiscoveryIntervalMinutes` | `5` | 1–1440 |
-| Broadcast networks | `KasaMonitor__BroadcastNetworks` | empty → `255.255.255.255` | comma-separated IPv4, e.g. `192.168.1.255` |
-| Auto-add discovered plugs | `KasaMonitor__AutoAddDiscoveredPlugs` | `true` | |
-| TP-Link user | `KasaMonitor__TapoUsername` | — | Tapo app account e-mail |
-| TP-Link password | `KasaMonitor__TapoPassword` | — | stored encrypted (ASP.NET DataProtection), shown masked; used for KLAP and AES |
-| Tariff per kWh | `KasaMonitor__TariffRonPerKwh` | `1.30` | web UI cost; read at startup |
-| Grafana (link) | `KasaMonitor__GrafanaUrl` | — | optional; address of a Grafana dashboard linked from the footer of the home page (`http`/`https`); empty = no link |
-| Poll interval (s) | `KasaMonitor__PollIntervalSeconds` | `10` | read at startup |
-| Shelly discovery | `KasaMonitor__ShellyDiscoveryEnabled` | `true` | mDNS `_shelly._tcp.local` + the probe hosts below |
-| Shelly password | `KasaMonitor__ShellyPassword` | — | optional; admin password of Shelly devices with authentication on (digest auth, user `admin`); stored encrypted like the TP-Link password |
-| Shelly probe hosts | `KasaMonitor__ShellyProbeHosts` | — | optional; comma-separated IPs, ranges (`192.168.1.10-20`) or CIDR (`/22`–`/32`, max. 1024 addresses), each probed with `Shelly.GetDeviceInfo` (1 s) on every discovery |
-| Live stream | `KasaMonitor__LiveStreamEnabled` | `true` | stream of the channels ticked „flux 1 s” on `/plugs` |
-| Live stream base interval (s) | `KasaMonitor__LiveStreamIntervalSeconds` | `1` | minimum 1; the main meter's interval, the plugs' fastest (they slow down to 10 s when quiet) |
-| Keep raw live samples (days) | `KasaMonitor__LiveRawRetentionDays` | `30` | `0` = unlimited; the minute aggregates are never deleted; a smaller value asks for confirmation |
-| Allow relay control | `KasaMonitor__AllowRelayControl` | `true` | shows the Shelly relay switch (`Switch.Set`); off = hidden and refused. No authentication in KasaMonitor: LAN only |
-| Burst trigger (W) | `KasaMonitor__LiveBurstTriggerW` | `50` | jump of the main meter between two readings that sends every plug back to 1 s for 60 s |
-| Remote write | `KasaMonitor__RemoteWriteEnabled` | `false` | Prometheus remote write of the live samples (`kasa_live_*`) |
-| Remote write URL | `KasaMonitor__RemoteWriteUrl` | — | e.g. `http://192.168.1.10:9090/api/v1/write` |
-| Remote write user / password | `KasaMonitor__RemoteWriteUser`, `KasaMonitor__RemoteWritePassword` | — | optional basic auth; stored encrypted |
-| Appliance detection | `KasaMonitor__NilmEnabled` | `true` | events, signatures and runs from the main meter (needs a main meter with the live stream) |
-| Event threshold (W) | `KasaMonitor__MinEventDeltaW` | `30` | 5–10000; smallest steady-state step of the house power recorded as an event |
-| Re-clustering window (days) | `KasaMonitor__ClusterWindowDays` | `30` | 1–365; events grouped again every night at 03:30 |
-| ML model | `KasaMonitor__MlEnabled` | `true` | nightly ML.NET classifier over the labelled events; saved as `<db dir>/nilm-model.zip` |
-| Keep raw readings (months) | `KasaMonitor__ReadingsRetentionMonths` | `0` = unlimited | raw 10-second readings only; daily history and minute aggregates are never deleted. Saving a value that would delete existing readings asks for confirmation with the exact row count |
-| Gas boiler | `KasaMonitor__HeatingEnabled` | `true` | reads the Viessmann boiler once the ViCare account is connected (`/centrala`) |
-| Viessmann Client ID | `KasaMonitor__ViessmannClientId` | — | client of the Viessmann developer portal; the OAuth tokens are never configured, they come from „Conectează ViCare” and are stored encrypted |
-| Boiler poll interval (s) | `KasaMonitor__ViessmannPollIntervalSeconds` | `120` | minimum 60; one API call per poll (120 s = 720 of the 1450 daily calls) |
-| Gas price (RON / kWh) | `KasaMonitor__GasPricePerKwh` | `0.31` | cost = m³ × kWh/m³ × price |
-| Gas calorific factor (kWh / m³) | `KasaMonitor__GasKwhPerM3` | `10.55` | converts the boiler's m³ to kWh |
-| Gas unit fallback | `KasaMonitor__GasUnit` | `m3` | `m3` or `kWh`; only used when the API sends a gas value without `unit` |
-| Keep boiler readings (days) | `KasaMonitor__HeatingReadingsRetentionDays` | `0` = unlimited | `HeatingReadings` older than this are deleted once a day; daily gas history is never deleted |
-| Miele Client ID | `KasaMonitor__MieleClientId` | — | client of developer.miele.com; the OAuth tokens come from „Conectează Miele” (`/aparate`) and are stored encrypted |
-| — (Miele client secret file) | `KasaMonitor__MieleClientSecretFile` | `/run/secrets/miele-client.secret` | file with the client secret, read once at startup; never stored in the database, shown or logged ([Miele appliances](#miele-appliances)) |
-| — (Miele client secret) | `KasaMonitor__MieleClientSecret` | — | alternative to the file (wins when set); prefer the file |
-| Outdoor latitude / longitude | `KasaMonitor__ClimateLatitude`, `KasaMonitor__ClimateLongitude` | — (off) | location for the outdoor temperature of Open-Meteo (`/settings` → Climă); both empty = no request |
-| — (Govee API key file) | `GOVEE_API_KEY_FILE` or `KasaMonitor__GoveeApiKeyFile` | `/run/secrets/govee-api.key` | file with the Govee Developer API key, read once at startup; never stored in the database, shown or logged ([Climate](#climate)) |
-| — (Govee API key) | `KasaMonitor__GoveeApiKey` | — | alternative to the file (wins when set); prefer the file |
-| Heating degree days base (°C) | `KasaMonitor__HeatingDegreeDaysBaseC` | `18` | 10–25; /history „Climă”: degree days = base − outdoor daily mean on days with a mean ≤ base − 3 °C (Eurostat 18 / 15; SR 4839 uses another method, 20 / 12). Saved in /settings → Climă (the database wins once saved) |
-| Boiler time zone | `KasaMonitor__BoilerTimeZone` | `Europe/Berlin` | IANA zone of the boiler's day: its „today” counters reset at midnight there (Viessmann: Central European Time, 00:00 CET/CEST = 01:00 Romanian time); every daily attribution of the boiler's gas, electricity and heat uses it |
-| — | `KasaMonitor__DbPath` | `/data/kasa.db` (image) | |
-| — | `KasaMonitor__NilmApiToken` | — | optional; when set, every `/api/nilm/*` route needs the header `X-Api-Key` with this value. Set it before exposing KasaMonitor outside the LAN ([HTTP API (LAN)](#http-api-lan)); read per request |
+| Setting | Tab (`/settings/…`) | Environment variable (initial value) | Default | Notes |
+|---|---|---|---|---|
+| Automatic discovery | Aplicație | `KasaMonitor__AutoDiscoveryEnabled` | `true` | |
+| Discovery interval (minutes) | Aplicație | `KasaMonitor__AutoDiscoveryIntervalMinutes` | `5` | 1–1440 |
+| Broadcast networks | TP-Link | `KasaMonitor__BroadcastNetworks` | empty → `255.255.255.255` | comma-separated IPv4, e.g. `192.168.1.255` |
+| Auto-add discovered plugs | Aplicație | `KasaMonitor__AutoAddDiscoveredPlugs` | `true` | |
+| TP-Link user | TP-Link | `KasaMonitor__TapoUsername` | — | Tapo app account e-mail |
+| TP-Link password | TP-Link | `KasaMonitor__TapoPassword` | — | stored encrypted (ASP.NET DataProtection), shown masked; used for KLAP and AES |
+| Tariff per kWh | Aplicație | `KasaMonitor__TariffRonPerKwh` | `1.30` | web UI cost; read at startup |
+| Grafana (link) | Aplicație | `KasaMonitor__GrafanaUrl` | — | optional; address of a Grafana dashboard linked from the footer of the home page (`http`/`https`); empty = no link |
+| Poll interval (s) | Aplicație (read-only) | `KasaMonitor__PollIntervalSeconds` | `10` | read at startup |
+| Shelly discovery | Shelly | `KasaMonitor__ShellyDiscoveryEnabled` | `true` | mDNS `_shelly._tcp.local` + the probe hosts below |
+| Shelly password | Shelly | `KasaMonitor__ShellyPassword` | — | optional; admin password of Shelly devices with authentication on (digest auth, user `admin`); stored encrypted like the TP-Link password |
+| Shelly probe hosts | Shelly | `KasaMonitor__ShellyProbeHosts` | — | optional; comma-separated IPs, ranges (`192.168.1.10-20`) or CIDR (`/22`–`/32`, max. 1024 addresses), each probed with `Shelly.GetDeviceInfo` (1 s) on every discovery |
+| Live stream | Aplicație | `KasaMonitor__LiveStreamEnabled` | `true` | stream of the channels ticked „flux 1 s” on `/dispozitive` |
+| Live stream base interval (s) | Aplicație | `KasaMonitor__LiveStreamIntervalSeconds` | `1` | minimum 1; the main meter's interval, the plugs' fastest (they slow down to 10 s when quiet) |
+| Keep raw live samples (days) | Aplicație | `KasaMonitor__LiveRawRetentionDays` | `30` | `0` = unlimited; the minute aggregates are never deleted; a smaller value asks for confirmation |
+| Allow relay control | Shelly | `KasaMonitor__AllowRelayControl` | `true` | shows the Shelly relay switch (`Switch.Set`); off = hidden and refused. No authentication in KasaMonitor: LAN only |
+| Burst trigger (W) | Aplicație | `KasaMonitor__LiveBurstTriggerW` | `50` | jump of the main meter between two readings that sends every plug back to 1 s for 60 s |
+| Remote write | Export | `KasaMonitor__RemoteWriteEnabled` | `false` | Prometheus remote write of the live samples (`kasa_live_*`) |
+| Remote write URL | Export | `KasaMonitor__RemoteWriteUrl` | — | e.g. `http://192.168.1.10:9090/api/v1/write` |
+| Remote write user / password | Export | `KasaMonitor__RemoteWriteUser`, `KasaMonitor__RemoteWritePassword` | — | optional basic auth; stored encrypted |
+| Appliance detection | Aplicație | `KasaMonitor__NilmEnabled` | `true` | events, signatures and runs from the main meter (needs a main meter with the live stream) |
+| Event threshold (W) | Aplicație | `KasaMonitor__MinEventDeltaW` | `30` | 5–10000; smallest steady-state step of the house power recorded as an event |
+| Re-clustering window (days) | Aplicație | `KasaMonitor__ClusterWindowDays` | `30` | 1–365; events grouped again every night at 03:30 |
+| ML model | Aplicație | `KasaMonitor__MlEnabled` | `true` | nightly ML.NET classifier over the labelled events; saved as `<db dir>/nilm-model.zip` |
+| Keep raw readings (months) | Aplicație | `KasaMonitor__ReadingsRetentionMonths` | `0` = unlimited | raw 10-second readings only; daily history and minute aggregates are never deleted. Saving a value that would delete existing readings asks for confirmation with the exact row count |
+| Gas boiler | Viessmann | `KasaMonitor__HeatingEnabled` | `true` | reads the Viessmann boiler once the ViCare account is connected (`/centrala`) |
+| Viessmann Client ID | Viessmann | `KasaMonitor__ViessmannClientId` | — | client of the Viessmann developer portal; the OAuth tokens are never configured, they come from „Conectează ViCare” and are stored encrypted |
+| Boiler poll interval (s) | Viessmann | `KasaMonitor__ViessmannPollIntervalSeconds` | `120` | minimum 60; one API call per poll (120 s = 720 of the 1450 daily calls) |
+| Gas price (RON / kWh) | Aplicație | `KasaMonitor__GasPricePerKwh` | `0.31` | cost = m³ × kWh/m³ × price |
+| Gas calorific factor (kWh / m³) | Aplicație | `KasaMonitor__GasKwhPerM3` | `10.55` | converts the boiler's m³ to kWh |
+| Gas unit fallback | Aplicație | `KasaMonitor__GasUnit` | `m3` | `m3` or `kWh`; only used when the API sends a gas value without `unit` |
+| Keep boiler readings (days) | Viessmann | `KasaMonitor__HeatingReadingsRetentionDays` | `0` = unlimited | `HeatingReadings` older than this are deleted once a day; daily gas history is never deleted |
+| Miele Client ID | Miele | `KasaMonitor__MieleClientId` | — | client of developer.miele.com; the OAuth tokens come from „Conectează Miele” (`/aparate`) and are stored encrypted |
+| — (Miele client secret file) | Miele (state only) | `KasaMonitor__MieleClientSecretFile` | `/run/secrets/miele-client.secret` | file with the client secret, read once at startup; never stored in the database, shown or logged ([Miele appliances](#miele-appliances)) |
+| — (Miele client secret) | Miele (state only) | `KasaMonitor__MieleClientSecret` | — | alternative to the file (wins when set); prefer the file |
+| Outdoor latitude / longitude | Open-Meteo | `KasaMonitor__ClimateLatitude`, `KasaMonitor__ClimateLongitude` | — (off) | location for the outdoor temperature of Open-Meteo (`/settings/openmeteo`); both empty = no request |
+| — (Govee API key file) | Govee (state only) | `GOVEE_API_KEY_FILE` or `KasaMonitor__GoveeApiKeyFile` | `/run/secrets/govee-api.key` | file with the Govee Developer API key, read once at startup; never stored in the database, shown or logged ([Climate](#climate)) |
+| — (Govee API key) | Govee (state only) | `KasaMonitor__GoveeApiKey` | — | alternative to the file (wins when set); prefer the file |
+| Heating degree days base (°C) | Aplicație | `KasaMonitor__HeatingDegreeDaysBaseC` | `18` | 10–25; /history „Climă”: degree days = base − outdoor daily mean on days with a mean ≤ base − 3 °C (Eurostat 18 / 15; SR 4839 uses another method, 20 / 12). Saved in /settings/aplicatie (the database wins once saved) |
+| Boiler time zone | Viessmann | `KasaMonitor__BoilerTimeZone` | `Europe/Berlin` | IANA zone of the boiler's day: its „today” counters reset at midnight there (Viessmann: Central European Time, 00:00 CET/CEST = 01:00 Romanian time); every daily attribution of the boiler's gas, electricity and heat uses it |
+| — | — | `KasaMonitor__DbPath` | `/data/kasa.db` (image) | |
+| — | — | `KasaMonitor__NilmApiToken` | — | optional; when set, every `/api/nilm/*` route needs the header `X-Api-Key` with this value. Set it before exposing KasaMonitor outside the LAN ([HTTP API (LAN)](#http-api-lan)); read per request |
 
 The DataProtection keys are kept next to the database, in `<db dir>/dp-keys` (`/data/dp-keys` in the container,
 on the persistent volume). If that directory is lost, the stored password cannot be decrypted and must be entered
@@ -141,7 +181,7 @@ Do not commit credentials; prefer `/settings`.
 
 ## Monitoring with Prometheus & Grafana
 
-**Start with the `/integration` page** of the web UI ("Integrare" in the menu, `http://<host>:8910/integration`).
+**Start with the `/integration` page** of the web UI (Setări → Export → „Deschide pagina Integrare”, `http://<host>:8910/integration`).
 It shows everything in one place, filled in with this server's real address:
 
 1. **What is exposed now** — the `/metrics` URL (with `network_mode: host` it is served on every IP of the
@@ -211,7 +251,7 @@ reset and would count the whole cumulative value as new consumption. The trade-o
 
 Every series has the labels `alias` (plug name, MAC if empty), `mac`, `model` (e.g. `KP115`, `P115`,
 `S3EM-002CXCEU`, without the region suffix), `protocol` (`legacy` | `klap` | `aes` | `shelly-rpc`) and `role`
-(`plug` | `main` | `sub`, the role set on `/plugs`). For the channels ≥ 1 of a multi-channel Shelly meter `mac` is
+(`plug` | `main` | `sub`, the role set on `/dispozitive`). For the channels ≥ 1 of a multi-channel Shelly meter `mac` is
 `<mac>-<channel>` (channel 0 keeps the plain MAC). `/metrics` exports every channel; filter by role in the query:
 
 ```promql
@@ -302,11 +342,11 @@ Two metric families reach Prometheus:
   Same labels as `kasa_*` (`alias`, `mac`, `model`, `protocol`, `role`). Only the samples stored as raw rows are sent
   (power changed by more than max(1 W, 1 %), or every 60 s), so a quiet plug costs one sample a minute.
 
-Enable it in `/settings` → *Integrare: Prometheus remote write* (URL, optional basic auth; or the
+Enable it in `/settings/export` → *Prometheus remote write* (URL, optional basic auth; or the
 `KasaMonitor__RemoteWrite*` variables). Prometheus must run with `--web.enable-remote-write-receiver` (already in
 `deploy/docker-compose.monitoring.yml`). Samples are queued in memory and sent every second (or at 500 samples);
 a failed request is retried with backoff 1 → 60 s, an HTTP 4xx other than 429 drops the batch (e.g. out-of-order
-samples), and samples older than 5 minutes in the queue are dropped. State in `/settings` and on `/metrics`:
+samples), and samples older than 5 minutes in the queue are dropped. State in `/settings/export` and on `/metrics`:
 `kasa_remote_write_samples_total`, `kasa_remote_write_failures_total`, `kasa_remote_write_dropped_samples_total`,
 `kasa_remote_write_last_success_timestamp_seconds`. Example: `kasa_live_power_w{role="main"}` in a Grafana time
 series with a 1 s min interval.
@@ -373,11 +413,11 @@ the official component schema without having been tested:
   224.0.0.251:5353 from an ephemeral port on every IPv4 interface (on a multi-homed host the default multicast route
   often points at a Docker/Hyper-V bridge; responders answer by unicast), plus the optional *Shelly probe hosts*
   list for devices mDNS does not reach. Each answer is read with `Shelly.GetDeviceInfo`, `Shelly.GetStatus` and
-  `Shelly.GetConfig`. Add by IP on `/plugs` tries Shelly after legacy and Tapo. Components are found from the keys of
+  `Shelly.GetConfig`. Add by IP on `/dispozitive` tries Shelly after legacy and Tapo. Components are found from the keys of
   `Shelly.GetStatus`, never from the model.
 - **Channels** — one plug per measured channel, identity (MAC, channel). Default alias: the channel name
-  (`em1:N.name`), otherwise the device name / id plus ` ch0`, ` ch1`; rename on `/plugs` like any plug.
-- **Password** — devices with authentication on (`auth_en: true`) need the *Shelly password* in `/settings`
+  (`em1:N.name`), otherwise the device name / id plus ` ch0`, ` ch1`; rename on `/dispozitive` like any plug.
+- **Password** — devices with authentication on (`auth_en: true`) need the *Shelly password* in `/settings/shelly`
   (HTTP digest, RFC 7616, `SHA-256`, user `admin`). Without it they are listed as `nesuportat: parolă Shelly lipsă`.
 - **Polling** — one `Shelly.GetStatus` per device and cycle (all channels, 3 s timeout); `Shelly.GetDeviceInfo` +
   `Shelly.GetConfig` the first time and then hourly (model, firmware, default aliases).
@@ -401,16 +441,16 @@ See `docs/device-api-capabilities.md` for what is shown, what exists and is not 
 
 ## Roles, live stream, Contor page, relay
 
-**Roles** (`Plugs.Role`, `/plugs` → column *Rol*, icons plug / house / meter): *plug* (`0`, default for Kasa, Tapo
+**Roles** (`Plugs.Role`, `/dispozitive` → the channel's row, *Rol*, icons plug / house / meter): *plug* (`0`, default for Kasa, Tapo
 and Shelly `switch`/`pm1`), *main meter* (`1`, the channel that measures the house supply; at most one, also enforced
 by a partial unique index; setting a new one turns the previous one into a sub-meter; button „Setează ca contor
 general”) and *sub-meter* (`2`, default for Shelly `em1`/`em` channels). Only plugs count in totals: „Prize”
 header, Istoric „Toate” (stacked bars; the house is a separate „Casă” line, never added to the plugs), Grafana totals
 (`role="plug"`). Upgrading from 0.3.0 marks the existing Shelly meter channels (`S3EM…`, `SPEM…`, apps `EMG3`,
 `ProEM`, `Pro3EM`) as sub-meters; other `em1`/`em` devices already in the database (another model code) stay plugs:
-set their role on `/plugs`. Choose the main meter once on `/plugs`. Roles cannot be changed on withdrawn rows.
+set their role on `/dispozitive`. Choose the main meter once on `/dispozitive`. Roles cannot be changed on withdrawn rows.
 
-**Live stream** (`/plugs` → checkbox „flux 1 s” per channel, `Plugs.StreamEnabled`; default on for the main meter
+**Live stream** (`/dispozitive` → checkbox „flux 1 s” per channel, `Plugs.StreamEnabled`; default on for the main meter
 and every plug, off for sub-meters such as an unused clamp; changing the role resets it to the role's default):
 
 - **Shelly**: one persistent WebSocket per device (`ws://<ip>/rpc`; it does not count against the 6 non-persistent
@@ -423,7 +463,7 @@ and every plug, off for sub-meters such as an unused clamp; changing the role re
 - **Kasa legacy**: `emeter.get_realtime` through the same client as the 10 s polling (the legacy client opens one
   short TCP connection per request, as it always did).
 - **Tapo (KLAP/AES)**: one `get_energy_usage` per reading on the transport's cached session, shared with polling and
-  re-authenticated by the transport when it expires (needs the TP-Link account in `/settings`).
+  re-authenticated by the transport when it expires (needs the TP-Link account in `/settings/tplink`).
 - **Timing**: ticks at the start of every wall-clock second, each reading stamped with the nearest second (never
   more than one per channel and second). The **main meter** is read every second (the base interval
   `LiveStreamIntervalSeconds`, minimum 1, never less). **Every other channel is adaptive**: 1 s while its power
@@ -440,7 +480,7 @@ and every plug, off for sub-meters such as an unused clamp; changing the role re
   the time since the previous reading, so a missed second adds nothing); energy = Σ W × seconds / 3600. A second part
   of a minute (restart in the middle of a minute, a late answer) is merged into the stored minute, never overwritten.
   Raw rows older than `LiveRawRetentionDays` (default 30, `0` = keep) are deleted once a day (a smaller value asks
-  for confirmation in `/settings`); aggregates are kept forever. The 10 s polling (`Samples`, `/metrics`) is unchanged
+  for confirmation in `/settings/aplicatie`); aggregates are kept forever. The 10 s polling (`Samples`, `/metrics`) is unchanged
   and the live stream is **not** exported to `/metrics`.
 - **Volume** (≈ 146 bytes per raw row including the index; measured on 2026-11-01 with the EM Gen3 and five KP115):
   a quiet plug writes ≈ 1 row/min (the witness) ≈ 1,440 rows ≈ 0.2 MB/day; a plug with a cycling load (UPS,
@@ -454,7 +494,7 @@ the stream is older than 5 s), rest of the house (see below), voltage (red outsi
 factor, frequency, relay; live chart of the last 10 minutes (main meter, plus an optional plug chosen in „Suprapune o
 priză”, from the same stream; only the new point is pushed to ApexCharts each time, the whole 10-minute window once a
 minute); today per minute (min/avg/max from the aggregates); energy per day for 30 days (from `DailyEnergy`) with
-cost; the sub-meters; the last 20 relay commands. Without a main meter it links to `/plugs`. The „Prize” page shows a
+cost; the sub-meters; the last 20 relay commands. Without a main meter it links to `/dispozitive`. The „Prize” page shows a
 „Casă” card (house power, rest of the house, relay) above the plugs.
 
 **Rest of the house** („Prize” page „Casă” card, `/contor`) is computed from averages aligned on the **last whole
@@ -472,7 +512,7 @@ marked „date parțiale” instead of the clamp warning.
 
 **Relay**: on channel 0 of a Shelly meter with `switch:N` (EM Gen3: `switch:0`, a contactor) and on Shelly
 `switch` plugs (Plus Plug S, …) a Pornit/Oprit switch appears on `/contor`, in the „Casă” card and in the *Detalii*
-row of `/plugs`. Every command needs a confirmation („Releul comandă un contactor; sigur?”) and sends
+row of `/dispozitive`. Every command needs a confirmation („Releul comandă un contactor; sigur?”) and sends
 `Switch.Set {id: <channel>, on}` over HTTP RPC (digest when a password is set); the server refuses channels without a
 relay. Every attempt is logged in `RelayCommands` (`Ts`, `PlugId`, `On`, `Source` = `ui`, `Result` = `ok` or the
 error) and in the application log. The shown state is the newest of the 10 s poll (`switch:N.output`) and the
@@ -493,8 +533,8 @@ built in) through the **ViCare cloud API**; there is no local API. It never send
    account → *Your clients* → *+ Add*: any name, reCAPTCHA **off**, redirect URI = the address you open KasaMonitor
    with + `/centrala/callback`, e.g. `http://192.168.1.10:8910/centrala/callback` (add one per address you use, e.g.
    also `http://localhost:8910/centrala/callback`). A new client can take up to an hour to become active.
-2. `/settings` → *Centrală (Viessmann)*: paste the Client ID, save.
-3. `/centrala` → **Conectează ViCare**: KasaMonitor redirects to Viessmann (OAuth 2.0 authorization code with PKCE
+2. `/settings/viessmann`: paste the Client ID, save.
+3. `/settings/viessmann` → **Conectează ViCare** (the connection has one owner since 0.10.0; `/centrala` shows the state and links there): KasaMonitor redirects to Viessmann (OAuth 2.0 authorization code with PKCE
    S256, scope `IoT User offline_access`, random `state`); after you approve, Viessmann redirects to
    `/centrala/callback`, which checks the `state` (unknown, expired after 10 minutes or reused → rejected; it must also
    match the `vicare_oauth` cookie — HttpOnly, SameSite=Lax, a hash of the state — set by `/centrala/connect` in the
@@ -540,7 +580,7 @@ every day of the series.
 
 **The boiler's day (since 0.8.1).** The Vitodens resets its „today” counters at **00:00 in its own time zone**, Central
 European Time (measured on 2 Nov 2026: the reset arrives at 23:00 UTC = 01:00 Romanian time; in summer 00:00 CEST =
-01:00 EEST, the difference stays one hour). Setting `BoilerTimeZone` (default `Europe/Berlin`, `/settings` → Centrală)
+01:00 EEST, the difference stays one hour). Setting `BoilerTimeZone` (default `Europe/Berlin`, `/settings/viessmann`)
 is that zone, and **every daily attribution of the boiler's gas, electricity and heat uses it**, not the container's
 `TZ`: the daily rows, the „Rapoarte” day/week/month/year, the hourly profile (labelled in local time: a boiler day runs
 01:00–01:00 Romanian time; the reports say „zi = după ceasul centralei (CET), se încheie la 01:00 ora României”), the
@@ -645,9 +685,9 @@ stopped (scope `openid mcs_thirdparty_read`; writing needs `mcs_thirdparty_write
    `/run/secrets/miele-client.secret` (another path: `KasaMonitor__MieleClientSecretFile`; or, less safe,
    `KasaMonitor__MieleClientSecret`). It is read once at startup, never stored in the database, shown or logged. The
    compose lines are in `deploy/README.md` (*Miele client secret*).
-3. `/settings` → *Miele*: paste the Client ID, save. The card shows whether the secret was loaded and from where.
+3. `/settings/miele`: paste the Client ID, save. The tab shows whether the secret was loaded and from where.
 4. Open KasaMonitor at the address you use (the redirect URI is built from it: `{scheme}://{host}/miele/callback`,
-   e.g. `http://192.168.254.2:8910/miele/callback`) → `/aparate` → **Conectează Miele**. KasaMonitor redirects to the
+   e.g. `http://192.168.254.2:8910/miele/callback`) → `/settings/miele` → **Conectează Miele** (`/aparate` shows the state and links there). KasaMonitor redirects to the
    new Miele OAuth provider (`auth.domestic.miele-iot.com`, authorization code with the client secret, no PKCE, random
    `state` valid 10 minutes, single use, tied to the browser by the HttpOnly cookie `miele_oauth`). Log in with the
    Miele account (country: the Miele subsidiary of the account, e.g. Romania) and **tick the appliances** on the consent
@@ -713,15 +753,15 @@ wash, 261/11005 rinse, 265 drain, 266/11010 spin; tumble dryer 514/11018 drying 
 generations (the spec's own example shows phase 1795 „Main wash”, in no list). An unknown phase is shown with the
 API's `value_localized`, else „faza <raw>”. Program names are the API's `value_localized`.
 
-**Page `/aparate`** (menu „Aparate”): the connection (stream / polling, last event, last error, Conectează /
-Deconectează); per appliance a card with alias, model, status (coloured), program, phase (with the load it usually
+**Page `/aparate`** (menu „Aparate”): the connection (stream / polling, last event, last error; connect and
+disconnect in `/settings/miele`); per appliance a card with alias, model, status (coloured), program, phase (with the load it usually
 switches on: heating element in pre-wash / main wash, motor in the spin, pump in the drain — informative), remaining
 time with a progress bar, target temperature / spin, door, the appliance's energy and water so far and the forecasts
-(relative 0–100 %), the current cycle as a coloured phase band, and the plug that feeds it (selector) with its power
-now; then „Istoric cicluri”: one table for all appliances or one (filter), 50 cycles per page, newest first: start,
+(relative 0–100 %), the current cycle as a coloured phase band, and the plug that feeds it with its power now (alias and plug
+are set on `/dispozitive`, the appliance's row, since 0.10.0); then „Istoric cicluri”: one table for all appliances or one (filter), 50 cycles per page, newest first: start,
 duration, program, the source (discreet badge: observat / din API / ambele), phases band, energy (the API history's,
 else the plug's, else ecoFeedback) and water (the API history's, else ecoFeedback), the tooltip naming the source, the
-plug's measured energy, cost (the plug's energy when linked, else Miele's, at the tariff of `/settings`) and end
+plug's measured energy, cost (the plug's energy when linked, else Miele's, at the tariff of `/settings/aplicatie`) and end
 reason. A row opens its detail: where it comes from, its start/end in the Miele history, the three values side by
 side (API history, ecoFeedback, plug), and a
 small chart of Miele's estimated profile (average W per 15-minute slot) next to the linked plug's power on the same
@@ -775,13 +815,13 @@ last seen, battery) and its **readings** (`ClimateReadings`: time, temperature �
 
 **Setup.** Govee: mount the API key as a file (`/run/secrets/govee-api.key`; another path: `GOVEE_API_KEY_FILE` or
 `KasaMonitor__GoveeApiKeyFile`; or, less safe, `KasaMonitor__GoveeApiKey`; compose lines in `deploy/README.md`,
-*Govee API key*). It is read once at startup, never stored in the database, shown or logged. `/settings` → *Govee*
-lists the devices of the account; only those ticked **„acasă”** are read and stored (all are unticked at first, so
+*Govee API key*). It is read once at startup, never stored in the database, shown or logged. `/settings/govee`
+shows its state; `/dispozitive` → Adaugă → Govee lists the devices of the account; only those ticked **„acasă”** are read and stored (all are unticked at first, so
 thermometers of other places in the same account are never requested); unticking hides the sensor (its history
 stays). Requests per day ≈ 144 per ticked thermometer + 4 for the list (Govee allows 10,000). Open-Meteo:
-`/settings` → *Climă: temperatura exterioară*, latitude and longitude (both empty = off). Shelly: nothing to set;
-a sensor appears at its first value. A Shelly H&T without a meter is also listed by the plug discovery as an
-unsupported plug („fără componentă de măsurare”).
+`/settings/openmeteo`, latitude and longitude (both empty = off). Shelly: nothing to set;
+a sensor appears at its first value. A Shelly H&T without a meter is not a plug: the plug discovery skips it (0.10.0).
+Name, room and „afară” of every sensor are set on `/dispozitive` (the sensor's row; the ✎ on a `/clima` card links it).
 
 **Storage.** A reading is stored when the temperature changed by **≥ 0.1 °C** or the humidity by **≥ 1 % RH** since the
 last stored reading, and at least every **30 minutes** (heartbeat); a value read in between only updates the card and
@@ -826,8 +866,8 @@ is kept in the address (`/?p=zi|saptamana|luna|an&d=yyyy-MM-dd`: bookmarks, back
 „Acum în casă” and row 3 (today vs yesterday, the current month, the boiler, Miele, the temperatures) stay on the
 present. „Compară cu …” (for today „Compară cu ieri (la aceeași oră)”) shows the previous period (pale bars, Δ) on Energie
 and Pe ore. The former Dashboard (one card per plug) is now „Prize” at `/prize`. Menu (Romanian, routes unchanged): Acasă,
-Prize, Contor, Centrală, Aparate, Climă, Consumatori, Istoric (`/history`), Dispozitive (`/plugs`), Setări (`/settings`),
-Integrare.
+Prize, Contor, Centrală, Aparate, Climă, Consumatori, Istoric (`/history`), Dispozitive (`/dispozitive`), Setări (`/settings`)
+(10 entries; „Integrare” is reached from Setări → Export since 0.10.0).
 
 Numbers: W whole, kWh with 2 decimals below 10 and 1 above, m³ and lei with 2 decimals, a Δ with the decimals of its
 value (the same rules as /history). A **cost total** (curent + gaz) exists only when every component that should exist
@@ -853,7 +893,7 @@ between a total and gas alone.
   `kasa_house_standby_w`. A floor of **5 W or less** is not measurable (at night the sum of the plugs exceeds the
   meter): no bubble, no row, the note „Standby nemăsurabil: noaptea, suma prizelor depășește contorul.”, and the metric
   is 0.
-- **Energie** of the period: electricity (kWh, lei at the tariff of `/settings`), gas (m³, ≈ kWh with the calorific
+- **Energie** of the period: electricity (kWh, lei at the tariff of `/settings/aplicatie`), gas (m³, ≈ kWh with the calorific
   factor, lei at the gas price per kWh) and the total, a bar split by source in kWh. For **today** the comparison is with
   **yesterday up to the same time**, both as Σ of the main meter's live minutes (same source); when either window is
   covered under 90 % by the stream it says „date parțiale” instead of a Δ. A week / month / year **in progress** is
@@ -914,7 +954,7 @@ address, so every link opens exactly that view: `/history?p=luna&d=2026-11`, `?p
 `?p=zi&d=2026-11-02`, `?p=interval&de=2026-10-01&pana=2026-10-20`, plus `&cmp=0` (no comparison), `&plug=<id>` and a
 section anchor (`#curent`, `#gaz`, `#aparate`, `#consumatori`, `#clima`, `#costuri`, `#evenimente`). Without `p` the page
 opens on the current month; the old `?plugId=` still works. The home page's „→” links, the plug links of /prize,
-/plugs, the sub-meters card and the Sankey, and /centrala's „Istoric →” carry their period. Days are local days
+/dispozitive, the sub-meters card and the Sankey, and /centrala's „Istoric →” carry their period. Days are local days
 (`TZ`) everywhere; gas follows the **boiler's day** (`BoilerTimeZone`, as on /centrala since 0.8.1).
 
 **Comparison** (as on the home page): a period in progress is compared with the **same share** of the previous one
@@ -1022,7 +1062,7 @@ stored „today” counters); without counters for yesterday it shows only yeste
 
 KasaMonitor recognises appliances in the power of the whole house (non-intrusive load monitoring) with a
 deterministic, explainable pipeline, and uses the plugs it already measures as automatic labels. It needs a **main
-meter** (`/plugs`) with the live stream on (1 s). Page `/consumatori`, menu „Consumatori”.
+meter** (`/dispozitive`) with the live stream on (1 s). Page `/consumatori`, menu „Consumatori”.
 
 1. **Events** (`MeterEventDetector`, table `MeterEvents`): steady-state transitions of the main meter's 1-second
    power. The level *before* is the mean of the last 5 s of a steady state; a second outside max(5 W, 3 %) of it
@@ -1058,7 +1098,7 @@ meter** (`/plugs`) with the live stream on (1 s). Page `/consumatori`, menu „C
    those excluded from learning: a UPS that moved at the same time makes the event ambiguous), and that plug step has
    not labelled another event. Events detected late (after a long backfill or nightly job) read the plugs'
    readings from `Samples`. A plug that matches **more than 20 events in an hour** (a UPS, a PC: a variable load) is
-   excluded from learning automatically (`Plugs.NilmIgnored`; badge on `/plugs` and `/consumatori`, with a button to
+   excluded from learning automatically (`Plugs.NilmIgnored`; badge on `/dispozitive` and `/consumatori`, with a button to
    undo it — an undone plug is never excluded automatically again; a plug can also be excluded by hand). Excluding
    only stops new labels and training: the plug's labels no longer count for linking new signatures or for the
    classifier, but signatures already linked to it stay „measured by the plug”.
@@ -1187,7 +1227,7 @@ two plugs moving together, or two large steps less than ~7 s apart give no label
 
 ### Single-appliance plugs
 
-Since 0.9.1 a plug can be marked „un singur aparat pe priză” on `/plugs` (Dispozitive, column *Rol*, for a plug with
+Since 0.9.1 a plug can be marked „un singur aparat pe priză” on `/dispozitive` (the plug's row, for a plug with
 the role *plug*), with the appliance's name (empty = the plug's alias, e.g. „Frigider”) and category (`fridge`,
 `hvac`, …), or with `POST /api/nilm/plugs/{id}/appliance` ([HTTP API (LAN)](#http-api-lan)). Nothing is set
 automatically on upgrade (columns `Plugs.SingleAppliance`, `ApplianceName`, `ApplianceCategory`, migration
@@ -1204,7 +1244,7 @@ automatically on upgrade (columns `Plugs.SingleAppliance`, `ApplianceName`, `App
   The plug is **not** excluded from learning (`NilmIgnored` is untouched): it still labels and links its events, so they
   never become „Necunoscut”; it is also never excluded automatically for matching too many events per hour. Changing
   the flag retrains the model on the next pass when ML is on.
-- **Where the name appears.** The plug keeps its alias (`/plugs`, history, `kasa_*` metrics); the appliance's name is
+- **Where the name appears.** The plug keeps its alias (`/dispozitive`, history, `kasa_*` metrics); the appliance's name is
   shown where the plug stands for an appliance: the bubble and the row of the home page, the Sankey, `/consumatori`
   (its signatures, in „Măsurate de prize” with the badge *priză cu un singur aparat*, never among the unknown ones),
   and `kasa_appliance_plug_power_w`.
@@ -1244,7 +1284,7 @@ backfill, the nightly job or another regroup; retry in a few seconds).
 | `POST /api/nilm/regroup` | „Regrupează acum”: events, anchored, clusters, signatures, moved, merged, the merges with their reason, and the training that follows |
 | `POST /api/nilm/train` | „Antrenează acum”: trained, labelled events and classes, the classes, cross-validated accuracy, folds, duration |
 | `GET /api/nilm/plugs` | the plugs that can label events (polled, role *plug*): id, alias, single, applianceName (the name in effect when `single`: the alias when none was given), category, nilmState (`Auto`, `IgnoredAuto`, `IgnoredManual`, `AlwaysUse`) |
-| `POST /api/nilm/plugs/{id}/appliance` | „un singur aparat pe priză” (the checkbox on `/plugs`): body `{"name": "Frigider", "category": "fridge", "single": true}`; `single` defaults to `true` (`false` clears the flag, name and category are kept), an empty `name` = the alias, no `category` = unchanged. The plug's linked signatures take the name and category at once. `404` for an unknown id or a meter ([Single-appliance plugs](#single-appliance-plugs)) |
+| `POST /api/nilm/plugs/{id}/appliance` | „un singur aparat pe priză” (the checkbox on `/dispozitive`): body `{"name": "Frigider", "category": "fridge", "single": true}`; `single` defaults to `true` (`false` clears the flag, name and category are kept), an empty `name` = the alias, no `category` = unchanged. The plug's linked signatures take the name and category at once. `404` for an unknown id or a meter ([Single-appliance plugs](#single-appliance-plugs)) |
 | `GET /api/nilm/events?from=…&to=…&minAbsDeltaP=…` | the raw stored events (diagnostics), oldest first; `from`/`to` ISO 8601 (default: the last 24 h, at most 31 days), `minAbsDeltaP` in W (default 0) |
 
 Examples (`K=http://<host>:8910`; add `-H "X-Api-Key: $TOKEN"` when a token is set):
@@ -1320,15 +1360,15 @@ dotnet test KasaMonitor.sln
 From the repository root, with Docker running and `docker login` done once:
 
 ```powershell
-.\deploy\build-and-push.ps1 -Version 0.9.4          # build :0.9.4 + :latest and push both
-.\deploy\build-and-push.ps1 -Version 0.9.4 -NoPush  # local build only
+.\deploy\build-and-push.ps1 -Version 0.10.0         # build :0.10.0 + :latest and push both
+.\deploy\build-and-push.ps1 -Version 0.10.0 -NoPush  # local build only
 ```
 
 or manually:
 
 ```bash
-docker build -t duobit/kasamonitor:0.9.4 -t duobit/kasamonitor:latest -f deploy/Dockerfile .
-docker push duobit/kasamonitor:0.9.4
+docker build -t duobit/kasamonitor:0.10.0 -t duobit/kasamonitor:latest -f deploy/Dockerfile .
+docker push duobit/kasamonitor:0.10.0
 docker push duobit/kasamonitor:latest
 ```
 
@@ -1346,7 +1386,7 @@ To publish under your own Docker Hub account, change the image name (`-Repo` par
    0.4.0 runs `AddRolesAndLiveStream`: adds `Plugs.Role` (0; Shelly meter channels `S3EM…`/`SPEM…`/`EMG3`/`ProEM`/`Pro3EM`
    become 2 = sub-meter) and `Plugs.StreamEnabled` (1; 0 for those sub-meters), a partial unique index (one main
    meter) and the empty tables `LiveSamples`, `LiveMinuteAggregates`, `RelayCommands`; no existing table is rewritten.
-   After the update, set the main meter on `/plugs` and change Grafana dashboards that used
+   After the update, set the main meter on `/dispozitive` and change Grafana dashboards that used
    `model!~"S3EM.*|SPEM.*"` to `role="plug"`. Prometheus series written before the upgrade have no `role` label, so
    `{role="plug"}` does not see them: for the 30-day panels use `{role!~"main|sub", model!~"S3EM.*|SPEM.*"}` until
    30 days have passed after the upgrade, then `{role="plug"}`. Upgrading to 0.7.0 runs `AddNilm`: it adds `Plugs.NilmIgnored`
@@ -1361,6 +1401,6 @@ To publish under your own Docker Hub account, change the image name (`-Repo` par
    the unknown transients and the automatic merge; the merges are logged at Information.
 2. `docker compose -f deploy/docker-compose.yml pull && docker compose -f deploy/docker-compose.yml up -d`
    (Portainer: *Update the stack* with *Re-pull image and redeploy*).
-3. Check `http://<host>:8910/health`, `/plugs` (Scan now) and `curl -s http://<host>:8910/metrics | grep kasa_online`.
+3. Check `http://<host>:8910/health`, `/dispozitive` (Adaugă → Scanează acum) and `curl -s http://<host>:8910/metrics | grep kasa_online`.
 
 See also `deploy/README.md` (troubleshooting).

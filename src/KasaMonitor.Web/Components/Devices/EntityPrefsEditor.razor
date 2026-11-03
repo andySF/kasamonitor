@@ -25,7 +25,7 @@ else
             <tbody>
                 @foreach (var e in d.Entities.Where(e => e.Kind != EntityKind.Unsupported))
                 {
-                    var row = _rows[e.Key];
+                    if (!_rows.TryGetValue(e.Key, out var row)) continue;   // rows and device are swapped together, but never trust a render in between
                     var id = "ep-" + ((uint)e.Key.GetHashCode()).ToString(System.Globalization.CultureInfo.InvariantCulture);
                     <tr data-entity="@e.Key">
                         <td>@e.Name @if (e.Category != EntityCategory.Primary) { <span class="badge text-bg-light border">diagnostic</span> }</td>
@@ -88,13 +88,15 @@ else
 
     private async Task LoadAsync()
     {
-        _device = await Entities.GetAsync(DeviceKey, DateTimeOffset.UtcNow, CancellationToken.None);
-        _saved = _device is null ? new Dictionary<string, EntityPrefs>() : await Entities.PrefsAsync(DeviceKey, CancellationToken.None);
-        _rows.Clear();
-        foreach (var e in _device?.Entities ?? Array.Empty<DeviceEntity>())
+        // Load into locals first: a render between the two awaits used to see the device with an empty rows map and
+        // throw KeyNotFoundException (0.12.1, seen on a Miele device's „online” entity).
+        var device = await Entities.GetAsync(DeviceKey, DateTimeOffset.UtcNow, CancellationToken.None);
+        var saved = device is null ? new Dictionary<string, EntityPrefs>() : await Entities.PrefsAsync(DeviceKey, CancellationToken.None);
+        var rows = new Dictionary<string, Row>(StringComparer.Ordinal);
+        foreach (var e in device?.Entities ?? Array.Empty<DeviceEntity>())
         {
-            var p = _saved.GetValueOrDefault(e.Key);
-            _rows[e.Key] = new Row
+            var p = saved.GetValueOrDefault(e.Key);
+            rows[e.Key] = new Row
             {
                 Visible = EntityDefaults.EffectiveVisible(p),
                 InHistory = EntityDefaults.EffectiveInHistory(e, p),
@@ -103,6 +105,10 @@ else
                 Precision = p?.PrecisionOverride,
             };
         }
+        _rows.Clear();
+        foreach (var kv in rows) _rows[kv.Key] = kv.Value;
+        _saved = saved;
+        _device = device;
         _loaded = true;
     }
 

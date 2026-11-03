@@ -31,8 +31,8 @@ public class BurnerTimelineRealDbTests(ITestOutputHelper output)
             var db = Path.Combine(dir, "kasa.db");
             File.Copy(source, db);
             if (File.Exists(source + "-wal")) File.Copy(source + "-wal", db + "-wal");
+            // A copy of a 0.10.x/0.11 kasa.db (SQLite): read as it is, the migrations are SQL Server's since 0.12.0.
             var options = new DbContextOptionsBuilder<KasaDbContext>().UseSqlite($"Data Source={db}").Options;
-            await using (var migrate = new KasaDbContext(options)) await migrate.Database.MigrateAsync();
 
             await using var ctx = new KasaDbContext(options);
             var repo = new HeatingRepository(ctx);

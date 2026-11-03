@@ -10,6 +10,7 @@ using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 using Xunit;
 
 namespace KasaMonitor.Web.ApiTests;
@@ -17,7 +18,8 @@ namespace KasaMonitor.Web.ApiTests;
 /// <summary>
 /// The app on a temporary database, without background workers, with every secret the settings know set: Govee key and
 /// Miele client secret from the configuration, TP-Link / Shelly / remote write passwords and the Viessmann and Miele
-/// tokens in the database. No tab may show any of them.
+/// tokens in the database; since 0.12.0 also the SQL Server password (in the connection string) and the TP-Link / Shelly
+/// passwords as environment variables (Portainer stack). No tab may show any of them and the log must not contain them.
 /// </summary>
 public sealed class SettingsFactory : WebApplicationFactory<Program>
 {
@@ -31,9 +33,17 @@ public sealed class SettingsFactory : WebApplicationFactory<Program>
     public const string ViessmannRefresh = "secret-vicare-refresh-908";
     public const string MieleAccess = "secret-miele-access-909";
     public const string MieleRefresh = "secret-miele-refresh-910";
+    public const string SqlPassword = "secret-sql-pw-911";
+    public const string TapoEnvPassword = "secret-tapo-env-912";
+    public const string ShellyEnvPassword = "secret-shelly-env-913";
+    public const string MqttEnvPassword = "secret-mqtt-env-914";
 
     public static readonly string[] Secrets =
-        [GoveeKey, MieleSecret, TapoPassword, ShellyPassword, RemoteWriteUser, RemoteWritePassword, ViessmannAccess, ViessmannRefresh, MieleAccess, MieleRefresh];
+        [GoveeKey, MieleSecret, TapoPassword, ShellyPassword, RemoteWriteUser, RemoteWritePassword, ViessmannAccess, ViessmannRefresh, MieleAccess, MieleRefresh,
+         SqlPassword, TapoEnvPassword, ShellyEnvPassword, MqttEnvPassword];
+
+    /// <summary>Every log line of the app (message and exception), from Debug up.</summary>
+    public System.Collections.Concurrent.ConcurrentQueue<string> Log { get; } = new();
 
     public string Dir { get; } = Path.Combine(Path.GetTempPath(), $"kasa-settings-{Guid.NewGuid():N}");
     private bool _seeded;
@@ -42,9 +52,14 @@ public sealed class SettingsFactory : WebApplicationFactory<Program>
 
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
-        builder.UseSetting("KasaMonitor:DbPath", Path.Combine(Dir, "kasa.db"));
+        builder.UseSqliteTestDatabase(Dir,
+            $"Server=sql.example;Database=kasamonitor;User Id=kasamonitor;Password={SqlPassword};TrustServerCertificate=True");
         builder.UseSetting("KasaMonitor:GoveeApiKey", GoveeKey);
         builder.UseSetting("KasaMonitor:MieleClientSecret", MieleSecret);
+        builder.UseSetting("KasaMonitor:TapoPassword", TapoEnvPassword);
+        builder.UseSetting("KasaMonitor:ShellyPassword", ShellyEnvPassword);
+        builder.UseSetting("KasaMonitor:MqttPassword", MqttEnvPassword);
+        builder.ConfigureLogging(l => l.SetMinimumLevel(Microsoft.Extensions.Logging.LogLevel.Debug).AddProvider(new CapturingLoggerProvider(Log)));
         builder.ConfigureTestServices(s => s.RemoveAll<IHostedService>());
     }
 
@@ -128,6 +143,19 @@ public class SettingsPageTests : IClassFixture<SettingsFactory>
     }
 
     [Fact]
+    public async Task TheLog_HasNoSecret_AfterEveryTabAndPage()
+    {
+        var c = await _f.ClientWithSecretsAsync();
+        foreach (var tab in SettingsTabs.All) await c.GetStringAsync(SettingsTabs.Href(tab.Key));
+        foreach (var url in Integrations.All.Select(i => DevicePages.Add(i.Key)).Prepend(DevicePages.Path)) await c.GetStringAsync(url);
+        (await c.GetAsync("/health")).IsSuccessStatusCode.Should().BeTrue();
+        _f.Log.Should().NotBeEmpty("the capture works");
+        foreach (var line in _f.Log)
+            foreach (var secret in SettingsFactory.Secrets)
+                line.Should().NotContain(secret);
+    }
+
+    [Fact]
     public async Task Dispozitive_AndEveryAddPanel_ShowNoSecret()
     {
         var c = await _f.ClientWithSecretsAsync();
@@ -193,5 +221,21 @@ public class SettingsPageTests : IClassFixture<SettingsFactory>
             .And.NotContain("turul și apa caldă", "R10: the boiler gives only the room thermostat since 0.9.3");
         Decode(await client.GetStringAsync("/aparate")).Should().Contain("href=\"/settings/miele\"");
         Decode(await client.GetStringAsync("/history?p=luna&d=2026-10-05")).Should().Contain("href=\"/settings/aplicatie\"");
+    }
+}
+
+/// <summary>Keeps every log line (message and exception) of the app under test.</summary>
+internal sealed class CapturingLoggerProvider(System.Collections.Concurrent.ConcurrentQueue<string> lines) : Microsoft.Extensions.Logging.ILoggerProvider
+{
+    public Microsoft.Extensions.Logging.ILogger CreateLogger(string categoryName) => new Logger(categoryName, lines);
+    public void Dispose() { }
+
+    private sealed class Logger(string category, System.Collections.Concurrent.ConcurrentQueue<string> lines) : Microsoft.Extensions.Logging.ILogger
+    {
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+        public bool IsEnabled(Microsoft.Extensions.Logging.LogLevel logLevel) => true;
+        public void Log<TState>(Microsoft.Extensions.Logging.LogLevel logLevel, Microsoft.Extensions.Logging.EventId eventId, TState state,
+            Exception? exception, Func<TState, Exception?, string> formatter) =>
+            lines.Enqueue(category + ": " + formatter(state, exception) + (exception is null ? "" : " " + exception));
     }
 }

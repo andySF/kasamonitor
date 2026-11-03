@@ -22,9 +22,9 @@ public static class MqttSettingKeys
 }
 
 /// <summary>
-/// Values from configuration: the broker (used while the database has none) and where the password comes from:
-/// <c>KasaMonitor__MqttPassword</c> (env) or the file <c>KasaMonitor__MqttPasswordFile</c> (default
-/// <c>/run/secrets/mqtt-kasamonitor.password</c>), read once at start-up — the Miele / Govee model.
+/// Values from configuration: the broker (used while the database has none) and where the password comes from: the file
+/// <c>KasaMonitor__MqttPasswordFile</c> (default <c>/run/secrets/mqtt-kasamonitor.password</c>) when it exists and is not
+/// empty, otherwise <c>KasaMonitor__MqttPassword</c> (env), read once at start-up — the Miele / Govee model (0.12.0).
 /// </summary>
 public sealed record MqttSettingsDefaults(
     string Host = "",
@@ -53,23 +53,15 @@ public sealed class MqttPassword
 
     public override string ToString() => IsSet ? "MqttPassword(set, " + Source + ")" : "MqttPassword(missing)";
 
-    /// <summary>The environment value wins; otherwise the file (trailing new line removed). <paramref name="readFile"/> is a test hook.</summary>
+    /// <summary>The mounted file wins when it exists and is not empty (trailing new line removed); otherwise the environment
+    /// value (SecretFile, the rule of every secret since 0.12.0). <paramref name="readFile"/> is a test hook.</summary>
     public static MqttPassword Load(MqttSettingsDefaults d, Func<string, string?>? readFile = null)
     {
-        if (!string.IsNullOrEmpty(d.Password)) return new MqttPassword(d.Password, "variabila KasaMonitor__MqttPassword", null);
         var path = string.IsNullOrWhiteSpace(d.PasswordFile) ? MqttSettingsService.DefaultPasswordFile : d.PasswordFile.Trim();
-        readFile ??= p => File.Exists(p) ? File.ReadAllText(p) : null;
-        try
-        {
-            var text = readFile(path);
-            return text is null
-                ? new MqttPassword(null, null, "fișierul " + path + " nu există")
-                : new MqttPassword(text, "fișierul " + path, "fișierul " + path + " e gol");
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-        {
-            return new MqttPassword(null, null, "fișierul " + path + " nu poate fi citit (" + ex.GetType().Name + ")");
-        }
+        var (text, problem) = SecretFile.Read(path, readFile, lineEndOnly: true);
+        if (text is not null) return new MqttPassword(text, "fișierul " + path, null);
+        if (!string.IsNullOrEmpty(d.Password)) return new MqttPassword(d.Password, "variabila KasaMonitor__MqttPassword", null);
+        return new MqttPassword(null, null, problem);
     }
 }
 

@@ -1,31 +1,114 @@
-# KasaMonitor
+# KasaMonitor — the stack (Portainer: Stacks → Add stack → Web editor, paste this file; or docker compose).
 #
-#   docker compose -f deploy/docker-compose.yml up -d
+#   docker compose -f deploy/docker-compose.yml --env-file kasamonitor.env up -d
 #
 # Web UI and Prometheus metrics: http://<host>:8910/  and  http://<host>:8910/metrics
 # Optional Prometheus + Grafana: deploy/docker-compose.monitoring.yml (see README.md).
+#
+# Every setting is an environment variable of the stack. The values written ${LIKE_THIS} come from the stack's
+# environment (Portainer: "Environment variables" under the editor, or "Load variables from .env file"; docker compose:
+# an .env / --env-file next to this file) so that no secret is written in this file:
+#
+#   KASA_SQL_CONNECTION   SQL Server connection string (required), e.g.
+#                         Server=192.168.1.20,1433;Database=kasamonitor;User Id=kasamonitor;Password=<…>;TrustServerCertificate=True
+#                         (the client encrypts by default; TrustServerCertificate=True accepts the self-signed certificate of
+#                         a SQL Server container; with a certificate from a trusted CA leave it out)
+#   KASA_DATA_DIR         absolute host directory for /data (required): DataProtection keys, NILM model, e.g.
+#                         /share/Container/kasamonitor/data. A relative path would land in Portainer's own volume and a
+#                         new key ring would make the saved passwords and tokens unreadable.
+#   KASA_TAPO_PASSWORD, KASA_SHELLY_PASSWORD, KASA_MIELE_CLIENT_SECRET, KASA_GOVEE_API_KEY, KASA_MQTT_PASSWORD,
+#   KASA_REMOTE_WRITE_PASSWORD, KASA_NILM_API_TOKEN   optional secrets (see below)
+#
+# The database is created once with deploy/sql/create-database.sql (see deploy/README.md); the app applies its
+# migrations at start-up and waits up to 120 s for the server.
 
 services:
   kasamonitor:
-    image: duobit/kasamonitor:latest
+    image: duobit/kasamonitor:0.12.0
     container_name: kasamonitor
     # REQUIRED. Plug discovery sends UDP broadcasts (port 9999 for Kasa, 20002 for Tapo) and an mDNS query
-    # (224.0.0.251:5353 for Shelly) and listens for the answers; on a Docker bridge network they never reach your LAN. With host networking the app
-    # also listens directly on the host's port 8910 (no "ports:" mapping needed or possible).
+    # (224.0.0.251:5353 for Shelly) and listens for the answers; on a Docker bridge network they never reach your LAN. With
+    # host networking the app also listens directly on the host's port 8910 (no "ports:" mapping needed or possible) and
+    # reaches SQL Server at its LAN address.
     network_mode: host
     restart: unless-stopped
     volumes:
-      # SQLite database (kasa.db) and the DataProtection keys (dp-keys/) that encrypt the stored TP-Link password.
-      # Relative to this file: deploy/data. Keep this directory in your backups.
-      - ./data:/data
+      # DataProtection keys (dp-keys/, they encrypt the passwords and tokens saved in /settings) and the NILM classifier.
+      # The data themselves are in SQL Server. Keep this directory in your backups.
+      - ${KASA_DATA_DIR:?set KASA_DATA_DIR (absolute host directory for /data, the DataProtection keys)}:/data
+      # Optional secrets as read-only files (they win over the variables below when present and not empty):
+      # - /share/Container/kasamonitor/secrets/miele-client.secret:/run/secrets/miele-client.secret:ro
+      # - /share/Container/kasamonitor/secrets/govee-api.key:/run/secrets/govee-api.key:ro
+      # - /share/Container/kasamonitor/secrets/mqtt-kasamonitor.password:/run/secrets/mqtt-kasamonitor.password:ro
     environment:
-      TZ: "UTC"                                          # your time zone, e.g. Europe/Berlin
-      # Initial values only: everything below can be changed later in the web UI (/settings) and the value
-      # saved there wins. Leave TapoUsername / TapoPassword empty and enter them in /settings instead.
-      KasaMonitor__BroadcastNetworks: "192.168.1.255"    # broadcast address(es) of your LAN, comma-separated
-      KasaMonitor__TariffRonPerKwh: "1.11"               # price per kWh shown in the web UI
+      TZ: "Europe/Bucharest"                                     # time zone of the house (days, reports)
+
+      # --- Database (required) -----------------------------------------------------------------------------------
+      ConnectionStrings__Kasa: "${KASA_SQL_CONNECTION:?set KASA_SQL_CONNECTION (SQL Server connection string)}"
+      KasaMonitor__DataDir: "/data"                              # inside the container; the volume above
+
+      # --- Initial values: changeable later in /settings, the value saved there wins ------------------------------
+      KasaMonitor__BroadcastNetworks: "192.168.1.255"            # broadcast address(es) of the LAN, comma-separated
+      KasaMonitor__AutoDiscoveryEnabled: "true"
+      KasaMonitor__AutoDiscoveryIntervalMinutes: "5"             # 1–1440
+      KasaMonitor__AutoAddDiscoveredPlugs: "true"
+      KasaMonitor__TariffRonPerKwh: "1.30"                       # electricity price per kWh
+      KasaMonitor__GasPricePerKwh: "0.31"                        # gas price per kWh
+      KasaMonitor__GasKwhPerM3: "10.55"                          # gas calorific factor
+      KasaMonitor__GasUnit: "m3"                                 # m3 | kWh: only when the boiler sends a gas value without unit
+      KasaMonitor__ReadingsRetentionMonths: "0"                  # raw 10 s readings; 0 = keep forever
+      KasaMonitor__LiveStreamEnabled: "true"
+      KasaMonitor__LiveStreamIntervalSeconds: "1"
+      KasaMonitor__LiveRawRetentionDays: "30"                    # raw live samples; 0 = keep forever
+      KasaMonitor__LiveBurstTriggerW: "50"
+      KasaMonitor__AllowRelayControl: "true"                     # Shelly relay switch in the UI
+      KasaMonitor__NilmEnabled: "true"                           # appliance detection from the main meter
+      KasaMonitor__MinEventDeltaW: "30"
+      KasaMonitor__ClusterWindowDays: "30"
+      KasaMonitor__MlEnabled: "true"
+      KasaMonitor__HeatingDegreeDaysBaseC: "18"
+      KasaMonitor__GrafanaUrl: ""                                # dashboard linked from the home page; empty = none
+      # KasaMonitor__ClimateLatitude: ""                         # outdoor temperature (Open-Meteo); both empty = off
+      # KasaMonitor__ClimateLongitude: ""
+
+      # --- TP-Link (Kasa, Tapo) and Shelly ----------------------------------------------------------------------
+      KasaMonitor__TapoUsername: ""                              # Tapo app account e-mail (Tapo plugs only)
+      KasaMonitor__TapoPassword: "${KASA_TAPO_PASSWORD:-}"       # initial value; stored encrypted once saved in /settings
+      KasaMonitor__ShellyDiscoveryEnabled: "true"
+      KasaMonitor__ShellyPassword: "${KASA_SHELLY_PASSWORD:-}"   # only for Shelly devices with authentication on
+      KasaMonitor__ShellyProbeHosts: ""                          # e.g. "192.168.1.141, 10.0.5.0/24" when mDNS does not reach
+
+      # --- Viessmann boiler (ViCare cloud) ----------------------------------------------------------------------
+      KasaMonitor__HeatingEnabled: "true"
+      KasaMonitor__ViessmannClientId: ""                         # developer portal client; the tokens come from /centrala
+      KasaMonitor__ViessmannPollIntervalSeconds: "120"           # minimum 60
+      KasaMonitor__HeatingReadingsRetentionDays: "0"             # 0 = keep forever
+      KasaMonitor__BoilerTimeZone: "Europe/Berlin"               # the boiler's day
+
+      # --- Miele (3rd Party API) -------------------------------------------------------------------------------
+      KasaMonitor__MieleClientId: ""                             # developer.miele.com client; the tokens come from /aparate
+      KasaMonitor__MieleClientSecret: "${KASA_MIELE_CLIENT_SECRET:-}"   # used when the file below is absent or empty
+      # KasaMonitor__MieleClientSecretFile: "/run/secrets/miele-client.secret"   # the default path of the file
+
+      # --- Govee (Wi-Fi thermometers) --------------------------------------------------------------------------
+      KasaMonitor__GoveeApiKey: "${KASA_GOVEE_API_KEY:-}"        # used when the file below is absent or empty
+      # KasaMonitor__GoveeApiKeyFile: "/run/secrets/govee-api.key"   # the default path of the file (also GOVEE_API_KEY_FILE)
+
+      # --- Read at start-up only -------------------------------------------------------------------------------
       KasaMonitor__PollIntervalSeconds: "10"
-      KasaMonitor__TapoUsername: ""                      # TP-Link / Tapo app account e-mail (Tapo plugs only)
-      KasaMonitor__TapoPassword: ""                      # TP-Link / Tapo app account password
-      # KasaMonitor__ShellyPassword: ""                  # Shelly admin password (only devices with authentication on)
-      # KasaMonitor__ShellyProbeHosts: ""                # e.g. "192.168.1.141, 10.0.5.0/24" when mDNS does not reach
+
+      # --- MQTT broker for the generic devices (0.11, MQTT Discovery; initial values, better: /settings/mqtt) ---
+      KasaMonitor__MqttHost: ""                                  # empty = the integration stays „Neconfigurat”
+      KasaMonitor__MqttPort: "1883"
+      KasaMonitor__MqttUser: ""
+      KasaMonitor__MqttPassword: "${KASA_MQTT_PASSWORD:-}"       # used when the file below is absent or empty
+      # KasaMonitor__MqttPasswordFile: "/run/secrets/mqtt-kasamonitor.password"   # the default path of the file
+
+      # --- Prometheus remote write of the live samples (initial values; better: /settings/export) ---------------
+      KasaMonitor__RemoteWriteEnabled: "false"
+      KasaMonitor__RemoteWriteUrl: ""                            # e.g. http://192.168.1.10:9090/api/v1/write
+      KasaMonitor__RemoteWriteUser: ""                           # optional basic auth
+      KasaMonitor__RemoteWritePassword: "${KASA_REMOTE_WRITE_PASSWORD:-}"
+
+      # --- HTTP API --------------------------------------------------------------------------------------------
+      KasaMonitor__NilmApiToken: "${KASA_NILM_API_TOKEN:-}"      # X-Api-Key for /api/nilm/* (set before exposing outside the LAN)

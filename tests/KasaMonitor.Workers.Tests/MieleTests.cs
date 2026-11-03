@@ -230,7 +230,10 @@ public class MieleAuthTests
     [Fact]
     public async Task ClientSecret_FromEnvOrFile_NeverWithoutOne_AndAnotherClientIdClearsTheTokens()
     {
-        MieleClientSecret.Load(new MieleSettingsDefaults(MieleClientSecret: " env-secret ")).Value.Should().Be("env-secret");
+        MieleClientSecret.Load(new MieleSettingsDefaults(MieleClientSecret: " env-secret "), _ => null).Value.Should().Be("env-secret");
+        // 0.12.0: a mounted file wins over the variable; an empty file leaves the variable in charge.
+        MieleClientSecret.Load(new MieleSettingsDefaults(MieleClientSecret: "env-secret"), _ => "file-secret").Value.Should().Be("file-secret");
+        MieleClientSecret.Load(new MieleSettingsDefaults(MieleClientSecret: "env-secret"), _ => "").Source.Should().Contain("KasaMonitor__MieleClientSecret");
         var fromFile = MieleClientSecret.Load(new MieleSettingsDefaults(MieleClientSecretFile: "/run/secrets/x"), p => p == "/run/secrets/x" ? "file-secret\n" : null);
         fromFile.Value.Should().Be("file-secret");
         fromFile.Source.Should().Be("fișierul /run/secrets/x");

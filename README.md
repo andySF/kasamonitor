@@ -4,25 +4,39 @@ Self-hosted monitoring for TP-Link smart plugs with energy metering: **Kasa** (e
 port 9999) and **Tapo** (e.g. P110/P115, KLAP and AES "securePassthrough" protocols), plus **Shelly Gen2/Gen3**
 plugs and energy meters (e.g. Shelly EM Gen3, local JSON-RPC; the only write is the relay switch, after a confirmation), and a
 **Viessmann gas boiler** read through the ViCare cloud API (read-only). Blazor Server app (.NET 10)
-with SQLite, a web UI on port 8910 and a Prometheus `/metrics` endpoint. An optional Prometheus + Grafana stack
+with SQL Server, a web UI on port 8910 and a Prometheus `/metrics` endpoint. An optional Prometheus + Grafana stack
 with a ready-made dashboard and alert rules is included.
 
-Version: **0.11.0** (`Directory.Build.props`). Docker image: `duobit/kasamonitor`.
+Version: **0.12.0** (`Directory.Build.props`). Docker image: `duobit/kasamonitor`.
+
+**Requirements:** SQL Server 2019+ (any edition reachable from the Docker host; Express is limited to 10 GB per
+database), a Docker host on the same LAN as the devices (host networking). Up to 0.11 the data were in a SQLite file;
+moving them is described in [Updating](#updating).
 
 ## Quick start
 
 ```bash
 git clone https://github.com/andySF/kasamonitor.git
 cd kasamonitor
-# edit deploy/docker-compose.yml: KasaMonitor__BroadcastNetworks = your LAN broadcast address (e.g. 192.168.1.255)
-docker compose -f deploy/docker-compose.yml up -d
+# 1. the database, its login and user, once (as a sysadmin of the SQL Server):
+sqlcmd -S <sql host>,1433 -U sa -C -i deploy/sql/create-database.sql -v PASSWORD="<kasamonitor password>"
+# 2. the stack: edit deploy/docker-compose.yml (KasaMonitor__BroadcastNetworks = your LAN broadcast address, e.g.
+#    192.168.1.255) and put the connection string in an env file, never in the compose file:
+echo 'KASA_SQL_CONNECTION=Server=<sql host>,1433;Database=kasamonitor;User Id=kasamonitor;Password=<…>;TrustServerCertificate=True' > kasamonitor.env
+echo 'KASA_DATA_DIR=/srv/kasamonitor/data' >> kasamonitor.env   # absolute: DataProtection keys and the NILM model
+docker compose -f deploy/docker-compose.yml --env-file kasamonitor.env up -d
 ```
+
+In Portainer, paste `deploy/docker-compose.yml` as a stack and set `KASA_SQL_CONNECTION` and `KASA_DATA_DIR` (both
+required: the stack does not start without them) in the stack's environment variables (`deploy/README.md`). The app creates the tables itself (EF Core migrations at start-up)
+and waits up to 120 s for SQL Server.
 
 Open `http://<host>:8910/`. Plugs on the same LAN are discovered within a few seconds; for Tapo plugs enter your
 TP-Link (Tapo app) account in `/settings/tplink` and press **Adaugă** → TP-Link → **Scanează acum** on `/dispozitive`.
 
 `network_mode: host` is required: discovery uses UDP broadcasts (9999 for Kasa, 20002 for Tapo) and mDNS multicast
-(224.0.0.251:5353 for Shelly) that do not leave a Docker bridge network. The database and the key ring live in `deploy/data/` (volume `./data:/data`).
+(224.0.0.251:5353 for Shelly) that do not leave a Docker bridge network. The data live in SQL Server; the container's
+`/data` volume keeps only the key ring (`dp-keys/`) and the NILM classifier.
 
 ## Features
 
@@ -76,7 +90,7 @@ TP-Link (Tapo app) account in `/settings/tplink` and press **Adaugă** → TP-Li
   in the address) for electricity, gas and boiler, Miele, detected consumers, climate (with heating degree days and the
   energy signature), costs and events; Δ at the same share of the previous period, drill-down, CSV per section; and
   „Rapoarte” on `/centrala` (gas, boiler electricity, heat produced). See [History](#history-history-istoric).
-- **Version in the menu**: „v0.11.0” at the right of the navigation bar; the tooltip shows the commit and the build time.
+- **Version in the menu**: „v0.12.0” at the right of the navigation bar; the tooltip shows the commit and the build time.
 - **Browser errors in the server log**: JavaScript errors and the Blazor error banner are reported to
   `POST /api/client-error` and logged at Warning (category `KasaMonitor.ClientErrors`), so `docker logs` shows them.
 - **HTTP API for the appliance detection** (`/api/nilm/*`, LAN only): list, sheet, label, merge, add to, hide, regroup,
@@ -153,7 +167,7 @@ a switch, number, select or button is shown with its value and „comandă (neac
 
 - **Connection** (`/settings/mqtt`): broker (name or address), port, user, TLS (off on a LAN), discovery prefix
   (default `homeassistant`), „Adaugă automat ce se descoperă” (default off). The password is never stored nor shown: it
-  comes from `KasaMonitor__MqttPassword` or the file `KasaMonitor__MqttPasswordFile` (default
+  comes from the file `KasaMonitor__MqttPasswordFile` (it wins when present, 0.12.0) or `KasaMonitor__MqttPassword` (default
   `/run/secrets/mqtt-kasamonitor.password`), read once at start-up. MQTT 3.1.1 through MQTTnet 5; a refused login is
   shown as „Eroare: autentificare refuzată”, not as connected; reconnection every 5 → 60 s, everything re-subscribed.
 - **Discovery**: subscribes to `<prefix>/#` and reads both formats — one payload per entity
@@ -212,7 +226,7 @@ integration's tab starts with its state (OK / Atenție / Eroare / Oprit / Neconf
 holds only how the app talks to that vendor (account, key, intervals, API budget); what is done with each device
 (name, room, role, links, withdraw) is on the devices page. Each tab has its own „Salvează” and writes only its own keys
 (the other tabs' values are kept even if they were changed meanwhile); leaving a tab with unsaved changes asks first.
-Values are stored in the SQLite `Settings` table and applied without a restart. Environment variables are **initial
+Values are stored in the `Settings` table and applied without a restart. Environment variables are **initial
 values only**: they are used while the key has not been saved from `/settings`.
 
 | Setting | Tab (`/settings/…`) | Environment variable (initial value) | Default | Notes |
@@ -240,7 +254,7 @@ values only**: they are used while the key has not been saved from `/settings`.
 | Appliance detection | Aplicație | `KasaMonitor__NilmEnabled` | `true` | events, signatures and runs from the main meter (needs a main meter with the live stream) |
 | Event threshold (W) | Aplicație | `KasaMonitor__MinEventDeltaW` | `30` | 5–10000; smallest steady-state step of the house power recorded as an event |
 | Re-clustering window (days) | Aplicație | `KasaMonitor__ClusterWindowDays` | `30` | 1–365; events grouped again every night at 03:30 |
-| ML model | Aplicație | `KasaMonitor__MlEnabled` | `true` | nightly ML.NET classifier over the labelled events; saved as `<db dir>/nilm-model.zip` |
+| ML model | Aplicație | `KasaMonitor__MlEnabled` | `true` | nightly ML.NET classifier over the labelled events; saved as `<data dir>/nilm-model.zip` |
 | Keep raw readings (months) | Aplicație | `KasaMonitor__ReadingsRetentionMonths` | `0` = unlimited | raw 10-second readings only; daily history and minute aggregates are never deleted. Saving a value that would delete existing readings asks for confirmation with the exact row count |
 | Gas boiler | Viessmann | `KasaMonitor__HeatingEnabled` | `true` | reads the Viessmann boiler once the ViCare account is connected (`/centrala`) |
 | Viessmann Client ID | Viessmann | `KasaMonitor__ViessmannClientId` | — | client of the Viessmann developer portal; the OAuth tokens are never configured, they come from „Conectează ViCare” and are stored encrypted |
@@ -251,22 +265,23 @@ values only**: they are used while the key has not been saved from `/settings`.
 | Keep boiler readings (days) | Viessmann | `KasaMonitor__HeatingReadingsRetentionDays` | `0` = unlimited | `HeatingReadings` older than this are deleted once a day; daily gas history is never deleted |
 | Miele Client ID | Miele | `KasaMonitor__MieleClientId` | — | client of developer.miele.com; the OAuth tokens come from „Conectează Miele” (`/aparate`) and are stored encrypted |
 | — (Miele client secret file) | Miele (state only) | `KasaMonitor__MieleClientSecretFile` | `/run/secrets/miele-client.secret` | file with the client secret, read once at startup; never stored in the database, shown or logged ([Miele appliances](#miele-appliances)) |
-| — (Miele client secret) | Miele (state only) | `KasaMonitor__MieleClientSecret` | — | alternative to the file (wins when set); prefer the file |
+| — (Miele client secret) | Miele (state only) | `KasaMonitor__MieleClientSecret` | — | used when the file is missing or empty (0.12.0: the file wins); e.g. a variable of the Portainer stack |
 | Outdoor latitude / longitude | Open-Meteo | `KasaMonitor__ClimateLatitude`, `KasaMonitor__ClimateLongitude` | — (off) | location for the outdoor temperature of Open-Meteo (`/settings/openmeteo`); both empty = no request |
 | — (Govee API key file) | Govee (state only) | `GOVEE_API_KEY_FILE` or `KasaMonitor__GoveeApiKeyFile` | `/run/secrets/govee-api.key` | file with the Govee Developer API key, read once at startup; never stored in the database, shown or logged ([Climate](#climate)) |
-| — (Govee API key) | Govee (state only) | `KasaMonitor__GoveeApiKey` | — | alternative to the file (wins when set); prefer the file |
+| — (Govee API key) | Govee (state only) | `KasaMonitor__GoveeApiKey` | — | used when the file is missing or empty (0.12.0: the file wins); e.g. a variable of the Portainer stack |
 | Heating degree days base (°C) | Aplicație | `KasaMonitor__HeatingDegreeDaysBaseC` | `18` | 10–25; /history „Climă”: degree days = base − outdoor daily mean on days with a mean ≤ base − 3 °C (Eurostat 18 / 15; SR 4839 uses another method, 20 / 12). Saved in /settings/aplicatie (the database wins once saved) |
 | Boiler time zone | Viessmann | `KasaMonitor__BoilerTimeZone` | `Europe/Berlin` | IANA zone of the boiler's day: its „today” counters reset at midnight there (Viessmann: Central European Time, 00:00 CET/CEST = 01:00 Romanian time); every daily attribution of the boiler's gas, electricity and heat uses it |
+| — (database) | — | `ConnectionStrings__Kasa` | — (**required**) | SQL Server connection string, read at startup; the login needs `db_owner` on its database (`deploy/sql/create-database.sql`); the password never reaches the UI or the log |
+| — (data directory) | — | `KasaMonitor__DataDir` | `/data` (image), `data` (development) | DataProtection keys (`dp-keys/`) and `nilm-model.zip`; replaces `KasaMonitor__DbPath` (0.11 and earlier) |
 | MQTT broker / port / user | MQTT | `KasaMonitor__MqttHost`, `KasaMonitor__MqttPort`, `KasaMonitor__MqttUser` | — / `1883` / — | 0.11; empty broker = the integration is „Neconfigurat” |
 | MQTT TLS, discovery prefix, auto-add, on/off | MQTT | — | off, `homeassistant`, off, on | |
 | Keep raw generic readings (days) | MQTT | — | `90` | `0` = never deleted; the hourly rollups are kept forever |
 | Generic series limit on /metrics | MQTT | — | `500` | 10–10,000; above it the rest is skipped with a warning (log, MQTT tab) |
 | — (MQTT password file) | MQTT (state only) | `KasaMonitor__MqttPasswordFile` | `/run/secrets/mqtt-kasamonitor.password` | read once at start-up; never stored in the database, shown or logged |
-| — (MQTT password) | MQTT (state only) | `KasaMonitor__MqttPassword` | — | alternative to the file (wins when set); prefer the file |
-| — | — | `KasaMonitor__DbPath` | `/data/kasa.db` (image) | |
+| — (MQTT password) | MQTT (state only) | `KasaMonitor__MqttPassword` | — | used when the file is missing or empty (0.12.0: the file wins); e.g. a variable of the Portainer stack |
 | — | — | `KasaMonitor__NilmApiToken` | — | optional; when set, every `/api/nilm/*` route needs the header `X-Api-Key` with this value. Set it before exposing KasaMonitor outside the LAN ([HTTP API (LAN)](#http-api-lan)); read per request |
 
-The DataProtection keys are kept next to the database, in `<db dir>/dp-keys` (`/data/dp-keys` in the container,
+The DataProtection keys are kept in the data directory, in `<data dir>/dp-keys` (`/data/dp-keys` in the container,
 on the persistent volume). If that directory is lost, the stored password cannot be decrypted and must be entered
 again in `/settings` (the log shows `Stored secret could not be decrypted`). On Linux the keys are stored
 unencrypted on disk (ASP.NET logs "No XML encryptor configured" at startup); protect the volume.
@@ -1039,8 +1054,8 @@ between a total and gas alone.
   month the estimate says „Estimarea facturii apare după primele 6 ore ale lunii.”
 - Footer: the age of the main meter's latest value, links to the pages and to Grafana (setting „Grafana”).
 
-Performance: every period is computed on the thread pool (never on a browser's circuit: SQLite runs the "async" queries
-synchronously) and shared by all browsers — concurrent requests wait for the same computation. A value is fresh for the
+Performance: every period is computed on the thread pool (never on a browser's circuit; a rule from the SQLite days, when
+the "async" queries ran synchronously, kept with SQL Server) and shared by all browsers — concurrent requests wait for the same computation. A value is fresh for the
 current day 1 minute, a week / month / year in progress 10 minutes, a past period until the day changes; an expired
 value is still served while one recomputation runs (stale-while-revalidate); at most 32 periods are kept. The current day
 and month are kept warm in the background; each computation is logged at Debug with its duration (category
@@ -1274,7 +1289,7 @@ meter** (`/dispozitive`) with the live stream on (1 s). Page `/consumatori`, men
    a plug or that you labelled**, not on the whole house. A new event without a plug label gets the prediction only
    when the probability is ≥ 0.7 **and** the event is within 2 × eps of that class's centre (an open-set check: an
    appliance no plug has seen is otherwise forced into the nearest known class); it then joins the signature with that
-   name, otherwise it stays in its DBSCAN signature. Saved as `<db dir>/nilm-model.zip`. ML.NET adds ≈ 5.5 MB to the
+   name, otherwise it stays in its DBSCAN signature. Saved as `<data dir>/nilm-model.zip`. ML.NET adds ≈ 5.5 MB to the
    published application (measured `dotnet publish -r linux-x64`: 31 MB in total); the trainer is managed code.
 8. **Runs and energy** (`ApplianceRuns`): a switch-on opens a run; it closes with the next switch-off of the same
    signature whose magnitude is within eps (first in, first out; `EndReason` 0), or with any switch-off that brings the
@@ -1438,11 +1453,15 @@ curl -s -X POST "$K/api/nilm/plugs/<plug id>/appliance" -H "Content-Type: applic
 | Daily / monthly energy | `DailyEnergy`, `MonthlyEnergy` | one row per plug per day / month | never |
 | Per-entity preferences (0.11) | `EntityPrefs` | one row per entity whose display the user changed | never (a row back to every default is deleted) |
 | Generic devices and entities (0.11) | `GenericDevices`, `GenericEntities` | one row per added device / entity (with its discovery payload) | never (a removed entity is marked) |
-| Generic raw readings (0.11) | `GenericReadings` | ≈ 20 bytes per row (integer key, WITHOUT ROWID): on a change above the threshold, at least every 30 min, at most one per entity in 10 s | after 90 days (MQTT tab; `0` = never), daily |
+| Generic raw readings (0.11) | `GenericReadings` | ≈ 20 bytes per row (integer key; clustered on (EntityId, Ts) on SQL Server, WITHOUT ROWID on SQLite before 0.12.0): on a change above the threshold, at least every 30 min, at most one per entity in 10 s | after 90 days (MQTT tab; `0` = never), daily |
 | Generic hourly rollups (0.11) | `GenericHourly` | one row per entity and hour | never |
 
-Up to and including 0.2.1, raw readings older than 30 days were deleted automatically; from the next version nothing is deleted unless you set
-a retention. SQLite does not shrink the file after deletions (the space is reused); run `VACUUM` manually if needed.
+The sizes above were measured on SQLite (0.11 and earlier); on SQL Server a row takes about as much (fixed-width
+`bigint`/`float` columns, page overhead), plus the indexes. Up to and including 0.2.1, raw readings older than 30 days
+were deleted automatically; since then nothing is deleted unless you set a retention. Deletions run in batches of
+5,000 rows, each its own short transaction; SQL Server reuses the freed pages but does not shrink the data file (no
+need to). The database is created with recovery model SIMPLE (`deploy/sql/create-database.sql`): the transaction log
+stays small and the restore point is the last full backup.
 
 ## Logs
 
@@ -1472,20 +1491,28 @@ dotnet build KasaMonitor.sln
 dotnet test KasaMonitor.sln
 ```
 
+Most tests run the data layer on SQLite in memory (same EF model, `EnsureCreated`). `tests/KasaMonitor.SqlServer.Tests`
+runs on a real SQL Server in Docker (Testcontainers, `mcr.microsoft.com/mssql/server:2022-latest`): the `InitialCreate`
+migration, the collation, the repository tests again, the app start-up and the data migration tool. It is skipped when
+Docker is not available (or with `KASA_SQLSERVER_TESTS=off`).
+
+To run the app locally, give it a development database (never a production one) through the user secrets of the web
+project: `dotnet user-secrets --project src/KasaMonitor.Web set ConnectionStrings:Kasa "Server=localhost,1433;Database=kasamonitor_dev;…"`.
+
 ## Docker image
 
 From the repository root, with Docker running and `docker login` done once:
 
 ```powershell
-.\deploy\build-and-push.ps1 -Version 0.11.0         # build :0.11.0 + :latest and push both
-.\deploy\build-and-push.ps1 -Version 0.11.0 -NoPush  # local build only
+.\deploy\build-and-push.ps1 -Version 0.12.0         # build :0.12.0 + :latest and push both
+.\deploy\build-and-push.ps1 -Version 0.12.0 -NoPush  # local build only
 ```
 
 or manually:
 
 ```bash
-docker build -t duobit/kasamonitor:0.11.0 -t duobit/kasamonitor:latest -f deploy/Dockerfile .
-docker push duobit/kasamonitor:0.11.0
+docker build -t duobit/kasamonitor:0.12.0 -t duobit/kasamonitor:latest -f deploy/Dockerfile .
+docker push duobit/kasamonitor:0.12.0
 docker push duobit/kasamonitor:latest
 ```
 
@@ -1494,35 +1521,29 @@ To publish under your own Docker Hub account, change the image name (`-Repo` par
 
 ## Updating
 
-1. Back up `deploy/data/kasa.db` (with the container stopped, or `sqlite3 kasa.db ".backup kasa.bak"`). Upgrading
-   from 0.1.0 runs the migration `AddPlugProtocol`, which only adds the columns `Plugs.Protocol` and
-   `Plugs.UnsupportedReason`; existing data stays and existing plugs become `legacy`. Upgrading to 0.3.0 runs
-   `AddPlugChannel`: adds `Plugs.Channel` (0 for every existing plug) and replaces the unique index on `Mac` with one
-   on (`Mac`, `Channel`); no other table is touched. Downgrading to 0.2.x after that (the migration's `Down`) needs
-   the rows with `Channel > 0` deleted first, otherwise re-creating the unique index on `Mac` fails. Upgrading to
-   0.4.0 runs `AddRolesAndLiveStream`: adds `Plugs.Role` (0; Shelly meter channels `S3EM…`/`SPEM…`/`EMG3`/`ProEM`/`Pro3EM`
-   become 2 = sub-meter) and `Plugs.StreamEnabled` (1; 0 for those sub-meters), a partial unique index (one main
-   meter) and the empty tables `LiveSamples`, `LiveMinuteAggregates`, `RelayCommands`; no existing table is rewritten.
-   After the update, set the main meter on `/dispozitive` and change Grafana dashboards that used
-   `model!~"S3EM.*|SPEM.*"` to `role="plug"`. Prometheus series written before the upgrade have no `role` label, so
-   `{role="plug"}` does not see them: for the 30-day panels use `{role!~"main|sub", model!~"S3EM.*|SPEM.*"}` until
-   30 days have passed after the upgrade, then `{role="plug"}`. Upgrading to 0.7.0 runs `AddNilm`: it adds `Plugs.NilmIgnored`
-   (0) and creates the empty tables `MeterEvents`, `ApplianceSignatures`, `ApplianceRuns`; at the first start the
-   detector processes the stored `LiveSamples` of the main meter (backfill), then re-clusters them. Upgrading to 0.8.0
-   runs `AddHeatingReadingCounters`: four nullable columns on `HeatingReadings` (older rows keep NULL, so hourly boiler
-   bars start with the first reading after the upgrade). Upgrading to 0.8.1 needs no migration: the new setting
-   `BoilerTimeZone` (default `Europe/Berlin`) moves the boiler's days to its own midnight (01:00 Romanian time), and at
-   the first start the current boiler day is repaired if 0.8.0 left yesterday's total in its highest value (logged at
-   Information). Rows of earlier days are not rewritten. Upgrading to 0.8.2 needs no migration: at the first start the
-   appliance detection re-clusters right away (the marker `NilmLastReclusterTs` does not exist yet), with the anchors,
-   the unknown transients and the automatic merge; the merges are logged at Information. Upgrading to 0.11.0 runs one
-   additive migration, `AddEntityPrefsAndGenericDevices` (empty tables `EntityPrefs`, `GenericDevices`,
-   `GenericEntities`, `GenericReadings`, `GenericHourly`); no existing table is touched. Copy the
-   database off the host before updating (a copy on the same disk is not a backup). MQTT stays „Neconfigurat” until a
-   broker is set on `/settings/mqtt` (or `KasaMonitor__MqttHost`); mount the password as a file
-   (`KasaMonitor__MqttPasswordFile`).
-2. `docker compose -f deploy/docker-compose.yml pull && docker compose -f deploy/docker-compose.yml up -d`
-   (Portainer: *Update the stack* with *Re-pull image and redeploy*).
+1. Back up the database (`BACKUP DATABASE [kasamonitor] TO DISK = …`, or the last nightly backup) and the `/data`
+   volume (`dp-keys/`).
+2. `docker compose -f deploy/docker-compose.yml --env-file kasamonitor.env pull && docker compose -f deploy/docker-compose.yml --env-file kasamonitor.env up -d`
+   (Portainer: *Update the stack* with *Re-pull image and redeploy*). New migrations are applied at start-up.
 3. Check `http://<host>:8910/health`, `/dispozitive` (Adaugă → Scanează acum) and `curl -s http://<host>:8910/metrics | grep kasa_online`.
+
+### From SQLite (0.11 and earlier) to 0.12.0
+
+0.12.0 replaces the SQLite file with SQL Server; the schema is one new migration (`InitialCreate`), and the data are
+copied once with `tools/KasaMonitor.DataMigration` (`kasa-migrate`):
+
+1. Update to the last SQLite release (0.11.x) first and let it start once (its migrations bring `kasa.db` to the last
+   SQLite schema). Then stop it and take a consistent copy of `kasa.db` (`sqlite3 kasa.db ".backup kasa-copy.db"`).
+2. Create the database and the login (`deploy/sql/create-database.sql`); do not start 0.12.0 yet.
+3. `ConnectionStrings__Kasa='…' dotnet run --project tools/KasaMonitor.DataMigration -c Release -- --source kasa-copy.db --report migrate-report.md`:
+   applies the migration, copies every table (batches of 5,000 rows, `SqlBulkCopy`, ids kept) and verifies each one
+   (`COUNT(*)` and the sums of the numeric columns); a non-empty database is refused (`--truncate`, `--resume`).
+4. Copy `dp-keys/` (and `nilm-model.zip`) of the old `/data` into the new data directory; without the keys the
+   passwords and tokens saved in `/settings` must be entered again.
+5. Deploy the 0.12.0 stack (`ConnectionStrings__Kasa`, `KasaMonitor__DataDir`; `KasaMonitor__DbPath` is no longer
+   read) and check `/health`.
+
+Details, timings and the backup with SQL Agent: `deploy/README.md`. The notes of the upgrades between SQLite versions
+(0.1 → 0.11) are in the README of 0.11.
 
 See also `deploy/README.md` (troubleshooting).

@@ -12,10 +12,11 @@ public sealed class EntityPrefsRepository : IEntityPrefsRepository
 
     public async Task<IReadOnlyDictionary<string, EntityPrefs>> ListAsync(string keyPrefix, CancellationToken ct)
     {
-        // Ordinal prefix match on the primary key (a range, not LIKE: the keys contain ':' and '/', never wildcards).
-        var upper = keyPrefix + '\uffff';
+        // Prefix match on the primary key: StartsWith becomes LIKE 'prefix%' (wildcards escaped by EF; an index seek on SQL
+        // Server). Not a range up to prefix + U+FFFF: the database's linguistic collation ignores that character and the
+        // range came back empty on SQL Server (0.12.0). The ordinal filter below keeps exact case (SQLite's LIKE ignores it).
         var rows = await _db.EntityPrefs.AsNoTracking()
-            .Where(p => string.Compare(p.Key, keyPrefix) >= 0 && string.Compare(p.Key, upper) < 0)
+            .Where(p => p.Key.StartsWith(keyPrefix))
             .ToListAsync(ct);
         return rows.Where(r => r.Key.StartsWith(keyPrefix, StringComparison.Ordinal)).ToDictionary(r => r.Key, ToModel, StringComparer.Ordinal);
     }
@@ -28,7 +29,7 @@ public sealed class EntityPrefsRepository : IEntityPrefsRepository
 
     public async Task SaveAsync(EntityPrefs prefs, CancellationToken ct)
     {
-        if (string.IsNullOrWhiteSpace(prefs.EntityKey) || prefs.EntityKey.Length > 450) throw new ArgumentException("Cheia entității lipsește sau e prea lungă.", nameof(prefs));
+        if (string.IsNullOrWhiteSpace(prefs.EntityKey) || prefs.EntityKey.Length > KasaDbContext.EntityPrefKeyLength) throw new ArgumentException("Cheia entității lipsește sau e prea lungă.", nameof(prefs));
         var e = await _db.EntityPrefs.FindAsync(new object?[] { prefs.EntityKey }, ct);
         if (prefs.IsEmpty)
         {

@@ -100,27 +100,34 @@ public sealed class PlugRepository : IPlugRepository
 
     public async Task SetRoleAsync(Guid plugId, PlugRole role, CancellationToken ct)
     {
-        await using var tx = await _db.Database.BeginTransactionAsync(ct);
-        var existing = await _db.Plugs.FindAsync(new object?[] { plugId }, ct);
-        if (existing is null) return;
-        if (role == PlugRole.MainMeter)
+        // The explicit transaction runs inside the execution strategy (retried as a whole on a transient error); a retry
+        // starts from a clean change tracker, otherwise the demotion of the previous main meter (rolled back, but still
+        // tracked as saved) would not be written again and the unique index would refuse the new one.
+        await _db.Database.CreateExecutionStrategy().ExecuteAsync(async () =>
         {
-            // At most one main meter (also a partial unique index): demote the previous one first, in its own statement.
-            var previous = await _db.Plugs.Where(p => p.Role == (int)PlugRole.MainMeter && p.Id != plugId).ToListAsync(ct);
-            foreach (var p in previous)
+            _db.ChangeTracker.Clear();
+            await using var tx = await _db.Database.BeginTransactionAsync(ct);
+            var existing = await _db.Plugs.FindAsync(new object?[] { plugId }, ct);
+            if (existing is null) return;
+            if (role == PlugRole.MainMeter)
             {
-                p.Role = (int)PlugRole.SubMeter;
-                p.StreamEnabled = PlugRoles.DefaultStreamEnabled(PlugRole.SubMeter);
+                // At most one main meter (also a partial unique index): demote the previous one first, in its own statement.
+                var previous = await _db.Plugs.Where(p => p.Role == (int)PlugRole.MainMeter && p.Id != plugId).ToListAsync(ct);
+                foreach (var p in previous)
+                {
+                    p.Role = (int)PlugRole.SubMeter;
+                    p.StreamEnabled = PlugRoles.DefaultStreamEnabled(PlugRole.SubMeter);
+                }
+                await _db.SaveChangesAsync(ct);
+            }
+            if (existing.Role != (int)role)
+            {
+                existing.Role = (int)role;
+                existing.StreamEnabled = PlugRoles.DefaultStreamEnabled(role);   // a new role starts with its default stream setting
             }
             await _db.SaveChangesAsync(ct);
-        }
-        if (existing.Role != (int)role)
-        {
-            existing.Role = (int)role;
-            existing.StreamEnabled = PlugRoles.DefaultStreamEnabled(role);   // a new role starts with its default stream setting
-        }
-        await _db.SaveChangesAsync(ct);
-        await tx.CommitAsync(ct);
+            await tx.CommitAsync(ct);
+        });
     }
 
     public async Task SetStreamEnabledAsync(Guid plugId, bool enabled, CancellationToken ct)

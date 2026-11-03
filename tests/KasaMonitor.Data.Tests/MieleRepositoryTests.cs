@@ -1,9 +1,7 @@
 using FluentAssertions;
 using KasaMonitor.Core.Miele;
 using KasaMonitor.Data.Repositories;
-using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
-using Microsoft.EntityFrameworkCore.Infrastructure;
 using Xunit;
 
 namespace KasaMonitor.Data.Tests;
@@ -11,23 +9,6 @@ namespace KasaMonitor.Data.Tests;
 public class MieleRepositoryTests
 {
     private static readonly DateTimeOffset T0 = new(2026, 11, 2, 9, 0, 0, TimeSpan.Zero);
-
-    [Fact]
-    public void AddMiele_OnTopOfTheDeployedSchema_OnlyAddsTheMieleTables()
-    {
-        using var conn = new SqliteConnection("Filename=:memory:");
-        conn.Open();
-        using var ctx = new KasaDbContext(new DbContextOptionsBuilder<KasaDbContext>().UseSqlite(conn).Options);
-        ctx.GetService<Microsoft.EntityFrameworkCore.Migrations.IMigrator>().Migrate("20261101185832_AddHeatingReadingCounters");
-        var before = ctx.Database.SqlQueryRaw<string>("SELECT name AS Value FROM sqlite_master WHERE type='table' ORDER BY name").ToList();
-
-        // Up to the last Miele migration (later ones add their own tables, e.g. AddClimate).
-        ctx.GetService<Microsoft.EntityFrameworkCore.Migrations.IMigrator>().Migrate("20261102121526_AddMieleCycleSource");
-
-        var after = ctx.Database.SqlQueryRaw<string>("SELECT name AS Value FROM sqlite_master WHERE type='table' ORDER BY name").ToList();
-        after.Except(before).Should().BeEquivalentTo("MieleDevices", "MieleStateSnapshots", "MieleCycles");
-        before.Except(after).Should().BeEmpty();
-    }
 
     [Fact]
     public async Task Device_Upsert_KeepsAliasPlugAndArchive_UpdatesIdent()
@@ -75,27 +56,6 @@ public class MieleRepositoryTests
         (await repo.CountClosedCyclesAsync("dev", CancellationToken.None)).Should().Be(1);
         MieleRepository.PhasesToJson(phases).Should().Contain("\"phaseText\":\"Spălare principală\"").And.Contain("\"toTs\":null");
         MieleRepository.PhasesFromJson("not json").Should().BeEmpty();
-    }
-
-    [Fact]
-    public void AddMieleCycleSource_On085_ExistingCyclesBecomeObserved_ApiStartUniquePerDevice()
-    {
-        using var conn = new SqliteConnection("Filename=:memory:");
-        conn.Open();
-        using var ctx = new KasaDbContext(new DbContextOptionsBuilder<KasaDbContext>().UseSqlite(conn).Options);
-        ctx.GetService<Microsoft.EntityFrameworkCore.Migrations.IMigrator>().Migrate("20261102113425_AddMiele");
-        ctx.Database.ExecuteSqlRaw("INSERT INTO MieleCycles (DeviceId, StartTs, EndTs, LastRunningTs, PhasesJson) VALUES ('dev', 100, 200, 200, '[]')");
-
-        ctx.Database.Migrate();
-
-        ctx.Database.SqlQueryRaw<string>("SELECT Source AS Value FROM MieleCycles").ToList().Should().Equal("observed");
-        ctx.Database.SqlQueryRaw<int>("SELECT COUNT(*) AS Value FROM MieleCycles WHERE ApiStartTs IS NULL AND ApiEndTs IS NULL AND ApiEnergyKwh IS NULL AND ApiWaterL IS NULL AND EnergyProfileJson IS NULL").ToList().Should().Equal(1);
-        // NULL keys never collide (observed cycles), a second row with the same (DeviceId, ApiStartTs) does.
-        ctx.Database.ExecuteSqlRaw("INSERT INTO MieleCycles (DeviceId, StartTs, LastRunningTs, PhasesJson, Source) VALUES ('dev', 300, 300, '[]', 'observed')");
-        ctx.Database.ExecuteSqlRaw("INSERT INTO MieleCycles (DeviceId, StartTs, LastRunningTs, PhasesJson, Source, ApiStartTs) VALUES ('dev', 400, 400, '[]', 'api', 400)");
-        ctx.Database.ExecuteSqlRaw("INSERT INTO MieleCycles (DeviceId, StartTs, LastRunningTs, PhasesJson, Source, ApiStartTs) VALUES ('other', 400, 400, '[]', 'api', 400)");
-        var duplicate = () => ctx.Database.ExecuteSqlRaw("INSERT INTO MieleCycles (DeviceId, StartTs, LastRunningTs, PhasesJson, Source, ApiStartTs) VALUES ('dev', 401, 401, '[]', 'api', 400)");
-        duplicate.Should().Throw<SqliteException>().Where(e => e.Message.Contains("UNIQUE"));
     }
 
     [Fact]

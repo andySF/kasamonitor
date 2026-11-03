@@ -389,12 +389,18 @@ public sealed class ClimateTests : IDisposable
     }
 
     [Fact]
-    public void GoveeKey_FromTheEnvironmentOrTheFile_NeverInToString()
+    public void GoveeKey_FromTheFileOrTheEnvironment_NeverInToString()
     {
-        var fromEnv = GoveeApiKey.Load(new ClimateSettingsDefaults(GoveeApiKey: " k1 "), _ => "k2");
+        var fromEnv = GoveeApiKey.Load(new ClimateSettingsDefaults(GoveeApiKey: " k1 "), _ => null);
         fromEnv.Value.Should().Be("k1");
         fromEnv.Source.Should().Contain("KasaMonitor__GoveeApiKey");
         fromEnv.ToString().Should().NotContain("k1");
+
+        // 0.12.0: a mounted file wins over the variable; an empty file leaves the variable in charge.
+        var both = GoveeApiKey.Load(new ClimateSettingsDefaults(GoveeApiKey: "k1"), _ => "k2");
+        both.Value.Should().Be("k2");
+        both.Source.Should().StartWith("fișierul ");
+        GoveeApiKey.Load(new ClimateSettingsDefaults(GoveeApiKey: "k1"), _ => " ").Value.Should().Be("k1");
 
         var fromFile = GoveeApiKey.Load(new ClimateSettingsDefaults(GoveeApiKeyFile: "/run/secrets/x.key"), p => p == "/run/secrets/x.key" ? "k2\n" : null);
         fromFile.Value.Should().Be("k2");

@@ -1,9 +1,7 @@
 using FluentAssertions;
 using KasaMonitor.Core.Devices.Entities;
 using KasaMonitor.Data.Repositories;
-using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
-using Microsoft.EntityFrameworkCore.Infrastructure;
 using Xunit;
 
 namespace KasaMonitor.Data.Tests;
@@ -37,20 +35,4 @@ public class EntityPrefsRepositoryTests
         }
     }
 
-    [Fact]
-    public void Migration_AddEntityPrefs_IsAdditive_OnTheDeployedSchema()
-    {
-        using var conn = new SqliteConnection("Filename=:memory:");
-        conn.Open();
-        var opts = new DbContextOptionsBuilder<KasaDbContext>().UseSqlite(conn).Options;
-        using var ctx = new KasaDbContext(opts);
-        var migrator = ctx.GetService<Microsoft.EntityFrameworkCore.Migrations.IMigrator>();
-        migrator.Migrate("20261102155409_AddClimateDaily");
-        ctx.Database.ExecuteSqlRaw("INSERT INTO Settings (Key, Value) VALUES ('Tariff', '1.30')");
-
-        ctx.Database.Migrate();
-
-        ctx.Database.SqlQueryRaw<string>("SELECT Value FROM Settings WHERE Key = 'Tariff'").ToList().Should().Equal("1.30");
-        ctx.Database.SqlQueryRaw<int>("SELECT COUNT(*) AS Value FROM EntityPrefs").ToList().Should().Equal(0);
-    }
 }

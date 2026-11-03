@@ -17,7 +17,7 @@ public sealed class HomeFactory : WebApplicationFactory<Program>
 
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
-        builder.UseSetting("KasaMonitor:DbPath", Path.Combine(Dir, "kasa.db"));
+        builder.UseSqliteTestDatabase(Dir);
         builder.UseSetting("KasaMonitor:GrafanaUrl", "http://grafana.example:3000/d/kasa");
         builder.ConfigureTestServices(s => s.RemoveAll<IHostedService>());
     }

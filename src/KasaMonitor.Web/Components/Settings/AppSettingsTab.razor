@@ -117,7 +117,7 @@ else
                     <label class="form-label" for="retention">Păstrează citirile brute (luni, 0 = nelimitat)</label>
                     <input class="form-control" id="retention" @bind="_retentionMonths" type="number" min="0" max="@KasaSettingsService.MaxRetentionMonths" />
                     <div class="form-text">
-                        Citirile brute sunt valorile la fiecare interogare (implicit 10 s): ≈ 128 octeți/citire în SQLite, adică ≈ 1,1 MB pe priză pe zi,
+                        Citirile brute sunt valorile la fiecare interogare (implicit 10 s): ≈ 128 octeți/citire (măsurat pe SQLite), adică ≈ 1,1 MB pe priză pe zi,
                         ≈ 400 MB pe priză pe an. Istoricul zilnic (kWh/zi) și agregatele pe minut nu se șterg niciodată. La o valoare &gt; 0, citirile mai
                         vechi se șterg o dată pe zi; la o valoare mai mică se cere confirmare. Citirile centralei au retenția lor, în tabul
                         <TabLink To="@KasaMonitor.Core.Devices.IntegrationKeys.Viessmann">Viessmann</TabLink>.

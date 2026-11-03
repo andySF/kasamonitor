@@ -21,7 +21,7 @@ public sealed class ClimaFactory : WebApplicationFactory<Program>
 
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
-        builder.UseSetting("KasaMonitor:DbPath", Path.Combine(Dir, "kasa.db"));
+        builder.UseSqliteTestDatabase(Dir);
         builder.UseSetting("KasaMonitor:GoveeApiKey", FakeKey);
         builder.ConfigureTestServices(s => s.RemoveAll<IHostedService>());
     }

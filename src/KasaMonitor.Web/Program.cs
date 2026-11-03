@@ -32,9 +32,15 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddRazorComponents()
     .AddInteractiveServerComponents();
 
-var dbPath = builder.Configuration["KasaMonitor:DbPath"] ?? "kasa.db";
-builder.Services.AddDbContext<KasaDbContext>(o =>
-    o.UseSqlite($"Data Source={dbPath};Cache=Shared"));
+// SQL Server (0.12.0): the connection string is required (ConnectionStrings__Kasa); transient errors are retried by EF Core.
+var connectionString = builder.Configuration.GetConnectionString(KasaDatabase.ConnectionStringName);
+if (string.IsNullOrWhiteSpace(connectionString))
+    throw new InvalidOperationException(
+        $"The SQL Server connection string is missing: set ConnectionStrings__{KasaDatabase.ConnectionStringName} (see deploy/README.md).");
+builder.Services.AddDbContext<KasaDbContext>(o => o.UseKasaSqlServer(connectionString));
+// Start-up of the database: wait for the server (up to 120 s), then the migrations (3 attempts). Replaceable in tests.
+builder.Services.AddSingleton<IDatabaseInitializer>(sp => DatabaseStartup.ForConnectionString(
+    connectionString, sp.GetRequiredService<ILoggerFactory>().CreateLogger<DatabaseStartup>()));
 
 builder.Services.AddSingleton<IKasaClient, KasaClient>();
 builder.Services.AddSingleton<ISmartTransport>(_ => new KlapTransport(TimeSpan.FromSeconds(5)));
@@ -46,9 +52,11 @@ builder.Services.AddSingleton<IShellyClient>(_ => new ShellyClient(TimeSpan.From
 builder.Services.AddSingleton<IShellyRpcSocketFactory, ShellyRpcSocketFactory>();
 builder.Services.AddKasaWorkers();
 
-// DataProtection protects the TP-Link password stored in the Settings table. The key ring lives next to the
-// database (/data/dp-keys in the container) so it survives image updates; losing it only means re-entering the password.
-var dataDir = Path.GetDirectoryName(Path.GetFullPath(dbPath)) ?? ".";
+// DataProtection protects the passwords and tokens stored in the Settings table. The key ring lives in the data directory
+// (KasaMonitor__DataDir, /data in the container, a volume) so it survives image updates; losing it means re-entering them.
+// The NILM classifier is saved there too.
+var dataDir = Path.GetFullPath(builder.Configuration["KasaMonitor:DataDir"] is { Length: > 0 } dir ? dir : "data");
+Directory.CreateDirectory(dataDir);
 builder.Services.AddDataProtection()
     .SetApplicationName("KasaMonitor")
     .PersistKeysToFileSystem(new DirectoryInfo(Path.Combine(dataDir, "dp-keys")));
@@ -372,13 +380,7 @@ GenericMetrics.Register(app.Services.GetRequiredService<KasaMonitor.Workers.Mqtt
     app.Services.GetRequiredService<KasaMonitor.Workers.Mqtt.IMqttSettingsService>(), app.Services.GetRequiredService<IServiceScopeFactory>(),
     app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("KasaMonitor.Web.GenericMetrics"));
 
-using (var scope = app.Services.CreateScope())
-{
-    var ctx = scope.ServiceProvider.GetRequiredService<KasaDbContext>();
-    ctx.Database.Migrate();
-    ctx.Database.ExecuteSqlRaw("PRAGMA journal_mode=WAL;");
-    ctx.Database.ExecuteSqlRaw("PRAGMA busy_timeout=5000;");
-}
+await app.Services.GetRequiredService<IDatabaseInitializer>().InitializeAsync(CancellationToken.None);
 
 app.UseMiddleware<MetricsScrapeLogMiddleware>();
 // Static files (app.css, js) change with every release and are linked without a fingerprint: ask the browser to
@@ -395,11 +397,13 @@ app.MapRazorComponents<App>().AddInteractiveServerRenderMode();
 // /plugs became /dispozitive in 0.10.0 (every device of every integration); old bookmarks are sent there for good.
 app.MapGet("/plugs", () => Results.Redirect(KasaMonitor.Web.Ui.DevicePages.Path, permanent: true));
 
-app.MapGet("/health", async (KasaDbContext ctx) =>
-{
-    try { await ctx.Plugs.AnyAsync(); return Results.Ok("healthy"); }
-    catch (Exception ex) { return Results.Problem(ex.Message, statusCode: 503); }
-});
+// Health (Docker HEALTHCHECK): 200 „healthy”, or 503 „degraded” while the database does not answer; the process stays up
+// and the workers keep their buffers until the server is back.
+// The database gets 2 s (the Docker probe gives up after 3 s).
+app.MapGet("/health", async (KasaDbContext ctx, CancellationToken ct) =>
+    await KasaDatabase.CanOpenAsync(ctx, TimeSpan.FromSeconds(2), ct)
+        ? Results.Ok("healthy")
+        : Results.Text("degraded: the database does not answer", statusCode: 503));
 
 app.MapMetrics();
 

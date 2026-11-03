@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- One-off copy of a KasaMonitor SQLite database (kasa.db, up to 0.11) into the SQL Server database of 0.12.0. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>KasaMonitor.DataMigration</RootNamespace>
+    <AssemblyName>kasa-migrate</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="10.*" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\KasaMonitor.Data\KasaMonitor.Data.csproj" />
+  </ItemGroup>
+</Project>

@@ -19,8 +19,10 @@ public class KasaDbContextTests
         tables.Should().Contain(new[]
         {
             "DailyEnergy", "MonthlyEnergy", "OneHourAggregates", "OneMinuteAggregates",
-            "Plugs", "Samples", "Settings"
+            "Plugs", "Samples", "Settings",
+            "HeatingDevices", "HeatingEnergyDaily", "HeatingEnergyPeriods", "HeatingRawFeatures", "HeatingReadings"
         });
+        tables.Should().BeEquivalentTo(ctx.Model.GetEntityTypes().Select(e => e.GetTableName()), "every table of the model, nothing else");
     }
 
     [Fact]

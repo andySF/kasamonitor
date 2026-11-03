@@ -6,7 +6,7 @@ here the README sections are linked instead of repeated. Design rationale lives 
 appliance-detection pipeline in [nilm.md](nilm.md), and what the devices' local APIs offer in
 [device-api-capabilities.md](device-api-capabilities.md).
 
-Target: .NET 10, Blazor (server-rendered, interactive), EF Core with SQLite, `prometheus-net`, ML.NET. The UI is in
+Target: .NET 10, Blazor (server-rendered, interactive), EF Core with SQL Server (0.12.0; SQLite before), `prometheus-net`, ML.NET. The UI is in
 Romanian; code, comments and commit messages are in English.
 
 ## 1. Solution layout
@@ -15,16 +15,20 @@ Romanian; code, comments and commit messages are in English.
 KasaMonitor.sln
 ├── src/
 │   ├── KasaMonitor.Core      pure logic, no I/O frameworks: models, protocol clients/parsers, rules
-│   ├── KasaMonitor.Data      EF Core DbContext, entities, migrations, repositories (SQLite)
+│   ├── KasaMonitor.Data      EF Core DbContext, entities, migrations, repositories (SQL Server)
 │   ├── KasaMonitor.Workers   BackgroundServices and in-memory state services; wiring of repositories
 │   └── KasaMonitor.Web       Blazor UI, /metrics, minimal HTTP endpoints, Program.cs, formatting helpers
 ├── tests/
 │   ├── KasaMonitor.Core.Tests        rules, parsers, fixtures (tests/…/fixtures)
-│   ├── KasaMonitor.Data.Tests        repositories and migrations on SQLite
+│   ├── KasaMonitor.Data.Tests        repositories, model constraints, start-up on SQLite in memory
 │   ├── KasaMonitor.Workers.Tests     workers and services, SQLite in memory
 │   ├── KasaMonitor.Web.Tests         metrics, formatting, integration status rules
-│   └── KasaMonitor.Web.ApiTests      the running app in-process: pages, endpoints, /api/nilm
-└── deploy/                   Dockerfile, docker-compose files, Prometheus/Grafana provisioning, build script
+│   ├── KasaMonitor.Web.ApiTests      the running app in-process (on a SQLite file): pages, endpoints, /api/nilm
+│   └── KasaMonitor.SqlServer.Tests   SQL Server in Docker (Testcontainers): migration, collation, the repository
+│                                     tests again, app start-up and /health, the data migration tool
+├── tools/
+│   └── KasaMonitor.DataMigration     kasa-migrate: one-off copy of a SQLite kasa.db into SQL Server
+└── deploy/                   Dockerfile, the stack (docker-compose.yml), sql/create-database.sql, Prometheus/Grafana provisioning, build script
 ```
 
 Dependencies point one way: `Web → Workers → Data → Core`, and `Workers → Core`. Core knows nothing about EF Core,
@@ -88,8 +92,15 @@ boiler's gas/heat/electricity counters, which follow the boiler's own day (`Boil
 
 ## 3. Tables
 
-All tables are in one SQLite file, created and migrated by EF Core at start-up. Settings are flat key/value rows, so
-grouping them on tabs needs no migration.
+All tables are in one SQL Server database (`kasamonitor`, created once by `deploy/sql/create-database.sql` with a
+case- and accent-sensitive collation) and migrated by EF Core at start-up: one `InitialCreate` since 0.12.0 (the 14
+SQLite migrations were folded into it). Strings in keys and indexes have explicit lengths (`KasaDbContext` constants);
+free texts and JSON are `nvarchar(max)`; `KasaDbContext.PrepareForStore` cuts longer texts (refuses longer identifiers)
+and turns NaN/±Infinity in nullable doubles into NULL before every save. Explicit transactions run inside the
+execution strategy (`EnableRetryOnFailure`, compatibility level 150 = SQL Server 2019); the live batch is idempotent
+(unique `(PlugId, Ts)` on `LiveSamples`, `ExecuteInTransactionAsync` with a check of the stored batch).
+The only raw SQL (`HeatingRepository.ListReadingChangesAsync`, window functions) is portable to the SQLite test
+database. Settings are flat key/value rows, so grouping them on tabs needs no migration.
 
 | Table | Purpose |
 |---|---|
@@ -208,9 +219,13 @@ Taking a hypothetical cloud vendor „Acme” with climate sensors as the exampl
 - **Docker.** One image (`deploy/Dockerfile`, multi-stage, `linux-x64`, ML.NET included) listening on port 8910 with
   host networking (LAN discovery needs UDP broadcast and mDNS). Time zone from `TZ` (default `Europe/Bucharest`).
   Compose files for the app and an optional Prometheus/Grafana stack are under `deploy/`.
-- **SQLite.** A single file in the data volume. Migrations are applied at start-up. Backing up is a copy of the
-  database file (stopped container, or `sqlite3 … ".backup"`); take one before every update.
-- **Update procedure.** Back up the database, pull the new image, recreate the container, check `/health`,
+- **SQL Server.** `ConnectionStrings__Kasa` (required) points at the database; the app waits up to 120 s for the
+  server at start-up, then applies the migrations (retried); `/health` says `degraded` (503) while the database does not
+  answer, without stopping the process. `KasaMonitor__DataDir` (`/data`) keeps only the DataProtection keys and the
+  NILM classifier. Backups are SQL Server's (`BACKUP DATABASE`, a SQL Agent job), plus the `/data` volume.
+- **Stack.** `deploy/docker-compose.yml` is the Portainer stack: every setting is an environment variable, the
+  secrets come from the stack's environment (`${…}`) or from mounted files (a file wins over its variable).
+- **Update procedure.** Back up the database (`BACKUP DATABASE`), pull the new image, recreate the container, check `/health`,
   `/dispozitive` and `/metrics`. Version-specific notes (migrations, one-time repairs, first-start re-clustering) are
   in README [Updating](../README.md#updating).
 - **Secrets** (TP-Link account, OAuth client secrets, API keys) are encrypted with ASP.NET Data Protection in the

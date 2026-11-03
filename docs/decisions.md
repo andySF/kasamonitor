@@ -258,6 +258,57 @@ load and still gets a `304` when nothing changed.
 
 **Consequences.** A release's CSS and scripts are visible immediately; the cost is one conditional request per file.
 
+## 0.12.0 – From SQLite to SQL Server
+
+**Context.** Until 0.11 everything was in one SQLite file next to the app. The installation it was written for already
+runs a SQL Server with a nightly SQL Agent backup job for its other databases, and a Portainer stack per application.
+The SQLite file needed its own backup script (copy, `integrity_check`, mirroring), its writers were serialised by
+`busy_timeout` and WAL, and the settings of the container were split between the compose file and mounted files.
+
+**Decision.**
+- **SQL Server only**, no second provider: `UseSqlServer` with `EnableRetryOnFailure`; the 14 SQLite migrations are
+  replaced by **one `InitialCreate`** generated from the model. Two providers would mean two migration folders and two
+  schemas to keep equal at every model change.
+- The database is created outside the app (`deploy/sql/create-database.sql`): collation `Latin1_General_100_CS_AS_SC`
+  so identifiers compare exactly as in SQLite whatever the server's collation, recovery SIMPLE, a login that owns
+  only its database. The app applies its migrations, never creates the database.
+- Explicit lengths on every string of a key or an index (SQL Server cannot index `nvarchar(max)`, and an unbounded
+  key would be `nvarchar(450)`, too wide for the four-string key of `HeatingEnergyPeriods`).
+- Start-up waits for the server (120 s, the reason in the log) and tries the migrations 3 times without EF's retrying
+  strategy (≈ 3 min at most with the server missing); `/health` reports `degraded` instead of failing the process; the
+  live stream keeps its buffer meanwhile. EF generates SQL for compatibility level 150 (SQL Server 2019), and the SQL
+  Server suite runs on 2019 CU22 as well as on 2022 (`KASA_SQLSERVER_IMAGE`).
+- **The live batch is stored once.** A retried commit whose answer was lost, or a batch put back in the queue, must not
+  duplicate samples nor count a minute twice: `LiveSamples` has a unique key `(PlugId, Ts)` (one row per plug and
+  second; none of the 164,599 rows of the real copy collided), `SaveBatchAsync` skips the keys already stored, and the
+  batch runs in `ExecuteInTransactionAsync` whose `verifySucceeded` checks the batch's last sample (or its first minute
+  with the merged values) before a retry. `IGNORE_DUP_KEY = ON` was tried and rejected: EF counts the rows of its
+  inserts, an ignored row raises `DbUpdateConcurrencyException` and the whole batch, new rows included, is lost
+  (measured on SQL Server 2022).
+- **What SQL Server refuses is handled before it is sent** (`KasaDbContext.PrepareForStore`): NaN/±Infinity in a
+  nullable `double` becomes NULL (SQLite stored them; one would fail a whole batch at every flush), a text longer than
+  its `HasMaxLength` is cut, an identifier too long is refused with its column. Retention deletes run in batches of
+  5,000 on every large table (one DELETE of more rows escalates to a table lock).
+- **0.11 on SQL Server.** The generic tables keep their integer keys; `GenericReadings` and `GenericHourly` are clustered
+  on `(EntityId, Ts|HourTs)` (the SQLite `WITHOUT ROWID` layout); `EntityPrefs.Key` is 400 characters (800 bytes, under
+  the 900-byte clustered key). Prefix searches use `StartsWith` (`LIKE 'prefix%'`), never a range up to `prefix + U+FFFF`:
+  a linguistic collation ignores that character and the range comes back empty.
+- **Every setting from the environment** (the Portainer stack); a secret comes from a mounted file when the file is
+  present, otherwise from a variable of the stack. The data directory (`KasaMonitor__DataDir`) no longer derives from a
+  database path.
+- The data move once, with a tool (`tools/KasaMonitor.DataMigration`): bulk copy with ids kept, per-table counts and
+  sums, refusal of a non-empty target, resume after a failure.
+- Tests: the model is provider-agnostic, so the fast suites stay on SQLite in memory (`EnsureCreated`); a separate
+  suite runs the migration, the repositories and the start-up on SQL Server in Docker.
+
+**Consequences.** One backup routine for all databases (SQL Agent), real concurrency (no `busy_timeout`, no WAL, no
+`VACUUM`), the data reachable from SSMS or Grafana, one place for the settings (the stack). Lost: the single file that
+could be copied anywhere and the zero-dependency start — KasaMonitor now needs a SQL Server 2019+ reachable from its
+host, and does not start without it. Queries go over the network (≈ 0.3–1 ms per round trip instead of µs); the
+period cache of the home page and of `/history` hides most of it. EF's SQL Server provider compares string keys
+case-insensitively in its change tracker while the database is case-sensitive: harmless for the keys used (setting
+names are constants, Miele ids are digits).
+
 ---
 
 ## 0.11.0 – Generic devices: a common entity model, a generated page, MQTT Discovery

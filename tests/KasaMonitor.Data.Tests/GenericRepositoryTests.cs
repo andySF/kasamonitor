@@ -4,14 +4,12 @@ using KasaMonitor.Core.Devices;
 using KasaMonitor.Core.Devices.Entities;
 using KasaMonitor.Core.Devices.Generic;
 using KasaMonitor.Data.Repositories;
-using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
-using Microsoft.EntityFrameworkCore.Infrastructure;
 using Xunit;
 
 namespace KasaMonitor.Data.Tests;
 
-/// <summary>0.11, F2: the generic tables — devices, entities, readings (integer key, WITHOUT ROWID), hourly rollups, retention.</summary>
+/// <summary>0.11, F2: the generic tables — devices, entities, readings (integer key, clustered on (EntityId, Ts) on SQL Server), hourly rollups, retention.</summary>
 public class GenericRepositoryTests
 {
     private static readonly CancellationToken Ct = CancellationToken.None;
@@ -102,31 +100,4 @@ public class GenericRepositoryTests
         (await repo.ListHourlyAsync([e.Id], T0, T0.AddHours(1), Ct)).Single().Hour.Should().Be(new GenericHour(T0, null, null, 3, 3, 1, null));
     }
 
-    [Fact]
-    public async Task Migration_AddGenericDevices_IsAdditive_AndTheValueTablesAreWithoutRowid()
-    {
-        using var conn = new SqliteConnection("Filename=:memory:");
-        conn.Open();
-        using var ctx = new KasaDbContext(new DbContextOptionsBuilder<KasaDbContext>().UseSqlite(conn).Options);
-        var migrator = ctx.GetService<Microsoft.EntityFrameworkCore.Migrations.IMigrator>();
-        migrator.Migrate("20261102155409_AddClimateDaily");
-        var before = ctx.Database.SqlQueryRaw<string>("SELECT name AS Value FROM sqlite_master WHERE type='table' ORDER BY name").ToList();
-        ctx.Database.ExecuteSqlRaw("INSERT INTO Settings (Key, Value) VALUES ('Tariff', '1.30')");
-
-        ctx.Database.Migrate();
-
-        var after = ctx.Database.SqlQueryRaw<string>("SELECT name AS Value FROM sqlite_master WHERE type='table' ORDER BY name").ToList();
-        after.Except(before).Should().BeEquivalentTo("EntityPrefs", "GenericDevices", "GenericEntities", "GenericReadings", "GenericHourly");
-        ctx.Database.SqlQueryRaw<string>("SELECT Value FROM Settings WHERE Key = 'Tariff'").ToList().Should().Equal("1.30");
-        foreach (var table in new[] { "GenericReadings", "GenericHourly" })
-            ctx.Database.SqlQueryRaw<string>("SELECT sql AS Value FROM sqlite_master WHERE name = {0}", table).Single()
-                .Should().Contain("WITHOUT ROWID", $"R6: {table} is its primary-key index").And.Contain("PRIMARY KEY");
-        ctx.Database.SqlQueryRaw<string>("SELECT sql AS Value FROM sqlite_master WHERE name = 'GenericEntities'").Single().Should().Contain("\"Id\" INTEGER NOT NULL");
-        // The repository works on the migrated schema (not only on EnsureCreated).
-        var repo = new GenericRepository(ctx);
-        var d = await repo.AddDeviceAsync(IntegrationKeys.Mqtt, "x", "X", null, null, null, null, "", DeviceCategory.Generic, T0, Ct);
-        var e = (await repo.UpsertEntitiesAsync(d.Id, IntegrationKeys.Mqtt, [Entity("x_t")], Ct)).Single();
-        await repo.AddReadingsAsync([new GenericReading(e.Id, T0, 20, null)], Ct);
-        (await repo.ListReadingsAsync(e.Id, T0, T0.AddHours(1), Ct)).Should().ContainSingle();
-    }
 }

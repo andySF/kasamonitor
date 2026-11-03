@@ -10,6 +10,8 @@
     <PackageReference Include="xunit" Version="2.*" />
     <PackageReference Include="xunit.runner.visualstudio" Version="2.*" />
     <PackageReference Include="FluentAssertions" Version="6.*" />
+    <!-- GenericMetricsTests: the EF model on SQLite in memory (the app itself is on SQL Server since 0.12.0). -->
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="10.*" />
   </ItemGroup>
 
   <ItemGroup>

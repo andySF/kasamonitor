@@ -20,8 +20,9 @@ public static class ClimateSettingKeys
 
 /// <summary>
 /// Values from configuration: initial latitude/longitude (the database wins once saved) and where the Govee API key
-/// comes from: <c>KasaMonitor__GoveeApiKey</c> (env) or the file <c>KasaMonitor__GoveeApiKeyFile</c> /
-/// <c>GOVEE_API_KEY_FILE</c> (default <c>/run/secrets/govee-api.key</c>), read once at startup. <see cref="HeatingDegreeDaysBaseC"/>:
+/// comes from: the file <c>KasaMonitor__GoveeApiKeyFile</c> / <c>GOVEE_API_KEY_FILE</c> (default
+/// <c>/run/secrets/govee-api.key</c>) when it exists and is not empty, otherwise <c>KasaMonitor__GoveeApiKey</c> (env),
+/// read once at startup. <see cref="HeatingDegreeDaysBaseC"/>:
 /// the initial base of the heating degree days (<c>KasaMonitor__HeatingDegreeDaysBaseC</c>, default 18 °C; the database wins once saved).
 /// </summary>
 public sealed record ClimateSettingsDefaults(
@@ -54,23 +55,16 @@ public sealed class GoveeApiKey
 
     public override string ToString() => IsSet ? "GoveeApiKey(set, " + Source + ")" : "GoveeApiKey(missing)";
 
-    /// <summary>The environment value wins; otherwise the file (trimmed). <paramref name="readFile"/> is a test hook.</summary>
+    /// <summary>The mounted file wins when it exists and is not empty (trimmed); otherwise the environment value.
+    /// <paramref name="readFile"/> is a test hook.</summary>
     public static GoveeApiKey Load(ClimateSettingsDefaults d, Func<string, string?>? readFile = null)
     {
+        var path = string.IsNullOrWhiteSpace(d.GoveeApiKeyFile) ? GoveeApi.DefaultKeyFile : d.GoveeApiKeyFile.Trim();
+        var (text, problem) = SecretFile.Read(path, readFile);
+        if (text is not null) return new GoveeApiKey(text, "fișierul " + path, null);
         if (!string.IsNullOrWhiteSpace(d.GoveeApiKey))
             return new GoveeApiKey(d.GoveeApiKey, "variabila KasaMonitor__GoveeApiKey", null);
-        var path = string.IsNullOrWhiteSpace(d.GoveeApiKeyFile) ? GoveeApi.DefaultKeyFile : d.GoveeApiKeyFile.Trim();
-        readFile ??= p => File.Exists(p) ? File.ReadAllText(p) : null;
-        try
-        {
-            var text = readFile(path);
-            if (text is null) return new GoveeApiKey(null, null, "fișierul " + path + " nu există");
-            return new GoveeApiKey(text, "fișierul " + path, "fișierul " + path + " e gol");
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-        {
-            return new GoveeApiKey(null, null, "fișierul " + path + " nu poate fi citit (" + ex.GetType().Name + ")");
-        }
+        return new GoveeApiKey(null, null, problem);
     }
 }
 

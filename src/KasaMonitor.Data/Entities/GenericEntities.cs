@@ -51,7 +51,7 @@ public sealed class GenericEntityEntity
     public long? LastTs { get; set; }
 }
 
-/// <summary>One value (table GenericReadings, key (EntityId, Ts) WITHOUT ROWID — R6: an integer key, millions of rows a year).</summary>
+/// <summary>One value (table GenericReadings, clustered key (EntityId, Ts) — R6: an integer key, millions of rows a year).</summary>
 public sealed class GenericReadingEntity
 {
     public long EntityId { get; set; }
@@ -60,7 +60,7 @@ public sealed class GenericReadingEntity
     public string? Text { get; set; }
 }
 
-/// <summary>One entity over one UTC hour (table GenericHourly, key (EntityId, HourTs) WITHOUT ROWID), kept forever.</summary>
+/// <summary>One entity over one UTC hour (table GenericHourly, clustered key (EntityId, HourTs)), kept forever.</summary>
 public sealed class GenericHourlyEntity
 {
     public long EntityId { get; set; }

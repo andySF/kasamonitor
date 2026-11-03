@@ -160,18 +160,17 @@ public sealed class HeatingRepository : IHeatingRepository
         DateTimeOffset toUtc, TimeSpan gap, CancellationToken ct)
     {
         long from = fromUtc.ToUnixTimeSeconds(), to = toUtc.ToUnixTimeSeconds(), gapSeconds = (long)gap.TotalSeconds;
-        // DeviceId is stored as upper-case TEXT (the SQLite GUID mapping of EF).
-        var device = deviceId.ToString().ToUpperInvariant();
+        // Portable SQL (SQL Server and the SQLite test database): COALESCE, an aliased derived table, the id as a Guid parameter.
         var rows = await _db.Database.SqlQuery<ChangeRow>($"""
-            SELECT Ts, ActiveError, PrevTs, PrevError FROM (
+            SELECT c.Ts, c.ActiveError, c.PrevTs, c.PrevError FROM (
                 SELECT Ts,
                        NULLIF(TRIM(ActiveError), '') AS ActiveError,
                        LAG(Ts) OVER (ORDER BY Ts) AS PrevTs,
                        LAG(NULLIF(TRIM(ActiveError), '')) OVER (ORDER BY Ts) AS PrevError
                 FROM HeatingReadings
-                WHERE DeviceId = {device} AND Ts >= {from} AND Ts <= {to})
-            WHERE PrevTs IS NULL OR Ts - PrevTs > {gapSeconds} OR IFNULL(ActiveError, '') <> IFNULL(PrevError, '')
-            ORDER BY Ts
+                WHERE DeviceId = {deviceId} AND Ts >= {from} AND Ts <= {to}) AS c
+            WHERE c.PrevTs IS NULL OR c.Ts - c.PrevTs > {gapSeconds} OR COALESCE(c.ActiveError, '') <> COALESCE(c.PrevError, '')
+            ORDER BY c.Ts
             """).ToListAsync(ct);
         return rows.Select(r => new KasaMonitor.Core.History.HeatingReadingChange(DateTimeOffset.FromUnixTimeSeconds(r.Ts), r.ActiveError,
             r.PrevTs is { } p ? DateTimeOffset.FromUnixTimeSeconds(p) : null, r.PrevError)).ToList();
@@ -316,7 +315,7 @@ public sealed class HeatingRepository : IHeatingRepository
     public async Task<int> DeleteReadingsBeforeAsync(DateTimeOffset cutoffUtc, CancellationToken ct)
     {
         var cutoff = cutoffUtc.ToUnixTimeSeconds();
-        return await _db.HeatingReadings.Where(r => r.Ts < cutoff).ExecuteDeleteAsync(ct);
+        return await BatchDelete.RunAsync(() => _db.HeatingReadings.Where(r => r.Ts < cutoff).OrderBy(r => r.Ts), ct);
     }
 
     public async Task UpsertPeriodsAsync(IReadOnlyList<HeatingEnergyPeriod> periods, CancellationToken ct)

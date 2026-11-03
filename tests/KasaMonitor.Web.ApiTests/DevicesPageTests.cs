@@ -31,7 +31,7 @@ public sealed class DevicesFactory : WebApplicationFactory<Program>
 
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
-        builder.UseSetting("KasaMonitor:DbPath", Path.Combine(Dir, "kasa.db"));
+        builder.UseSqliteTestDatabase(Dir);
         builder.ConfigureTestServices(s => s.RemoveAll<IHostedService>());
     }
 

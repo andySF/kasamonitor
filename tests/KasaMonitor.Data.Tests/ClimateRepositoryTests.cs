@@ -2,9 +2,7 @@ using FluentAssertions;
 using KasaMonitor.Core.Climate;
 using KasaMonitor.Core.History;
 using KasaMonitor.Data.Repositories;
-using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
-using Microsoft.EntityFrameworkCore.Infrastructure;
 using Xunit;
 
 namespace KasaMonitor.Data.Tests;
@@ -13,39 +11,6 @@ public class ClimateRepositoryTests
 {
     private static readonly DateTimeOffset T0 = new(2026, 11, 2, 12, 0, 0, TimeSpan.Zero);
     private static readonly CancellationToken Ct = CancellationToken.None;
-
-    [Fact]
-    public void AddClimate_OnTopOfTheDeployedSchema_OnlyAddsTheClimateTables()
-    {
-        using var conn = new SqliteConnection("Filename=:memory:");
-        conn.Open();
-        using var ctx = new KasaDbContext(new DbContextOptionsBuilder<KasaDbContext>().UseSqlite(conn).Options);
-        ctx.GetService<Microsoft.EntityFrameworkCore.Migrations.IMigrator>().Migrate("20261102121526_AddMieleCycleSource");
-        var before = ctx.Database.SqlQueryRaw<string>("SELECT name AS Value FROM sqlite_master WHERE type='table' ORDER BY name").ToList();
-
-        ctx.GetService<Microsoft.EntityFrameworkCore.Migrations.IMigrator>().Migrate("20261102130647_AddClimate");
-
-        var after = ctx.Database.SqlQueryRaw<string>("SELECT name AS Value FROM sqlite_master WHERE type='table' ORDER BY name").ToList();
-        after.Except(before).Should().BeEquivalentTo("ClimateSensors", "ClimateReadings");
-        before.Except(after).Should().BeEmpty();
-    }
-
-    [Fact]
-    public void AddClimateDaily_OnTopOf091_OnlyAddsTheDailyTable()
-    {
-        using var conn = new SqliteConnection("Filename=:memory:");
-        conn.Open();
-        using var ctx = new KasaDbContext(new DbContextOptionsBuilder<KasaDbContext>().UseSqlite(conn).Options);
-        ctx.GetService<Microsoft.EntityFrameworkCore.Migrations.IMigrator>().Migrate("20261102150000_AddPlugAppliance");
-        var before = ctx.Database.SqlQueryRaw<string>("SELECT name AS Value FROM sqlite_master WHERE type='table' ORDER BY name").ToList();
-
-        // Up to AddClimateDaily only (later migrations add their own tables).
-        ctx.GetService<Microsoft.EntityFrameworkCore.Migrations.IMigrator>().Migrate("20261102155409_AddClimateDaily");
-
-        var after = ctx.Database.SqlQueryRaw<string>("SELECT name AS Value FROM sqlite_master WHERE type='table' ORDER BY name").ToList();
-        after.Except(before).Should().BeEquivalentTo("ClimateDaily");
-        before.Except(after).Should().BeEmpty();
-    }
 
     [Fact]
     public async Task Daily_UpsertListLast_AndTheFirstReadingPerSensor()

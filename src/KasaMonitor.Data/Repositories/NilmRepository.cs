@@ -112,14 +112,17 @@ public sealed class NilmRepository : INilmRepository
     public async Task SetSignaturesAsync(IReadOnlyDictionary<long, long?> signatureByEvent, CancellationToken ct)
     {
         if (signatureByEvent.Count == 0) return;
-        await using var tx = await _db.Database.BeginTransactionAsync(ct);
-        foreach (var group in signatureByEvent.GroupBy(kv => kv.Value))
+        await _db.Database.CreateExecutionStrategy().ExecuteAsync(async () =>
         {
-            var sig = group.Key;
-            foreach (var chunk in group.Select(kv => kv.Key).Chunk(500))
-                await _db.MeterEvents.Where(e => chunk.Contains(e.Id)).ExecuteUpdateAsync(u => u.SetProperty(e => e.SignatureId, sig), ct);
-        }
-        await tx.CommitAsync(ct);
+            await using var tx = await _db.Database.BeginTransactionAsync(ct);
+            foreach (var group in signatureByEvent.GroupBy(kv => kv.Value))
+            {
+                var sig = group.Key;
+                foreach (var chunk in group.Select(kv => kv.Key).Chunk(500))
+                    await _db.MeterEvents.Where(e => chunk.Contains(e.Id)).ExecuteUpdateAsync(u => u.SetProperty(e => e.SignatureId, sig), ct);
+            }
+            await tx.CommitAsync(ct);
+        });
     }
 
     public async Task<MeterEvent?> GetEventAsync(long id, CancellationToken ct)
@@ -238,22 +241,28 @@ public sealed class NilmRepository : INilmRepository
 
     public async Task DeleteSignatureAsync(long id, CancellationToken ct)
     {
-        await using var tx = await _db.Database.BeginTransactionAsync(ct);
-        await _db.MeterEvents.Where(e => e.SignatureId == id).ExecuteUpdateAsync(u => u.SetProperty(e => e.SignatureId, (long?)null), ct);
-        await _db.ApplianceRuns.Where(r => r.SignatureId == id).ExecuteDeleteAsync(ct);
-        await _db.ApplianceSignatures.Where(s => s.Id == id).ExecuteDeleteAsync(ct);
-        await tx.CommitAsync(ct);
+        await _db.Database.CreateExecutionStrategy().ExecuteAsync(async () =>
+        {
+            await using var tx = await _db.Database.BeginTransactionAsync(ct);
+            await _db.MeterEvents.Where(e => e.SignatureId == id).ExecuteUpdateAsync(u => u.SetProperty(e => e.SignatureId, (long?)null), ct);
+            await _db.ApplianceRuns.Where(r => r.SignatureId == id).ExecuteDeleteAsync(ct);
+            await _db.ApplianceSignatures.Where(s => s.Id == id).ExecuteDeleteAsync(ct);
+            await tx.CommitAsync(ct);
+        });
     }
 
     public async Task<int> MoveSignatureAsync(long fromId, long intoId, CancellationToken ct)
     {
         if (fromId == intoId) return 0;
-        await using var tx = await _db.Database.BeginTransactionAsync(ct);
-        var moved = await _db.MeterEvents.Where(e => e.SignatureId == fromId).ExecuteUpdateAsync(u => u.SetProperty(e => e.SignatureId, (long?)intoId), ct);
-        await _db.ApplianceRuns.Where(r => r.SignatureId == fromId).ExecuteUpdateAsync(u => u.SetProperty(r => r.SignatureId, intoId), ct);
-        await _db.ApplianceSignatures.Where(s => s.Id == fromId).ExecuteDeleteAsync(ct);
-        await tx.CommitAsync(ct);
-        return moved;
+        return await _db.Database.CreateExecutionStrategy().ExecuteAsync(async () =>
+        {
+            await using var tx = await _db.Database.BeginTransactionAsync(ct);
+            var moved = await _db.MeterEvents.Where(e => e.SignatureId == fromId).ExecuteUpdateAsync(u => u.SetProperty(e => e.SignatureId, (long?)intoId), ct);
+            await _db.ApplianceRuns.Where(r => r.SignatureId == fromId).ExecuteUpdateAsync(u => u.SetProperty(r => r.SignatureId, intoId), ct);
+            await _db.ApplianceSignatures.Where(s => s.Id == fromId).ExecuteDeleteAsync(ct);
+            await tx.CommitAsync(ct);
+            return moved;
+        });
     }
 
     public async Task<IReadOnlyList<ApplianceSignature>> RecomputeSignaturesAsync(IReadOnlyCollection<long> ids, DateTimeOffset windowFromUtc, CancellationToken ct)
@@ -382,8 +391,8 @@ public sealed class NilmRepository : INilmRepository
     public async Task<int> DeleteOlderThanAsync(DateTimeOffset cutoffUtc, CancellationToken ct)
     {
         var cutoff = cutoffUtc.ToUnixTimeSeconds();
-        var runs = await _db.ApplianceRuns.Where(r => r.StartTs < cutoff && r.EndTs != null && r.EndTs < cutoff).ExecuteDeleteAsync(ct);
-        var events = await _db.MeterEvents.Where(e => e.Ts < cutoff).ExecuteDeleteAsync(ct);
+        var runs = await BatchDelete.RunAsync(() => _db.ApplianceRuns.Where(r => r.StartTs < cutoff && r.EndTs != null && r.EndTs < cutoff).OrderBy(r => r.StartTs), ct);
+        var events = await BatchDelete.RunAsync(() => _db.MeterEvents.Where(e => e.Ts < cutoff).OrderBy(e => e.Ts), ct);
         return runs + events;
     }
 }

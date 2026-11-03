@@ -31,7 +31,7 @@ public sealed class MqttFactory : WebApplicationFactory<Program>
 
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
-        builder.UseSetting("KasaMonitor:DbPath", Path.Combine(Dir, "kasa.db"));
+        builder.UseSqliteTestDatabase(Dir);
         builder.UseSetting("KasaMonitor:MqttHost", "broker.test");
         builder.UseSetting("KasaMonitor:MqttPasswordFile", Path.Combine(Dir, "nu-exista.password"));
         builder.ConfigureTestServices(s => s.RemoveAll<IHostedService>());

@@ -1,7 +1,6 @@
 using FluentAssertions;
 using KasaMonitor.Core.Heating;
 using KasaMonitor.Data.Repositories;
-using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Xunit;
 
@@ -12,15 +11,31 @@ public class HeatingRepositoryTests
     private static readonly DateTimeOffset T0 = new(2026, 11, 1, 16, 0, 0, TimeSpan.Zero);
 
     [Fact]
-    public void Migrate_CreatesTheHeatingTables()
+    public async Task ReadingChanges_TheRawQuery_FirstRowGapsAndErrorChangesOnly()
     {
-        using var conn = new SqliteConnection("Filename=:memory:");
-        conn.Open();
-        using var ctx = new KasaDbContext(new DbContextOptionsBuilder<KasaDbContext>().UseSqlite(conn).Options);
-        ctx.Database.Migrate();
+        // The only raw SQL of the app (window functions); portable since 0.12.0, checked here on SQLite and on SQL Server
+        // in KasaMonitor.SqlServer.Tests.
+        using var db = new TestDbFactory();
+        var device = Guid.NewGuid();
+        var other = Guid.NewGuid();
+        using (var ctx = db.CreateContext())
+        {
+            var t0 = T0.ToUnixTimeSeconds();
+            foreach (var (dev, ts, err) in new (Guid, long, string?)[]
+                     { (device, t0, null), (device, t0 + 120, " "), (device, t0 + 240, "F.4 "), (device, t0 + 360, "F.4"), (device, t0 + 2000, "F.4"),
+                       (device, t0 + 2120, null), (other, t0 + 60, "X") })
+                ctx.HeatingReadings.Add(new KasaMonitor.Data.Entities.HeatingReadingEntity { DeviceId = dev, Ts = ts, ActiveError = err });
+            await ctx.SaveChangesAsync();
+        }
 
-        ctx.Database.SqlQueryRaw<string>("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'Heating%' ORDER BY name").ToList()
-            .Should().Equal("HeatingDevices", "HeatingEnergyDaily", "HeatingEnergyPeriods", "HeatingRawFeatures", "HeatingReadings");
+        var changes = await new HeatingRepository(db.CreateContext()).ListReadingChangesAsync(device, T0, T0.AddHours(1), TimeSpan.FromMinutes(10), CancellationToken.None);
+
+        changes.Select(c => (long)(c.TsUtc - T0).TotalSeconds).Should().Equal(0, 240, 2000, 2120);
+        changes[0].PreviousTsUtc.Should().BeNull();
+        changes[1].ActiveError.Should().Be("F.4", "trimmed");
+        changes[1].PreviousError.Should().BeNull("blank is no error");
+        changes[2].PreviousTsUtc.Should().Be(T0.AddSeconds(360), "a gap longer than 10 minutes");
+        changes[3].ActiveError.Should().BeNull();
     }
 
     [Fact]

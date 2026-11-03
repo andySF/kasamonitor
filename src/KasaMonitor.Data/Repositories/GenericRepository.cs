@@ -9,8 +9,9 @@ namespace KasaMonitor.Data.Repositories;
 
 public sealed class GenericRepository : IGenericRepository
 {
-    /// <summary>R10 (round 2): only finite numbers reach the database (SQL Server refuses NaN / ±∞ in a float column).</summary>
-    internal static double? Finite(double? v) => v is { } x && double.IsFinite(x) ? x : null;
+    /// <summary>R10 (round 2): only finite numbers reach the database (SQL Server refuses NaN / ±∞ in a float column);
+    /// the single owner is <see cref="DbValues.Finite"/>.</summary>
+    internal static double? Finite(double? v) => DbValues.Finite(v);
 
     /// <summary>A text cut to its column's length (the lengths of <see cref="KasaDbContext"/>).</summary>
     internal static string Cut(string text, int max) => text.Length <= max ? text : text[..max];

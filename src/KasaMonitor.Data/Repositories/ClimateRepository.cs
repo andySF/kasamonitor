@@ -181,20 +181,25 @@ public sealed class ClimateRepository : IClimateRepository
     public Task<int> DeleteReadingsBeforeAsync(DateTimeOffset cutoffUtc, CancellationToken ct)
     {
         var cutoff = cutoffUtc.ToUnixTimeSeconds();
-        return _db.ClimateReadings.Where(r => r.Ts < cutoff).ExecuteDeleteAsync(ct);
+        return BatchDelete.RunAsync(() => _db.ClimateReadings.Where(r => r.Ts < cutoff).OrderBy(r => r.Ts), ct);
     }
 
     public async Task<(int Sensors, int Readings, int Days)> DeleteSensorsAsync(IReadOnlyCollection<Guid> sensorIds, CancellationToken ct)
     {
         var ids = sensorIds.Distinct().ToList();
         if (ids.Count == 0) return (0, 0, 0);
-        await using var tx = await _db.Database.BeginTransactionAsync(ct);
-        var readings = await _db.ClimateReadings.Where(r => ids.Contains(r.SensorId)).ExecuteDeleteAsync(ct);
-        var days = await _db.ClimateDaily.Where(d => ids.Contains(d.SensorId)).ExecuteDeleteAsync(ct);
-        var sensors = await _db.ClimateSensors.Where(s => ids.Contains(s.Id)).ExecuteDeleteAsync(ct);
-        await tx.CommitAsync(ct);
+        // An explicit transaction runs inside the execution strategy (retried as a whole on a transient error).
+        var result = await _db.Database.CreateExecutionStrategy().ExecuteAsync(async () =>
+        {
+            await using var tx = await _db.Database.BeginTransactionAsync(ct);
+            var readings = await _db.ClimateReadings.Where(r => ids.Contains(r.SensorId)).ExecuteDeleteAsync(ct);
+            var days = await _db.ClimateDaily.Where(d => ids.Contains(d.SensorId)).ExecuteDeleteAsync(ct);
+            var sensors = await _db.ClimateSensors.Where(s => ids.Contains(s.Id)).ExecuteDeleteAsync(ct);
+            await tx.CommitAsync(ct);
+            return (sensors, readings, days);
+        });
         _db.ChangeTracker.Clear();
-        return (sensors, readings, days);
+        return result;
     }
 
     private static ClimateSensor ToModel(ClimateSensorEntity e) => new(e.Id, e.Source, e.ExternalId, e.Name, e.Room, e.IsOutdoor, e.IsArchived,

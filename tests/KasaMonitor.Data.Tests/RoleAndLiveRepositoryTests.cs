@@ -84,6 +84,42 @@ public class RoleAndLiveRepositoryTests
     }
 
     [Fact]
+    public async Task LiveBatch_NonFiniteValues_NullOrDropped_AndASampleKeptOncePerPlugAndSecond()
+    {
+        // SQL Server refuses NaN/±Infinity (SQLite stored them): one of them must not fail the batch. Runs on SQLite here and
+        // on SQL Server in KasaMonitor.SqlServer.Tests.
+        using var f = new TestDbFactory();
+        using var ctx = f.CreateContext();
+        var repo = new LiveRepository(ctx);
+        var plug = Guid.NewGuid();
+        var t = new DateTimeOffset(2026, 11, 3, 9, 0, 0, TimeSpan.Zero);
+        var batch = new[]
+        {
+            new LiveSample(plug, t, 500, double.NaN, 230.1, double.PositiveInfinity, 0.9, 50),
+            new LiveSample(plug, t.AddMilliseconds(600), 505),                       // the same second: one row per plug and second
+            new LiveSample(plug, t.AddSeconds(1), double.NaN),                       // no finite power: dropped
+            new LiveSample(plug, t.AddSeconds(2), 510, null, double.NegativeInfinity, null, double.NaN, null),
+        };
+        var minutes = new[]
+        {
+            new LiveMinuteAggregate(plug, t, 500, 505, 510, double.NaN, 0.28, 3, 3),
+            new LiveMinuteAggregate(plug, t.AddMinutes(1), 1, double.NaN, 1, 230, 0.01, 1, 1),   // no finite average: dropped
+        };
+
+        await repo.SaveBatchAsync(batch, minutes, CancellationToken.None);
+        // The same samples again (a batch put back in the queue after a failure that had in fact been stored): kept once.
+        await repo.SaveBatchAsync(batch, Array.Empty<LiveMinuteAggregate>(), CancellationToken.None);
+
+        var samples = await repo.ListSamplesAsync(plug, t, t.AddMinutes(1), CancellationToken.None);
+        samples.Select(s => s.TsUtc).Should().Equal(t, t.AddSeconds(2));
+        samples[0].Should().Be(new LiveSample(plug, t, 500, null, 230.1, null, 0.9, null));
+        samples[1].Should().Be(new LiveSample(plug, t.AddSeconds(2), 510, null, null, null, null, null));
+        var m = (await repo.ListMinutesAsync(plug, t, t.AddMinutes(2), CancellationToken.None)).Should().ContainSingle().Subject;
+        m.AvgVoltageV.Should().BeNull();
+        m.EnergyWh.Should().Be(0.28);
+    }
+
+    [Fact]
     public async Task RelayCommands_NewestFirst_LimitedAndPerPlug()
     {
         using var f = new TestDbFactory();

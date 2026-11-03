@@ -50,9 +50,8 @@ public class NilmRealDbTests(ITestOutputHelper output)
             var db = Path.Combine(_dir, "kasa.db");
             File.Copy(source, db);
             if (File.Exists(source + "-wal")) File.Copy(source + "-wal", db + "-wal");
+            // A copy of a 0.10.x/0.11 kasa.db (SQLite, schema of the last SQLite migration): read as it is, the migrations are SQL Server's since 0.12.0.
             _options = new DbContextOptionsBuilder<KasaDbContext>().UseSqlite($"Data Source={db}").Options;
-            using var ctx = Ctx();
-            ctx.Database.Migrate();
         }
 
         public KasaDbContext Ctx() => new(_options);

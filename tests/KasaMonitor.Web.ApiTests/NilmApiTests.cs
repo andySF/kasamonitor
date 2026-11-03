@@ -42,7 +42,7 @@ public sealed class NilmApiFactory : WebApplicationFactory<Program>
 
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
-        builder.UseSetting("KasaMonitor:DbPath", Path.Combine(Dir, "kasa.db"));
+        builder.UseSqliteTestDatabase(Dir);
         if (Token is not null) builder.UseSetting(NilmApi.TokenSetting, Token);
         builder.ConfigureTestServices(s =>
         {

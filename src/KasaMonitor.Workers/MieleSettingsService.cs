@@ -26,8 +26,9 @@ public static class MieleSettingKeys
 
 /// <summary>
 /// Values from configuration: the Client ID (used when the database has none) and where the client secret comes
-/// from: <c>KasaMonitor__MieleClientSecret</c> (env) or the file <c>KasaMonitor__MieleClientSecretFile</c>
-/// (default <c>/run/secrets/miele-client.secret</c>), read once at startup.
+/// from: the file <c>KasaMonitor__MieleClientSecretFile</c> (default <c>/run/secrets/miele-client.secret</c>) when it
+/// exists and is not empty, otherwise <c>KasaMonitor__MieleClientSecret</c> (env, e.g. a Portainer stack variable);
+/// read once at startup.
 /// </summary>
 public sealed record MieleSettingsDefaults(
     string MieleClientId = "",
@@ -57,23 +58,16 @@ public sealed class MieleClientSecret
 
     public override string ToString() => IsSet ? "MieleClientSecret(set, " + Source + ")" : "MieleClientSecret(missing)";
 
-    /// <summary>The environment value wins; otherwise the file (trimmed). <paramref name="readFile"/> is a test hook.</summary>
+    /// <summary>The mounted file wins when it exists and is not empty (trimmed); otherwise the environment value.
+    /// <paramref name="readFile"/> is a test hook.</summary>
     public static MieleClientSecret Load(MieleSettingsDefaults d, Func<string, string?>? readFile = null)
     {
+        var path = string.IsNullOrWhiteSpace(d.MieleClientSecretFile) ? MieleApi.DefaultClientSecretFile : d.MieleClientSecretFile.Trim();
+        var (text, problem) = SecretFile.Read(path, readFile);
+        if (text is not null) return new MieleClientSecret(text, "fișierul " + path, null);
         if (!string.IsNullOrWhiteSpace(d.MieleClientSecret))
             return new MieleClientSecret(d.MieleClientSecret, "variabila KasaMonitor__MieleClientSecret", null);
-        var path = string.IsNullOrWhiteSpace(d.MieleClientSecretFile) ? MieleApi.DefaultClientSecretFile : d.MieleClientSecretFile.Trim();
-        readFile ??= p => File.Exists(p) ? File.ReadAllText(p) : null;
-        try
-        {
-            var text = readFile(path);
-            if (text is null) return new MieleClientSecret(null, null, "fișierul " + path + " nu există");
-            return new MieleClientSecret(text, "fișierul " + path, "fișierul " + path + " e gol");
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-        {
-            return new MieleClientSecret(null, null, "fișierul " + path + " nu poate fi citit (" + ex.GetType().Name + ")");
-        }
+        return new MieleClientSecret(null, null, problem);
     }
 }
 

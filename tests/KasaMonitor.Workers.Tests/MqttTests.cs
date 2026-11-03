@@ -357,6 +357,10 @@ public class MqttTests
         MqttPassword.Load(new MqttSettingsDefaults(PasswordFile: "/nu/exista"), _ => null).Problem.Should().Contain("nu există");
         MqttPassword.Load(new MqttSettingsDefaults(), _ => "secret\n").Value.Should().Be("secret");
         MqttPassword.Load(new MqttSettingsDefaults(), _ => "secret\n").ToString().Should().NotContain("secret\n").And.Contain("set");
+        // 0.12.0: the mounted file wins over the variable; a missing or empty file leaves the variable in charge.
+        MqttPassword.Load(new MqttSettingsDefaults(Password: "from-env"), _ => " from-file \n").Value.Should().Be(" from-file ", "only the line end is removed");
+        MqttPassword.Load(new MqttSettingsDefaults(Password: "from-env"), _ => null).Source.Should().Contain("KasaMonitor__MqttPassword");
+        MqttPassword.Load(new MqttSettingsDefaults(Password: "from-env"), _ => "\n").Value.Should().Be("from-env");
     }
 
     private static List<string> Subscribed(FakeMqttTransport t)

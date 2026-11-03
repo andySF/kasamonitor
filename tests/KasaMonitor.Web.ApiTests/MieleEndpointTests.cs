@@ -23,7 +23,7 @@ public sealed class MieleFactory : WebApplicationFactory<Program>
 
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
-        builder.UseSetting("KasaMonitor:DbPath", Path.Combine(Dir, "kasa.db"));
+        builder.UseSqliteTestDatabase(Dir);
         builder.UseSetting("KasaMonitor:MieleClientSecret", FakeSecret);
         builder.ConfigureTestServices(s => s.RemoveAll<IHostedService>());
     }

@@ -49,7 +49,7 @@ public sealed record GenericEntityRow(
 /// <summary>What the discovery says about one entity, for the upsert.</summary>
 public sealed record GenericEntityUpsert(string ExternalId, string Component, DeviceEntity Description, string DiscoveryJson);
 
-/// <summary>One stored value (table <c>GenericReadings</c>, key (EntityId, Ts) WITHOUT ROWID).</summary>
+/// <summary>One stored value (table <c>GenericReadings</c>, clustered key (EntityId, Ts)).</summary>
 public sealed record GenericReading(long EntityId, DateTimeOffset TsUtc, double? Number, string? Text);
 
 /// <summary>Storage of the generic devices, their entities, readings and hourly rollups (0.11).</summary>

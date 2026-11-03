@@ -13,45 +13,97 @@ public sealed class LiveRepository : ILiveRepository
 
     public async Task SaveBatchAsync(IReadOnlyList<LiveSample> samples, IReadOnlyList<LiveMinuteAggregate> minutes, CancellationToken ct)
     {
-        if (samples.Count == 0 && minutes.Count == 0) return;
-        foreach (var s in samples)
-            _db.LiveSamples.Add(new LiveSampleEntity
-            {
-                PlugId = s.PlugId,
-                Ts = s.TsUtc.ToUnixTimeSeconds(),
-                PowerW = s.PowerW,
-                ApparentVa = s.ApparentVa,
-                VoltageV = s.VoltageV,
-                CurrentA = s.CurrentA,
-                Pf = s.Pf,
-            });
-        foreach (var m in minutes)
+        // SQL Server refuses NaN and ±Infinity (SQLite stored them) and one such value would fail the whole batch, again at
+        // every flush: a nullable column gets NULL, a sample without a finite power and a minute without finite values are dropped.
+        var rows = samples.Where(s => double.IsFinite(s.PowerW))
+            .DistinctBy(s => (s.PlugId, s.TsUtc.ToUnixTimeSeconds()))   // one row per plug and second: the unique key (PlugId, Ts)
+            .ToList();
+        var mins = minutes.Where(m => double.IsFinite(m.MinW) && double.IsFinite(m.AvgW) && double.IsFinite(m.MaxW)
+                                      && double.IsFinite(m.EnergyWh) && double.IsFinite(m.CoveredSeconds)).ToList();
+        if (rows.Count == 0 && mins.Count == 0) return;
+
+        // One transaction for the whole batch, run by the execution strategy. If the commit fails without an answer (it
+        // may have been applied), EF asks verifySucceeded before retrying: the last new sample, or the first minute with
+        // its merged values, tells whether the batch is already stored — so a retry never stores it twice. Samples already
+        // stored (a batch put back in the queue) are skipped by the key anyway.
+        LiveSampleEntity? lastSample = null;
+        LiveMinuteAggregateEntity? firstMinute = null;
+        await _db.Database.CreateExecutionStrategy().ExecuteInTransactionAsync(async c =>
         {
-            var ts = m.MinuteUtc.ToUnixTimeSeconds();
-            var existing = await _db.LiveMinuteAggregates.FindAsync(new object?[] { m.PlugId, ts }, ct);
-            var merged = m;
-            if (existing is null)
+            _db.ChangeTracker.Clear();
+            lastSample = null;
+            firstMinute = null;
+            var stored = await StoredKeysAsync(rows, c);
+            foreach (var s in rows)
             {
-                existing = new LiveMinuteAggregateEntity { PlugId = m.PlugId, MinuteTs = ts };
-                _db.LiveMinuteAggregates.Add(existing);
+                var ts = s.TsUtc.ToUnixTimeSeconds();
+                if (stored.Contains((s.PlugId, ts))) continue;
+                lastSample = new LiveSampleEntity
+                {
+                    PlugId = s.PlugId,
+                    Ts = ts,
+                    PowerW = s.PowerW,
+                    ApparentVa = DbValues.Finite(s.ApparentVa),
+                    VoltageV = DbValues.Finite(s.VoltageV),
+                    CurrentA = DbValues.Finite(s.CurrentA),
+                    Pf = DbValues.Finite(s.Pf),
+                };
+                _db.LiveSamples.Add(lastSample);
             }
-            else
+            foreach (var m in mins)
             {
-                // A second part of the same minute (restart mid-minute, late sample): combine, never overwrite.
-                merged = new LiveMinuteAggregate(m.PlugId, m.MinuteUtc, existing.MinW, existing.AvgW, existing.MaxW,
-                    existing.AvgVoltageV, existing.EnergyWh, existing.SampleCount, existing.CoveredSeconds).Merge(m);
+                var ts = m.MinuteUtc.ToUnixTimeSeconds();
+                var existing = await _db.LiveMinuteAggregates.FindAsync(new object?[] { m.PlugId, ts }, c);
+                var merged = m;
+                if (existing is null)
+                {
+                    existing = new LiveMinuteAggregateEntity { PlugId = m.PlugId, MinuteTs = ts };
+                    _db.LiveMinuteAggregates.Add(existing);
+                }
+                else
+                {
+                    // A second part of the same minute (restart mid-minute, late sample): combine, never overwrite.
+                    merged = new LiveMinuteAggregate(m.PlugId, m.MinuteUtc, existing.MinW, existing.AvgW, existing.MaxW,
+                        existing.AvgVoltageV, existing.EnergyWh, existing.SampleCount, existing.CoveredSeconds).Merge(m);
+                }
+                existing.MinW = merged.MinW;
+                existing.AvgW = merged.AvgW;
+                existing.MaxW = merged.MaxW;
+                existing.AvgVoltageV = DbValues.Finite(merged.AvgVoltageV);
+                existing.EnergyWh = merged.EnergyWh;
+                existing.SampleCount = merged.SampleCount;
+                existing.CoveredSeconds = merged.CoveredSeconds;
+                firstMinute ??= existing;
             }
-            existing.MinW = merged.MinW;
-            existing.AvgW = merged.AvgW;
-            existing.MaxW = merged.MaxW;
-            existing.AvgVoltageV = merged.AvgVoltageV;
-            existing.EnergyWh = merged.EnergyWh;
-            existing.SampleCount = merged.SampleCount;
-            existing.CoveredSeconds = merged.CoveredSeconds;
-        }
-        // One SaveChanges = one transaction for the whole batch.
-        await _db.SaveChangesAsync(ct);
+            await _db.SaveChangesAsync(acceptAllChangesOnSuccess: false, c);
+        }, async c =>
+        {
+            if (lastSample is { } w)
+                return await _db.LiveSamples.AsNoTracking().AnyAsync(s => s.PlugId == w.PlugId && s.Ts == w.Ts, c);
+            if (firstMinute is { } m)
+            {
+                long minuteTs = m.MinuteTs;
+                double energy = m.EnergyWh;
+                int count = m.SampleCount;
+                return await _db.LiveMinuteAggregates.AsNoTracking()
+                    .AnyAsync(x => x.PlugId == m.PlugId && x.MinuteTs == minuteTs && x.SampleCount == count && x.EnergyWh == energy, c);
+            }
+            return true;
+        }, ct);
         _db.ChangeTracker.Clear();
+    }
+
+    /// <summary>(PlugId, Ts) of the stored samples in the batch's time range, for the plugs of the batch.</summary>
+    private async Task<HashSet<(Guid, long)>> StoredKeysAsync(IReadOnlyList<LiveSample> rows, CancellationToken ct)
+    {
+        if (rows.Count == 0) return [];
+        var plugIds = rows.Select(s => s.PlugId).Distinct().ToList();
+        long from = rows.Min(s => s.TsUtc.ToUnixTimeSeconds()), to = rows.Max(s => s.TsUtc.ToUnixTimeSeconds());
+        var keys = await _db.LiveSamples.AsNoTracking()
+            .Where(s => plugIds.Contains(s.PlugId) && s.Ts >= from && s.Ts <= to)
+            .Select(s => new { s.PlugId, s.Ts })
+            .ToListAsync(ct);
+        return keys.Select(k => (k.PlugId, k.Ts)).ToHashSet();
     }
 
     public async Task<IReadOnlyList<LiveSample>> ListSamplesAsync(Guid plugId, DateTimeOffset fromUtc, DateTimeOffset toUtc, CancellationToken ct)

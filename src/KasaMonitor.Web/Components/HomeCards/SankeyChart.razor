@@ -5,18 +5,22 @@
 @* „Unde s-a dus energia”: 2-column Sankey (meter → top plugs + „Alte prize”, detected appliances, „Nedetectat”), band
    width ∝ energy; gas on its own scale (m³) → heating / hot water. Hand-drawn SVG; under 900 px the electricity flows are a
    vertical list with bars (bands would be unreadable on a phone). *@
+@{
+    // The electricity box grows with its rows; the gas chart takes the same height so the two stay aligned.
+    var g = Flows is { SourceKwh: > 0 } fl ? HomeSvg.Sankey(fl.Flows, fl.SourceKwh, MinH) : null;
+    var chartH = g?.Height ?? MinH;
+}
 <div class="sankey-wrap">
     <div>
         <p class="mini-h">Curent · kWh</p>
-        @if (Flows is not { } f || f.SourceKwh <= 0)
+        @if (Flows is not { } f || f.SourceKwh <= 0 || g is null)
         {
             <div class="empty">Fără energie măsurată de contor în perioada aleasă.</div>
         }
         else
         {
-            var g = HomeSvg.Sankey(f.Flows, f.SourceKwh, H);
             var source = Partial ? "Contor (parțial)" : "Contor";
-            <svg class="chart sankey-svg" style="max-width:@HomeSvg.N(W)px" viewBox="0 0 @HomeSvg.N(W) @HomeSvg.N(H)" role="group" aria-label="Flux de energie electrică: contor către prize și consumatori">
+            <svg class="chart sankey-svg" style="max-width:@HomeSvg.N(W)px" viewBox="0 0 @HomeSvg.N(W) @HomeSvg.N(chartH)" role="group" aria-label="Flux de energie electrică: contor către prize și consumatori">
                 <g>
                     <title>@($"Contor general{(Partial ? " (date parțiale)" : "")}\n{HomeFormat.KwhU(f.MeterKwh)} · {EnergyFormat.Lei(ElectricityCost.Ron(f.MeterKwh, Tariff))}" + (f.PlugsAboveMeter ? "\nΣ prize peste contor: nodul are înălțimea prizelor" : ""))</title>
                     <rect class="k-plug" x="@HomeSvg.N(X0 - NodeW)" y="@HomeSvg.N(g.SourceY)" width="@NodeW" height="@HomeSvg.N(Math.Max(1, g.SourceH))" rx="3" />
@@ -76,10 +80,10 @@
             if (unsplit > 0.005) parts.Add(("Nerepartizat", unsplit));
             var k = GasBandH / gas;
             var leftH = gas * k;
-            var ly = (H - 22 - leftH) / 2;
+            var ly = (chartH - 22 - leftH) / 2;
             var yL = ly;
             var yR = ly - (parts.Count - 1) * GasGap / 2;
-            <svg class="chart" style="max-width:@HomeSvg.N(GW * 1.2)px" viewBox="0 0 @HomeSvg.N(GW) @HomeSvg.N(H)" role="group" aria-label="Flux gaz: încălzire și apă caldă">
+            <svg class="chart" style="max-width:@HomeSvg.N(GW * 1.2)px" viewBox="0 0 @HomeSvg.N(GW) @HomeSvg.N(chartH)" role="group" aria-label="Flux gaz: încălzire și apă caldă">
                 <g>
                     <title>@($"Gaz\n{HomeFormat.M3U(gas)} ≈ {HomeFormat.KwhU(GasCost.Kwh(gas, KwhPerM3))} · {EnergyFormat.Lei(GasCost.Ron(gas, KwhPerM3, GasPricePerKwh))}")</title>
                     <rect class="k-gas" x="@HomeSvg.N(GX0 - NodeW)" y="@HomeSvg.N(ly)" width="@NodeW" height="@HomeSvg.N(leftH)" rx="3" />
@@ -107,7 +111,7 @@
                     yL += h;
                     yR += Math.Max(h, 2) + GasGap;
                 }
-                <text class="node-sub" x="0" y="@HomeSvg.N(H - 4)">≈ @HeatingFormat.Number(KwhPerM3, 2) kWh/m³ · @HomeFormat.PerKwh(GasPricePerKwh, 3)</text>
+                <text class="node-sub" x="0" y="@HomeSvg.N(chartH - 4)">≈ @HeatingFormat.Number(KwhPerM3, 2) kWh/m³ · @HomeFormat.PerKwh(GasPricePerKwh, 3)</text>
             </svg>
         }
     </div>
@@ -115,7 +119,8 @@
 
 @code {
     private const double W = 900;
-    private const double H = 190;
+    /// <summary>The smallest height of the two Sankey boxes; the electricity one grows with its rows.</summary>
+    private const double MinH = 190;
     private const double NodeW = 12;
     private const double X0 = 150;
     private const double X1 = 470;

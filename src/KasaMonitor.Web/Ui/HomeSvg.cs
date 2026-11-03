@@ -75,25 +75,22 @@ public static class HomeSvg
     /// <summary>One right-hand node of a Sankey: its slot (Y, H) and where its ribbon leaves the source node (SourceY).</summary>
     public sealed record SankeyNode(FlowItem Item, double Y, double H, double SourceY);
 
-    /// <summary>The Sankey geometry: the source node and the right-hand nodes, heights ∝ kWh.</summary>
-    public sealed record SankeyGeometry(double SourceY, double SourceH, IReadOnlyList<SankeyNode> Nodes);
+    /// <summary>The Sankey geometry: the box height, the source node and the right-hand nodes, heights ∝ kWh.</summary>
+    public sealed record SankeyGeometry(double Height, double SourceY, double SourceH, IReadOnlyList<SankeyNode> Nodes);
 
     /// <summary>
-    /// Layout of a 2-column Sankey in a box of <paramref name="height"/>: every right-hand node gets at least
-    /// <paramref name="minSlot"/> px (a readable label), the space so used is taken from the scale; the source node is
-    /// centred and the ribbons leave it in order.
+    /// Layout of a 2-column Sankey: the source band is <paramref name="bandH"/> px and every ribbon keeps that scale;
+    /// every right-hand node gets at least <paramref name="minSlot"/> px (a readable label), and the box grows from
+    /// <paramref name="minHeight"/> as far as the slots need (the scale is never shrunk to fit a fixed box). The source node
+    /// is centred and the ribbons leave it in order.
     /// </summary>
-    public static SankeyGeometry Sankey(IReadOnlyList<FlowItem> flows, double sourceKwh, double height, double top = 6, double bottom = 6,
-        double gap = 6, double minSlot = 15)
+    public static SankeyGeometry Sankey(IReadOnlyList<FlowItem> flows, double sourceKwh, double minHeight = 190, double top = 6,
+        double bottom = 6, double gap = 6, double minSlot = 15, double bandH = 110)
     {
         var total = Math.Max(sourceKwh, flows.Sum(f => f.Kwh));
-        var avail = Math.Max(10, height - top - bottom - gap * Math.Max(0, flows.Count - 1));
-        var k = total > 0 ? avail / total : 0;
-        for (var it = 0; it < 3 && total > 0; it++)
-        {
-            var extra = flows.Sum(f => Math.Max(0, minSlot - f.Kwh * k));
-            k = Math.Max(0, (avail - extra) / total);
-        }
+        var k = total > 0 ? bandH / total : 0;
+        var height = Math.Max(minHeight,
+            top + bottom + flows.Sum(f => Math.Max(f.Kwh * k, minSlot)) + gap * Math.Max(0, flows.Count - 1));
         var sourceH = total * k;
         var sy = top + (height - top - bottom - sourceH) / 2;
         var yL = sy;
@@ -106,6 +103,6 @@ public static class HomeSvg
             yL += h;
             yR += Math.Max(h, minSlot) + gap;
         }
-        return new SankeyGeometry(sy, sourceH, nodes);
+        return new SankeyGeometry(height, sy, sourceH, nodes);
     }
 }

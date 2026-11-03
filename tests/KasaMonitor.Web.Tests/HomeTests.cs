@@ -29,15 +29,48 @@ public class HomeSvgTests
                 .Select(x => x.Split(':')).Select(x => new FlowItem(x[0], x[0], FlowKind.Plug, double.Parse(x[1], System.Globalization.CultureInfo.InvariantCulture))),
             new[] { new FlowItem("sig-1", "Centrala electric", FlowKind.Detected, 0.4) }).Flows;
 
-        var g = HomeSvg.Sankey(flows, 7.8, 215);
+        var g = HomeSvg.Sankey(flows, 7.8, minHeight: 215);
 
         g.Nodes.Should().HaveCount(flows.Count);
         for (var i = 1; i < g.Nodes.Count; i++)
             g.Nodes[i].Y.Should().BeGreaterThanOrEqualTo(g.Nodes[i - 1].Y + Math.Max(g.Nodes[i - 1].H, 15) + 6 - 1e-9);
-        g.Nodes.Last().Y.Should().BeLessThanOrEqualTo(215, "the labels fit the box");
+        (g.Nodes.Last().Y + Math.Max(g.Nodes.Last().H, 15)).Should().BeLessThanOrEqualTo(g.Height - 6 + 1e-9, "the labels fit the box");
+        g.Height.Should().BeGreaterThanOrEqualTo(215);
         g.Nodes.Sum(n => n.H).Should().BeApproximately(g.SourceH, 1e-6, "the ribbons fill the meter node exactly");
         g.Nodes[0].SourceY.Should().Be(g.SourceY);
         (g.Nodes[0].H / g.Nodes[3].H).Should().BeApproximately(1.9 / 0.9, 1e-9, "height ∝ kWh");
+    }
+
+    [Fact]
+    public void Sankey_ManyFlows_TheBoxGrows_BandsKeepTheirScale()
+    {
+        // 11 rows as on 2026-11-03: 5 plugs + „Alte 4 prize”, 3 detected + „Alți 3 detectați”, „Nedetectat” (Σ 7.72 kWh).
+        var kwh = new[] { 1.9, 1.5, 1.2, 1.0, 0.9, 0.3, 0.25, 0.2, 0.17, 0.15, 0.15 };
+        var flows = kwh.Select((v, i) => new FlowItem($"f{i}", $"Flux {i}", i < 6 ? FlowKind.Plug : FlowKind.Detected, v)).ToList();
+        flows.Sum(f => f.Kwh).Should().BeApproximately(7.72, 1e-9);
+
+        var g = HomeSvg.Sankey(flows, 7.72, minHeight: 190);
+
+        g.SourceH.Should().BeApproximately(110, 0.01, "the source band keeps its full height");
+        g.Nodes.Should().HaveCount(11).And.OnlyContain(n => n.H > 0, "every node with energy has a band");
+        for (var i = 1; i < g.Nodes.Count; i++)
+            g.Nodes[i].Y.Should().BeGreaterThanOrEqualTo(g.Nodes[i - 1].Y + Math.Max(g.Nodes[i - 1].H, 15) + 6 - 1e-9, "nodes do not overlap");
+        (g.Nodes.Last().Y + Math.Max(g.Nodes.Last().H, 15)).Should().BeLessThanOrEqualTo(g.Height - 6 + 1e-9, "the last node stays in the box");
+        g.Height.Should().BeGreaterThan(190, "the box grows instead of the bands shrinking");
+        g.Nodes.Sum(n => n.H).Should().BeApproximately(g.SourceH, 1e-6);
+        g.SourceY.Should().BeGreaterThanOrEqualTo(6).And.BeLessThanOrEqualTo(g.Height - 6 - g.SourceH + 1e-9, "the source node is inside the box");
+    }
+
+    [Fact]
+    public void Sankey_FewFlows_TheBoxKeepsItsMinimumHeight()
+    {
+        var flows = new[] { new FlowItem("a", "A", FlowKind.Plug, 3), new FlowItem("b", "B", FlowKind.Plug, 2.5), new FlowItem("c", "C", FlowKind.Undetected, 2) };
+
+        var g = HomeSvg.Sankey(flows, 7.5, minHeight: 190);
+
+        g.Height.Should().Be(190);
+        g.SourceH.Should().BeApproximately(110, 1e-9);
+        (g.Nodes.Last().Y + g.Nodes.Last().H).Should().BeLessThanOrEqualTo(190 - 6);
     }
 }
 

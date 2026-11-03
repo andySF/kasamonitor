@@ -3,7 +3,7 @@ namespace KasaMonitor.Core.Climate;
 /// <summary>Where a climate sensor's values come from (column <c>ClimateSensors.Source</c>, metric label <c>source</c>).</summary>
 public static class ClimateSources
 {
-    /// <summary>Virtual sensors fed from the boiler readings (<c>HeatingReadings</c>): room thermostat, supply, hot water.</summary>
+    /// <summary>The boiler's room thermostat as a virtual sensor fed from the boiler readings (<c>HeatingReadings</c>).</summary>
     public const string Viessmann = "viessmann";
     /// <summary>Govee Wi-Fi thermometers through the Govee Developer API v1 (cloud).</summary>
     public const string Govee = "govee";
@@ -27,7 +27,7 @@ public static class ClimateSources
 
 /// <summary>
 /// A climate sensor (table <c>ClimateSensors</c>): one temperature (and optionally humidity) series. (Source, ExternalId)
-/// is unique: the boiler's virtual sensors use <c>&lt;heating device id&gt;:room|supply|dhw</c>, Govee the device id, Shelly
+/// is unique: the boiler's room thermostat uses <c>&lt;heating device id&gt;:room</c>, Govee the device id, Shelly
 /// <c>&lt;mac&gt;:&lt;component id&gt;</c>, Open-Meteo <c>outdoor</c>. Name, room and „afară” are edited in /clima.
 /// </summary>
 public sealed record ClimateSensor(

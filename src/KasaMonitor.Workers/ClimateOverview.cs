@@ -6,7 +6,7 @@ namespace KasaMonitor.Workers;
 /// <summary>
 /// The home page's „Climă” card over the climate service (<see cref="ClimateState"/>): „Afară” = every sensor ticked
 /// „afară” (<see cref="ClimateSensor.IsOutdoor"/>, the same rule as /clima and /centrala: Open-Meteo by default, a physical
-/// outdoor sensor once ticked), the rooms = every other not archived sensor with a temperature, by room and name. The boiler's supply and hot-water virtual sensors are water temperatures, not rooms: they stay on the
+/// outdoor sensor once ticked), the rooms = every other not archived sensor with a temperature, by room and name. The boiler's water temperatures (supply, hot water) are not climate sensors: they stay on the
 /// „Centrala” card. A stale value (<see cref="ClimateFreshnessLevel.Stale"/>, or the source reports it offline) is kept
 /// and marked, so a sensor does not silently vanish.
 /// </summary>
@@ -36,9 +36,9 @@ public sealed class ClimateOverview : IClimateOverview
             .ToList();
     }
 
-    /// <summary>The boiler's supply / hot-water virtual sensor (a water temperature, not a room).</summary>
-    public static bool IsBoilerWater(ClimateSensor s) =>
-        s.Source == ClimateSources.Viessmann
-        && (s.ExternalId.EndsWith(":" + ViessmannClimate.SupplySuffix, StringComparison.Ordinal)
-            || s.ExternalId.EndsWith(":" + ViessmannClimate.DhwSuffix, StringComparison.Ordinal));
+    /// <summary>
+    /// The boiler's former supply / hot-water virtual sensor (a water temperature, not a room). Not created since 0.9.3
+    /// and removed at startup (<see cref="ClimateRecorder"/>); kept here defensively.
+    /// </summary>
+    public static bool IsBoilerWater(ClimateSensor s) => ViessmannClimate.IsWaterSensor(s.Source, s.ExternalId);
 }

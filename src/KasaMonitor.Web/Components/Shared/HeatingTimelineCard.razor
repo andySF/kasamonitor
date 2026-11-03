@@ -76,11 +76,13 @@
                     </ApexPointTooltip>
                 </ApexChart>
             }
+            @* Every series has its own SeriesStroke: with one on a single series Blazor-ApexCharts fills stroke.colors with
+               #d3d3d3 for the others (grey lines, legend still coloured). The per-series widths replace Stroke.Width. *@
             <ApexChart @key="(_key + 100000)" TItem="TempPoint" Options="_tempOptions" Height="230" XAxisType="XAxisType.Datetime">
-                <ApexPointSeries TItem="TempPoint" Items="_temps" Name="Tur (°C)" Color="#D55E00" SeriesType="SeriesType.Line" XValue="@(p => p.Ms)" YValue="@(p => p.SupplyC)" />
-                <ApexPointSeries TItem="TempPoint" Items="_temps" Name="Apă caldă (°C)" Color="#0072B2" SeriesType="SeriesType.Line" XValue="@(p => p.Ms)" YValue="@(p => p.DhwC)" />
-                <ApexPointSeries TItem="TempPoint" Items="_temps" Name="Țintă apă caldă (°C)" Color="#56B4E9" SeriesType="SeriesType.Line" XValue="@(p => p.Ms)" YValue="@(p => p.DhwTargetC)" Stroke="@(new SeriesStroke { Width = 2, DashSpace = 5 })" />
-                <ApexPointSeries TItem="TempPoint" Items="_temps" Name="Cameră (°C)" Color="#009E73" SeriesType="SeriesType.Line" XValue="@(p => p.Ms)" YValue="@(p => p.RoomC)" />
+                <ApexPointSeries TItem="TempPoint" Items="_temps" Name="Tur (°C)" Color="#D55E00" SeriesType="SeriesType.Line" XValue="@(p => p.Ms)" YValue="@(p => p.SupplyC)" Stroke="@(new SeriesStroke { Color = "#D55E00", Width = 3 })" />
+                <ApexPointSeries TItem="TempPoint" Items="_temps" Name="Apă caldă (°C)" Color="#0072B2" SeriesType="SeriesType.Line" XValue="@(p => p.Ms)" YValue="@(p => p.DhwC)" Stroke="@(new SeriesStroke { Color = "#0072B2", Width = 3 })" />
+                <ApexPointSeries TItem="TempPoint" Items="_temps" Name="Țintă apă caldă (°C)" Color="#56B4E9" SeriesType="SeriesType.Line" XValue="@(p => p.Ms)" YValue="@(p => p.DhwTargetC)" Stroke="@(new SeriesStroke { Color = "#56B4E9", Width = 2, DashSpace = 5 })" />
+                <ApexPointSeries TItem="TempPoint" Items="_temps" Name="Cameră (°C)" Color="#009E73" SeriesType="SeriesType.Line" XValue="@(p => p.Ms)" YValue="@(p => p.RoomC)" Stroke="@(new SeriesStroke { Color = "#009E73", Width = 3 })" />
             </ApexChart>
             <ApexChart @key="(_key + 200000)" TItem="TempPoint" Options="_modOptions" Height="150" XAxisType="XAxisType.Datetime">
                 <ApexPointSeries TItem="TempPoint" Items="_temps" Name="Modulare (%)" Color="#CC79A7" SeriesType="SeriesType.Area" XValue="@(p => p.Ms)" YValue="@(p => p.ModulationPct)" />

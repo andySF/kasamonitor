@@ -184,6 +184,19 @@ public sealed class ClimateRepository : IClimateRepository
         return _db.ClimateReadings.Where(r => r.Ts < cutoff).ExecuteDeleteAsync(ct);
     }
 
+    public async Task<(int Sensors, int Readings, int Days)> DeleteSensorsAsync(IReadOnlyCollection<Guid> sensorIds, CancellationToken ct)
+    {
+        var ids = sensorIds.Distinct().ToList();
+        if (ids.Count == 0) return (0, 0, 0);
+        await using var tx = await _db.Database.BeginTransactionAsync(ct);
+        var readings = await _db.ClimateReadings.Where(r => ids.Contains(r.SensorId)).ExecuteDeleteAsync(ct);
+        var days = await _db.ClimateDaily.Where(d => ids.Contains(d.SensorId)).ExecuteDeleteAsync(ct);
+        var sensors = await _db.ClimateSensors.Where(s => ids.Contains(s.Id)).ExecuteDeleteAsync(ct);
+        await tx.CommitAsync(ct);
+        _db.ChangeTracker.Clear();
+        return (sensors, readings, days);
+    }
+
     private static ClimateSensor ToModel(ClimateSensorEntity e) => new(e.Id, e.Source, e.ExternalId, e.Name, e.Room, e.IsOutdoor, e.IsArchived,
         e.LastSeenUtc is { } s ? DateTimeOffset.FromUnixTimeSeconds(s) : null, e.BatteryPercent);
 

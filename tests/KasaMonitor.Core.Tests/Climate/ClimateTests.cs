@@ -354,7 +354,7 @@ public class ClimateAggregationTests
 public class ViessmannClimateTests
 {
     [Fact]
-    public void Reading_BecomesRoomSupplyAndHotWater_NullValuesNone()
+    public void Reading_BecomesOnlyTheRoomThermostat_WaterTemperaturesAreNotClimate()
     {
         var id = Guid.Parse("11111111-2222-3333-4444-555555555555");
         var ts = new DateTimeOffset(2026, 11, 2, 12, 0, 0, TimeSpan.Zero);
@@ -362,12 +362,21 @@ public class ViessmannClimateTests
 
         var samples = ViessmannClimate.Samples(r).ToList();
 
-        samples.Select(s => (s.ExternalId, s.DefaultName, s.TemperatureC)).Should().Equal(
-            (id + ":room", "Termostat (cameră)", 21.3),
-            (id + ":supply", "Tur centrală", 45.5),
-            (id + ":dhw", "Apă caldă", 48.0));
+        samples.Select(s => (s.ExternalId, s.DefaultName, s.TemperatureC)).Should().Equal((id + ":room", "Termostat (cameră)", 21.3));
         samples.Should().OnlyContain(s => s.Source == ClimateSources.Viessmann && s.TsUtc == ts && s.HumidityPercent == null);
 
-        ViessmannClimate.Samples(r with { RoomTempC = null }).Should().HaveCount(2);
+        // Supply and hot water present, no room temperature: nothing.
+        ViessmannClimate.Samples(r with { RoomTempC = null }).Should().BeEmpty();
+    }
+
+    [Fact]
+    public void IsWaterSensor_OnlyTheBoilersFormerSupplyAndHotWater()
+    {
+        var id = Guid.Parse("11111111-2222-3333-4444-555555555555");
+        ViessmannClimate.IsWaterSensor(ClimateSources.Viessmann, ViessmannClimate.ExternalId(id, ViessmannClimate.SupplySuffix)).Should().BeTrue();
+        ViessmannClimate.IsWaterSensor(ClimateSources.Viessmann, ViessmannClimate.ExternalId(id, ViessmannClimate.DhwSuffix)).Should().BeTrue();
+        ViessmannClimate.IsWaterSensor(ClimateSources.Viessmann, ViessmannClimate.ExternalId(id, ViessmannClimate.RoomSuffix)).Should().BeFalse();
+        ViessmannClimate.IsWaterSensor(ClimateSources.Shelly, "AA:BB:CC:DD:EE:FF:dhw").Should().BeFalse();
+        ViessmannClimate.IsWaterSensor(ClimateSources.Govee, "x:supply").Should().BeFalse();
     }
 }

@@ -44,4 +44,9 @@ public interface IClimateRepository
     Task<IReadOnlyDictionary<Guid, DateOnly>> LastDailyDaysAsync(CancellationToken ct);
     /// <summary>Deletes the readings older than <paramref name="cutoffUtc"/>; returns the number of rows.</summary>
     Task<int> DeleteReadingsBeforeAsync(DateTimeOffset cutoffUtc, CancellationToken ct);
+    /// <summary>
+    /// Deletes the sensors together with their readings and daily stats, in one transaction; returns the number of rows
+    /// deleted of each table (ids that do not exist are ignored).
+    /// </summary>
+    Task<(int Sensors, int Readings, int Days)> DeleteSensorsAsync(IReadOnlyCollection<Guid> sensorIds, CancellationToken ct);
 }

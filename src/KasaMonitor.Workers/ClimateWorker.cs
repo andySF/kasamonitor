@@ -140,7 +140,7 @@ public sealed class ClimateWorker : BackgroundService
         }
     }
 
-    /// <summary>The boiler readings stored since the last one used (on the first run: the last 30 days), as three virtual sensors.</summary>
+    /// <summary>The boiler readings stored since the last one used (on the first run: the last 30 days), as the room thermostat's virtual sensor.</summary>
     public async Task<int> ViessmannAsync(DateTimeOffset now, CancellationToken ct)
     {
         using var scope = _scopeFactory.CreateScope();

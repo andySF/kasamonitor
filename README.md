@@ -7,7 +7,7 @@ plugs and energy meters (e.g. Shelly EM Gen3, local JSON-RPC; the only write is 
 with SQLite, a web UI on port 8910 and a Prometheus `/metrics` endpoint. An optional Prometheus + Grafana stack
 with a ready-made dashboard and alert rules is included.
 
-Version: **0.9.2** (`Directory.Build.props`). Docker image: `duobit/kasamonitor`.
+Version: **0.9.3** (`Directory.Build.props`). Docker image: `duobit/kasamonitor`.
 
 ## Quick start
 
@@ -73,7 +73,7 @@ TP-Link (Tapo app) account in `/settings` and press **Scanează acum** on `/plug
   in the address) for electricity, gas and boiler, Miele, detected consumers, climate (with heating degree days and the
   energy signature), costs and events; Δ at the same share of the previous period, drill-down, CSV per section; and
   „Rapoarte” on `/centrala` (gas, boiler electricity, heat produced). See [History](#history-history-istoric).
-- **Version in the menu**: „v0.9.2” at the right of the navigation bar; the tooltip shows the commit and the build time.
+- **Version in the menu**: „v0.9.3” at the right of the navigation bar; the tooltip shows the commit and the build time.
 - **Browser errors in the server log**: JavaScript errors and the Blazor error banner are reported to
   `POST /api/client-error` and logged at Warning (category `KasaMonitor.ClientErrors`), so `docker logs` shows them.
 - **HTTP API for the appliance detection** (`/api/nilm/*`, LAN only): list, sheet, label, merge, add to, hide, regroup,
@@ -768,7 +768,7 @@ last seen, battery) and its **readings** (`ClimateReadings`: time, temperature �
 
 | Source (`source`) | What | How it is read | Interval |
 |---|---|---|---|
-| `viessmann` | the boiler's room thermostat („Termostat (cameră)”, the Zigbee room sensor), supply („Tur centrală”) and hot water („Apă caldă”) | virtual sensors fed from the stored boiler readings (`HeatingReadings`); **no extra Viessmann API call**. On the first run the readings of the last 30 days are imported | every minute (new readings only) |
+| `viessmann` | the boiler's room thermostat only („Termostat (cameră)”, the Zigbee room sensor) | a virtual sensor fed from the stored boiler readings (`HeatingReadings`); **no extra Viessmann API call**. On the first run the readings of the last 30 days are imported. The supply and hot-water temperatures are water, not air: they stay on `/centrala` and are not climate sensors (since 0.9.3; the „Tur centrală” / „Apă caldă” sensors of earlier versions are removed at startup with their readings and daily rows — the same values remain in `HeatingReadings`) | every minute (new readings only) |
 | `govee` | Govee Wi-Fi thermometers (e.g. H5179) of the account | Govee Developer API v1: `GET https://openapi.api.govee.com/router/api/v1/user/devices` and `POST …/device/state` (header `Govee-API-Key`); the temperature comes in **°F** and is converted to °C; an offline device answers `online:false` with `""` values (nothing is stored, the card shows „offline la sursă”) | 10 minutes per ticked thermometer (they upload about every 30 minutes); the device list every 6 hours |
 | `shelly` | Shelly H&T Gen3, Shelly Plus Add-on (DS18B20 / DHT22) | local RPC: `Shelly.GetStatus` components `temperature:N` (`tC`) and `humidity:N` (`rh`, paired by id), battery from `devicepower:0`; found by mDNS (`_shelly._tcp`, only when Shelly discovery is on) | every minute; an H&T on batteries sleeps and is read only when it is awake |
 | `openmeteo` | the outdoor temperature and humidity („Afară”) | `https://api.open-meteo.com/v1/forecast?latitude=…&longitude=…&current=temperature_2m,relative_humidity_2m&timezone=auto` (free, no key) | 15 minutes, only when latitude and longitude are set |
@@ -786,7 +786,7 @@ unsupported plug („fără componentă de măsurare”).
 **Storage.** A reading is stored when the temperature changed by **≥ 0.1 °C** or the humidity by **≥ 1 % RH** since the
 last stored reading, and at least every **30 minutes** (heartbeat); a value read in between only updates the card and
 `/metrics`. Raw readings are kept **without limit** since 0.9.2 (the climate history of `/history`; before: one year). A sensor is created at its first value with the
-source's name; name, room and „afară” are edited on its card in `/clima` (the boiler's sensors have no room at first).
+source's name; name, room and „afară” are edited on its card in `/clima` (the boiler's thermostat has no room at first).
 
 **Page.** One card per sensor: name, room, temperature, humidity, battery, source and the age of the last value
 coloured against the source's interval (Viessmann: its poll interval; Govee 10 min; Shelly 1 min, 2 h on batteries —
@@ -1314,15 +1314,15 @@ dotnet test KasaMonitor.sln
 From the repository root, with Docker running and `docker login` done once:
 
 ```powershell
-.\deploy\build-and-push.ps1 -Version 0.9.2          # build :0.9.2 + :latest and push both
-.\deploy\build-and-push.ps1 -Version 0.9.2 -NoPush  # local build only
+.\deploy\build-and-push.ps1 -Version 0.9.3          # build :0.9.3 + :latest and push both
+.\deploy\build-and-push.ps1 -Version 0.9.3 -NoPush  # local build only
 ```
 
 or manually:
 
 ```bash
-docker build -t duobit/kasamonitor:0.9.2 -t duobit/kasamonitor:latest -f deploy/Dockerfile .
-docker push duobit/kasamonitor:0.9.2
+docker build -t duobit/kasamonitor:0.9.3 -t duobit/kasamonitor:latest -f deploy/Dockerfile .
+docker push duobit/kasamonitor:0.9.3
 docker push duobit/kasamonitor:latest
 ```
 

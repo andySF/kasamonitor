@@ -3,6 +3,7 @@ using FluentAssertions;
 using KasaMonitor.Core.Abstractions;
 using KasaMonitor.Core.Climate;
 using KasaMonitor.Core.Heating;
+using KasaMonitor.Core.History;
 using KasaMonitor.Core.Protocol.Shelly;
 using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
@@ -142,7 +143,7 @@ public sealed class ClimateTests : IDisposable
     }
 
     [Fact]
-    public async Task Viessmann_ReadingsBecomeThreeSensors_OnChange_ThenOnlyNewReadings()
+    public async Task Viessmann_ReadingsBecomeTheRoomSensorOnly_OnChange_ThenOnlyNewReadings()
     {
         HeatingDevice device;
         using (var scope = _scopes.CreateScope())
@@ -157,9 +158,7 @@ public sealed class ClimateTests : IDisposable
         (await Worker().ViessmannAsync(T0, Ct)).Should().Be(5);
 
         var sensors = _state.Sensors.ToDictionary(s => s.Sensor.Name);
-        sensors.Keys.Should().BeEquivalentTo("Termostat (cameră)", "Tur centrală", "Apă caldă");
-        sensors["Tur centrală"].TemperatureC.Should().Be(44);
-        (await ReadingsAsync(sensors["Tur centrală"].Sensor.Id)).Should().HaveCount(5);       // changed at every reading
+        sensors.Keys.Should().Equal("Termostat (cameră)");   // supply and hot water are water, not climate (0.9.3)
         (await ReadingsAsync(sensors["Termostat (cameră)"].Sensor.Id)).Should().ContainSingle(); // never changed
         sensors["Termostat (cameră)"].Sensor.ExternalId.Should().Be(device.Id + ":room");
 
@@ -170,6 +169,61 @@ public sealed class ClimateTests : IDisposable
                 T0.AddMinutes(2), null, null, 50, null, null, 21.5, 48.0, null, null, null, null, null, null, null, null, null, null, null, null), Ct);
         (await worker.ViessmannAsync(T0.AddMinutes(3), Ct)).Should().Be(1);
         _state.Sensors.Single(s => s.Sensor.Name == "Termostat (cameră)").TemperatureC.Should().Be(21.5);
+    }
+
+    [Fact]
+    public async Task Load_RemovesTheFormerBoilerWaterSensors_WithReadingsAndDays_Once()
+    {
+        var boiler = Guid.Parse("11111111-2222-3333-4444-555555555555");
+        var day = new DateOnly(2026, 11, 1);
+        var stats = new ClimateStats(20, 21, 22, null, null, null, 3);
+        Guid supply, dhw, room, govee, outdoor;
+        using (var scope = _scopes.CreateScope())
+        {
+            var repo = (IClimateRepository)scope.ServiceProvider.GetService(typeof(IClimateRepository))!;
+            async Task<Guid> Seed(string source, string externalId, string name)
+            {
+                var s = await repo.GetOrAddSensorAsync(source, externalId, name, "", false, Ct);
+                await repo.AddReadingAsync(new ClimateReading(s.Id, T0, 21, null, null), Ct);
+                await repo.AddReadingAsync(new ClimateReading(s.Id, T0.AddMinutes(30), 22, null, null), Ct);
+                await repo.UpsertDailyAsync(new[] { new ClimateDayStats(s.Id, day, stats) }, Ct);
+                return s.Id;
+            }
+            supply = await Seed(ClimateSources.Viessmann, ViessmannClimate.ExternalId(boiler, ViessmannClimate.SupplySuffix), ViessmannClimate.SupplyName);
+            dhw = await Seed(ClimateSources.Viessmann, ViessmannClimate.ExternalId(boiler, ViessmannClimate.DhwSuffix), ViessmannClimate.DhwName);
+            room = await Seed(ClimateSources.Viessmann, ViessmannClimate.ExternalId(boiler, ViessmannClimate.RoomSuffix), ViessmannClimate.RoomName);
+            govee = await Seed(ClimateSources.Govee, Baie, "Baie");
+            outdoor = await Seed(ClimateSources.OpenMeteo, OpenMeteoApi.OutdoorExternalId, "Afară");
+        }
+
+        await _recorder.LoadAsync(Ct);
+
+        var kept = new[] { room, govee, outdoor };
+        _state.Sensors.Select(s => s.Sensor.Id).Should().BeEquivalentTo(kept);
+        _recorder.SensorsOf(ClimateSources.Viessmann).Select(s => s.Id).Should().Equal(room);
+        async Task<(IReadOnlyList<ClimateSensor> Sensors, IReadOnlyCollection<Guid> ReadingSensors, IReadOnlyList<ClimateDayStats> Days)> DbAsync()
+        {
+            using var scope = _scopes.CreateScope();
+            var repo = (IClimateRepository)scope.ServiceProvider.GetService(typeof(IClimateRepository))!;
+            var all = new[] { supply, dhw, room, govee, outdoor };
+            var readings = await repo.ListReadingsAsync(all, T0.AddDays(-1), T0.AddDays(1), Ct);
+            return (await repo.ListSensorsAsync(true, Ct), readings.Where(kv => kv.Value.Count > 0).Select(kv => kv.Key).ToList(),
+                await repo.ListDailyAsync(all, day, day, Ct));
+        }
+        var after = await DbAsync();
+        after.Sensors.Select(s => s.Id).Should().BeEquivalentTo(kept);
+        after.ReadingSensors.Should().BeEquivalentTo(kept);
+        after.Days.Select(d => d.SensorId).Should().BeEquivalentTo(kept);
+        (await ReadingsAsync(room)).Should().HaveCount(2);
+
+        // A second start: nothing left to delete, nothing else touched.
+        var recorder2 = new ClimateRecorder(_scopes, new ClimateState());
+        await recorder2.LoadAsync(Ct);
+        var again = await DbAsync();
+        again.Sensors.Select(s => s.Id).Should().BeEquivalentTo(kept);
+        again.ReadingSensors.Should().BeEquivalentTo(kept);
+        again.Days.Should().HaveCount(3);
+        (await ReadingsAsync(govee)).Should().HaveCount(2);
     }
 
     [Fact]

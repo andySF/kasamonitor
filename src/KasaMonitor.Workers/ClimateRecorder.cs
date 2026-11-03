@@ -53,6 +53,7 @@ public sealed class ClimateRecorder
         if (_loaded) return;
         using var scope = _scopeFactory.CreateScope();
         var repo = scope.ServiceProvider.GetRequiredService<IClimateRepository>();
+        await RemoveBoilerWaterSensorsAsync(repo, ct);
         var sensors = await repo.ListSensorsAsync(includeArchived: true, ct);
         var latest = await repo.LatestReadingsAsync(ct);
         foreach (var s in sensors)
@@ -66,6 +67,21 @@ public sealed class ClimateRecorder
             _state.Publish(new ClimateSensorLive(s, last?.TemperatureC, last?.HumidityPercent, s.BatteryPercent, last?.TsUtc));
         }
         _loaded = true;
+    }
+
+    /// <summary>
+    /// Once per process, before the sensors are loaded: removes the boiler's former supply / hot-water sensors (0.9.3: water
+    /// temperatures are not climate) with their readings and daily stats. Nothing is lost: the same temperatures stay in
+    /// <c>HeatingReadings</c>. Idempotent (nothing left to delete on the next start).
+    /// </summary>
+    private async Task RemoveBoilerWaterSensorsAsync(IClimateRepository repo, CancellationToken ct)
+    {
+        var ids = (await repo.ListSensorsAsync(includeArchived: true, ct))
+            .Where(s => ViessmannClimate.IsWaterSensor(s.Source, s.ExternalId)).Select(s => s.Id).ToList();
+        if (ids.Count == 0) return;
+        var (sensors, readings, days) = await repo.DeleteSensorsAsync(ids, ct);
+        _log?.LogInformation("Climate: removed {Sensors} boiler water sensors (supply / hot water) with {Readings} readings and {Days} daily rows; " +
+                             "the temperatures stay in HeatingReadings", sensors, readings, days);
     }
 
     /// <summary>The sensors known so far of a source (archived included).</summary>

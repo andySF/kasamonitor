@@ -334,7 +334,13 @@ using (var scope = app.Services.CreateScope())
 }
 
 app.UseMiddleware<MetricsScrapeLogMiddleware>();
-app.UseStaticFiles();
+// Static files (app.css, js) change with every release and are linked without a fingerprint: ask the browser to
+// revalidate them on every load (ETag answers 304 when unchanged) instead of the heuristic caching that showed the
+// previous release's CSS after an update (0.10.1).
+app.UseStaticFiles(new StaticFileOptions
+{
+    OnPrepareResponse = ctx => ctx.Context.Response.Headers.CacheControl = "no-cache",
+});
 app.UseRouting();
 app.UseAntiforgery();
 app.MapRazorComponents<App>().AddInteractiveServerRenderMode();

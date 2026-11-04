@@ -27,7 +27,8 @@ KasaMonitor.sln
 │   └── KasaMonitor.SqlServer.Tests   SQL Server in Docker (Testcontainers): migration, collation, the repository
 │                                     tests again, app start-up and /health, the data migration tool
 ├── tools/
-│   └── KasaMonitor.DataMigration     kasa-migrate: one-off copy of a SQLite kasa.db into SQL Server
+│   ├── KasaMonitor.DataMigration     kasa-migrate: one-off copy of a SQLite kasa.db into SQL Server
+│   └── KasaMonitor.NilmReplay        kasa-nilm-replay: a stored meter series through the event detector, as it is and with a median
 └── deploy/                   Dockerfile, the stack (docker-compose.yml), sql/create-database.sql, Prometheus/Grafana provisioning, build script
 ```
 
@@ -93,8 +94,8 @@ boiler's gas/heat/electricity counters, which follow the boiler's own day (`Boil
 ## 3. Tables
 
 All tables are in one SQL Server database (`kasamonitor`, created once by `deploy/sql/create-database.sql` with a
-case- and accent-sensitive collation) and migrated by EF Core at start-up: one `InitialCreate` since 0.12.0 (the 14
-SQLite migrations were folded into it). Strings in keys and indexes have explicit lengths (`KasaDbContext` constants);
+case- and accent-sensitive collation) and migrated by EF Core at start-up: `InitialCreate` since 0.12.0 (the 14
+SQLite migrations were folded into it) and the migrations added after it. Strings in keys and indexes have explicit lengths (`KasaDbContext` constants);
 free texts and JSON are `nvarchar(max)`; `KasaDbContext.PrepareForStore` cuts longer texts (refuses longer identifiers)
 and turns NaN/±Infinity in nullable doubles into NULL before every save. Explicit transactions run inside the
 execution strategy (`EnableRetryOnFailure`, compatibility level 150 = SQL Server 2019); the live batch is idempotent
@@ -117,7 +118,7 @@ database. Settings are flat key/value rows, so grouping them on tabs needs no mi
 | `HeatingEnergyDaily`, `HeatingEnergyPeriods` | Gas and energy per boiler day / period, with the highest and last value of the day counters |
 | `HeatingRawFeatures` | Only the latest raw cloud answer, overwritten |
 | `MeterEvents` | Steady-state steps of the main meter's power (the input of the appliance detection) |
-| `ApplianceSignatures` | Clusters of events: one signature per appliance component, with name, category, plug link, flags |
+| `ApplianceSignatures` | Clusters of events: one signature per appliance component, with name, category, plug link, flags, duration band |
 | `ApplianceRuns` | A switch-on paired with its switch-off, with energy |
 | `MieleDevices` | Appliances of the Miele account, alias, linked plug |
 | `MieleStateSnapshots` | A row on every state change (and at least every 5 minutes) |

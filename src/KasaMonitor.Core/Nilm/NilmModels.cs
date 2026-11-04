@@ -14,6 +14,12 @@ public enum EventLabelSource
 
     /// <summary>Predicted by the ML.NET classifier with probability ≥ 0.7.</summary>
     Model = 3,
+
+    /// <summary>
+    /// Moved by its run's duration (<see cref="DurationBands"/>): never moved again by the re-clustering, counted in the
+    /// signature's centre, not an example of the classifier (ML.NET has no duration among its features).
+    /// </summary>
+    DurationRule = 4,
 }
 
 /// <summary>How the name of a signature was decided (column <c>ApplianceSignatures.LabelSource</c>).</summary>
@@ -37,6 +43,7 @@ public static class NilmSources
         EventLabelSource.AutoPlug => "auto-plug",
         EventLabelSource.User => "user",
         EventLabelSource.Model => "model",
+        EventLabelSource.DurationRule => "duration",
         _ => "none",
     };
 
@@ -45,6 +52,7 @@ public static class NilmSources
         EventLabelSource.AutoPlug => "din priză",
         EventLabelSource.User => "utilizator",
         EventLabelSource.Model => "model ML",
+        EventLabelSource.DurationRule => "după durată",
         _ => "—",
     };
 
@@ -194,7 +202,8 @@ public sealed record MeterEvent(
 /// A group of similar events = one component of an appliance (table <c>ApplianceSignatures</c>). Means are over the
 /// events' magnitudes: <see cref="MeanDeltaP"/> = mean |ΔP|, <see cref="MeanDeltaQ"/> = mean ΔQ seen from the switch-on
 /// side, <see cref="MeanTransient"/> = mean transient ratio of the switch-ons whose transient is known
-/// (<see cref="TransientRule"/>; 0 = none known).
+/// (<see cref="TransientRule"/>; 0 = none known). <see cref="MinRunSeconds"/> and <see cref="MaxRunSeconds"/> = its duration
+/// band (<see cref="DurationBands"/>; null = no limit); <see cref="SplitFromId"/> = the signature it was split from by duration.
 /// </summary>
 public sealed record ApplianceSignature(
     long Id,
@@ -208,7 +217,10 @@ public sealed record ApplianceSignature(
     DateTimeOffset? LastSeenUtc,
     SignatureLabelSource LabelSource,
     Guid? PlugId,
-    bool Hidden)
+    bool Hidden,
+    int? MinRunSeconds = null,
+    int? MaxRunSeconds = null,
+    long? SplitFromId = null)
 {
     /// <summary>
     /// Measured by a plug (<see cref="PlugId"/>, kept when the user renames it): its energy is already in Σ plugs, so it is

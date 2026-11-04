@@ -4,7 +4,7 @@ How KasaMonitor recognises appliances in the power of the whole house, for a tec
 conceptual explanation; thresholds, settings, metrics and every UI detail are in the README, section
 [Appliance detection (NILM)](../README.md#appliance-detection-nilm), and the HTTP routes in
 [HTTP API (LAN)](../README.md#http-api-lan). Why some rules look the way they do is in [decisions.md](decisions.md)
-(0.8.2, 0.9.1, 0.9.4).
+(0.8.2, 0.9.1, 0.9.4, 0.13.0).
 
 NILM (non-intrusive load monitoring) tries to say *which appliance* is on from one measurement at the mains entry. The
 approach here is deliberately simple, deterministic and explainable: every grouping and every merge can be
@@ -25,6 +25,8 @@ justified by a few numbers, and the plugs that are measured anyway provide label
                               ApplianceSignatures ─► classifier (ML.NET, optional)
                                                                           ▼
                              switch-on ↔ switch-off pairing ─► ApplianceRuns ─► energy per day
+                                                                          ▲
+                                       duration bands: a closed run out of its band moves ┘
 ```
 
 Requirement: a **main meter** with the live stream on (1 s). Without it nothing here runs.
@@ -106,6 +108,9 @@ drum motor (≈ 250–300 W pulses) and a pump; a kettle is one heater.
 - **The „sheet”** of a signature (ΔP mean ± deviation, ΔQ, power factor, transient or „unknown n of m”, typical run
   length with percentiles, a 24-bar histogram of hours, plug share, energy over 7 days) is computed on demand from the
   events and runs, by the same function that feeds the automatic merge, so what the user sees is what the rule used.
+  It also shows how the runs repeat over the last 30 days: typical duration, the interval between switch-ons (pauses
+  over 6 h left out) and sessions (runs at most 120 s apart, from an end to the next start: how many, pulses and energy
+  per session). This part is information only; no rule reads it.
 
 ## 4. Classifier (optional)
 
@@ -128,7 +133,36 @@ power above its previous level (kept only between ½ and 2× the nominal value).
 signature (a run across midnight proportionally). **„Neidentificat”** (unidentified) = the house today − Σ plugs −
 Σ detected runs, never below 0.
 
-## 6. What it cannot detect — known limits
+## 6. Duration: telling apart what ΔP and ΔQ cannot
+
+An espresso machine (pulses of ≈ 1.43 kW for 10–20 s, repeated after tens of seconds) and a kettle (≈ 1.45 kW continuous
+for 1–7 minutes) have the same step, so they fall into one signature. What differs is how long a run lasts.
+
+- A signature can have a **duration band** (minimum and maximum seconds, inclusive, either open). It is set only
+  by hand, on the „fișa” or through the API; it is never inferred.
+- **Moving a run.** When a run closes with its own switch-off (never one closed by the house level or by the 6-hour
+  limit) and its duration is out of the band of its signature S, it moves when exactly one other signature T qualifies:
+  not hidden, a band that holds the duration, no plug or the plug of S, and |ΔP| and ΔQ of the switch-on within the anchor
+  radius (1.5 × eps) of T, or of S when one was split from the other (their centres can then be the same). Two
+  candidates, or none, leave it where it is. The run and both events move, and with the run its energy, day by day. An
+  event labelled by the user holds the whole run in place: moving only the other event would break the pair at the next
+  rebuild. The rule also runs when the runs are rebuilt, because the anchors may give S a run that does not fit it.
+- **The source `DurationRule`.** The moved events take this source and T's name as their label. The re-clustering treats
+  them as labelled: it never moves them, and the centres include them.
+- **Splitting.** „Împarte după durată” (`POST …/split-by-duration`, a dry run unless told otherwise) sends the paired runs
+  of S up to a limit, of every stored day, and their events to the signature with the given name if there is a
+  compatible one, otherwise to a new one named by the user. T ends at the limit, S starts there unless it has a band of
+  its own. If S is measured by a plug so is T, even if the plug cannot label its pulses (section 7): a split moves
+  energy between two names and must not take it out of the plug's side of the balance.
+- **Waiting in one place.** Two sides of a split can have the same centre, so „the nearest” would give a switch-on to one
+  and its switch-off to the other, and the run would never pair. Every new event near such a pair therefore goes to S; the
+  run's duration sends it across when it closes.
+- **Merging.** Two signatures with disjoint bands are never merged, whatever the rule; two bands that only touch (the
+  two sides of a split) count as disjoint. A survivor without a band takes the absorbed one's.
+- **Classifier.** Its features do not change, and the moved events are not among its examples: ML.NET does not see the
+  duration, so two classes with the same features would only lower its accuracy.
+
+## 7. What it cannot detect — known limits
 
 - **No steady state, no event.** Appliances with a continuously variable power (induction hobs, inverter compressors
   and heat pumps, dimmers) do not settle within 30 s, so they produce no event or many small ones.
@@ -143,20 +177,27 @@ signature (a run across midnight proportionally). **„Neidentificat”** (unide
 - **Simultaneous switching.** Two appliances switched within 2 s in opposite directions give one net step; two
   large steps less than ≈ 7 s apart, or two plugs moving together, give no plug label.
 - **Similar power, different shape.** An espresso machine (pulses of ≈ 1.4 kW) and a kettle (a continuous ≈ 1.5 kW) look alike
-  by ΔP; only duration and form tell them apart.
+  by ΔP, ΔQ and transient. A duration band separates them once it has been set by hand (section 6). It cannot separate
+  runs that overlap (a kettle and an espresso machine at once pair first in, first out, so the durations are wrong),
+  nor two appliances whose durations overlap. A wobble of the meter just before a step can also start the run up to
+  a few seconds early, which is why a limit should not sit close to the durations it separates.
 - **ΔQ is a whole-house difference.** A capacitive load (a switched-mode supply) lowers |Q| in an inductive house and
   raises it in a house with Q ≈ 0, so its sign depends on what else is running; this is why the eps for ΔQ is wide.
 - **Multi-stage appliances** appear as several signatures (one per component); the pairing assumes one switch-off per
   switch-on.
 - **Plug offline** means no label for that period.
 
-## 7. Open ideas
+## 8. Open ideas
 
 - **Detection on the rest.** Run an event detector on *meter − Σ plugs* instead of on the meter, so the measured
   appliances stop masking the unmeasured ones, and so that smaller agitated loads (a massage chair, measured at ≈ +50 W
   on average with no step ≥ 100 W) become visible.
-- **Duration as a feature.** Use the typical run length from the sheet as an extra distance term when matching an
-  anchor, to separate pulsed from continuous loads of equal power (espresso machine vs kettle: ≥ 60 s continuous vs
-  pulses of under 20 s).
+- **Duration as a feature.** Done in 0.13.0 as an explicit band, after the run closes (section 6), not as a distance
+  term when matching an anchor. Inferring the band from the sheet remains open.
+- **A median before the detector.** A 3-second median on the power that sets the levels was measured in 0.13.0 on 63 hours
+  of the real meter with `tools/KasaMonitor.NilmReplay` and **not integrated**: 16 % more events, 47 % more on/off flickers within 5 s, 38
+  steps of ≥ 100 W lost and 28 % of the common events moved by a second or more (figures in
+  [decisions.md](decisions.md), 0.13.0). What it did better is worth another look: on a measured espresso cycle it found
+  three pump pulses the detector misses, and a pulse that a wobble made start 7 s early began on its own second.
 - **Peak-based plug matching for short events** (a window around the event looking for a peak, not for a changed
   level), to label the pulses described above.

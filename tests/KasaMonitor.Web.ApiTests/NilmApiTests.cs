@@ -321,6 +321,146 @@ public class NilmApiTests(NilmApiFactory app) : IClassFixture<NilmApiFactory>
         (await client.PostAsync($"{Api}/signatures/987654/add-to/{target.Id}", null)).StatusCode.Should().Be(HttpStatusCode.NotFound);
     }
 
+    /// <summary>A named signature with three pulses of 15 s and two runs of 3 min at distinct times, runs stored.</summary>
+    private async Task<(ApplianceSignature Signature, List<ApplianceRun> Runs)> MixedAsync(string name)
+    {
+        var main = await app.MainAsync();
+        var sig = await app.AddSignatureAsync(name, 1430, source: SignatureLabelSource.User);
+        var runs = new List<ApplianceRun>();
+        foreach (var seconds in new[] { 15, 15, 15, 180, 180 })
+        {
+            var at = app.NextTime().AddHours(-48);
+            var stored = await app.Repo((r, _) => r.AddEventsAsync(new[]
+            {
+                new MeterEvent(0, main, at, 1430, 0, 0, 1, 0, 300, sig.Id),
+                new MeterEvent(0, main, at.AddSeconds(seconds), -1430, 0, 0, 1, 0, 1730, sig.Id),
+            }, CancellationToken.None));
+            runs.AddRange(await app.Repo((r, _) => r.SaveRunsAsync(new[]
+            {
+                new ApplianceRun(0, sig.Id, stored[0].TsUtc, stored[1].TsUtc, 1430, 1430 * seconds / 3600.0, stored[0].Id, stored[1].Id, 300),
+            }, CancellationToken.None)));
+        }
+        return (sig, runs);
+    }
+
+    private static StringContent Json(string json) => new(json, System.Text.Encoding.UTF8, "application/json");
+
+    [Fact]
+    public async Task DurationBand_IsSetClearedAndValidated_AndTheSheetShowsIt()
+    {
+        var sig = await app.AddSignatureAsync("Bandă test", 1000, source: SignatureLabelSource.User);
+        using var client = app.Client();
+
+        var set = await client.PostAsync($"{Api}/signatures/{sig.Id}/duration-band", Json("""{"minSeconds":45,"maxSeconds":null}"""));
+        await ShouldBe(set, HttpStatusCode.OK);
+        var dto = await set.Content.ReadFromJsonAsync<NilmApi.SignatureDto>();
+        dto!.MinRunSeconds.Should().Be(45);
+        dto.MaxRunSeconds.Should().BeNull();
+        (await SignatureAsync(sig.Id))!.MinRunSeconds.Should().Be(45);
+
+        var sheet = await client.GetFromJsonAsync<NilmApi.SheetDto>($"{Api}/signatures/{sig.Id}");
+        sheet!.Signature.MinRunSeconds.Should().Be(45);
+        sheet.Profile.Repetition.Should().NotBeNull();
+
+        foreach (var (json, why) in new[]
+                 {
+                     ("""{"minSeconds":60,"maxSeconds":60}""", "min = max"),
+                     ("""{"minSeconds":90,"maxSeconds":60}""", "min > max"),
+                     ("""{"minSeconds":-1,"maxSeconds":null}""", "negative"),
+                     ("""{"minSeconds":null,"maxSeconds":-1}""", "negative"),
+                 })
+            (await client.PostAsync($"{Api}/signatures/{sig.Id}/duration-band", Json(json))).StatusCode.Should().Be(HttpStatusCode.BadRequest, why);
+        (await SignatureAsync(sig.Id))!.MinRunSeconds.Should().Be(45, "a refused band changes nothing");
+
+        await ShouldBe(await client.PostAsync($"{Api}/signatures/{sig.Id}/duration-band", Json("""{"minSeconds":null,"maxSeconds":null}""")), HttpStatusCode.OK);
+        (await SignatureAsync(sig.Id))!.MinRunSeconds.Should().BeNull("both null clear the band");
+
+        (await client.PostAsync($"{Api}/signatures/987654/duration-band", Json("""{"minSeconds":1,"maxSeconds":2}"""))).StatusCode.Should().Be(HttpStatusCode.NotFound);
+        using var outside = app.Client(NilmApiFactory.PublicIp);
+        (await outside.PostAsync($"{Api}/signatures/{sig.Id}/duration-band", Json("""{"minSeconds":1,"maxSeconds":2}"""))).StatusCode.Should().Be(HttpStatusCode.Forbidden);
+    }
+
+    [Fact]
+    public async Task SplitByDuration_IsADryRunUnlessToldOtherwise_ThenMoves()
+    {
+        var (sig, runs) = await MixedAsync("Fierbător API");
+        using var client = app.Client();
+
+        var dry = await client.PostAsync($"{Api}/signatures/{sig.Id}/split-by-duration", Json("""{"maxSeconds":40,"name":"Espressor API","category":"cooking"}"""));
+        await ShouldBe(dry, HttpStatusCode.OK);
+        var preview = await dry.Content.ReadFromJsonAsync<NilmApi.SplitByDurationDto>();
+        preview!.DryRun.Should().BeTrue("the default");
+        preview.Applied.Should().BeFalse();
+        preview.TargetId.Should().BeNull();
+        preview.Target.Should().BeNull();
+        preview.Runs.Should().Be(3);
+        preview.Events.Should().Be(6);
+        preview.Moved.Should().Be(new NilmApi.SpreadDto(3, 15, 15, 15));
+        preview.Remaining.Should().Be(new NilmApi.SpreadDto(2, 180, 180, 180));
+        preview.EnergyWh.Should().BeApproximately(3 * 1430 * 15 / 3600.0, 0.01);
+        (await app.Repo((r, _) => r.ListSignaturesAsync(CancellationToken.None))).Should().NotContain(s => s.Name == "Espressor API", "a dry run creates nothing");
+        (await SignatureAsync(sig.Id))!.MinRunSeconds.Should().BeNull();
+
+        var real = await client.PostAsync($"{Api}/signatures/{sig.Id}/split-by-duration", Json("""{"maxSeconds":40,"name":"Espressor API","category":"cooking","dryRun":false}"""));
+        await ShouldBe(real, HttpStatusCode.OK);
+        var done = await real.Content.ReadFromJsonAsync<NilmApi.SplitByDurationDto>();
+        done!.DryRun.Should().BeFalse();
+        done.Applied.Should().BeTrue();
+        done.Runs.Should().Be(3);
+        done.Target!.Name.Should().Be("Espressor API");
+        done.Target.Category.Should().Be("cooking");
+        done.Target.LabelSource.Should().Be(nameof(SignatureLabelSource.User));
+        done.Target.MaxRunSeconds.Should().Be(40);
+        done.Target.SplitFromId.Should().Be(sig.Id);
+        done.Signature!.MinRunSeconds.Should().Be(40);
+
+        var moved = await app.Repo((r, _) => r.ListRunsBySignatureAsync(done.TargetId!.Value, DateTimeOffset.UnixEpoch, CancellationToken.None));
+        moved.Select(r => r.Id).Should().BeEquivalentTo(runs.Take(3).Select(r => r.Id));
+        var sheet = await client.GetFromJsonAsync<NilmApi.SheetDto>($"{Api}/signatures/{done.TargetId}");
+        sheet!.Events.Should().HaveCount(6).And.OnlyContain(e => e.Source == nameof(EventLabelSource.DurationRule) && e.Label == "Espressor API");
+        sheet.Profile.Repetition!.Durations.Count.Should().Be(3);
+    }
+
+    [Fact]
+    public async Task SplitByDuration_IsValidated_404_And403()
+    {
+        var (sig, _) = await MixedAsync("De validat");
+        using var client = app.Client();
+
+        foreach (var (json, why) in new[]
+                 {
+                     ("""{"name":"X"}""", "no maxSeconds"),
+                     ("""{"maxSeconds":0,"name":"X"}""", "zero"),
+                     ("""{"maxSeconds":-5,"name":"X"}""", "negative"),
+                     ("""{"maxSeconds":40}""", "no name"),
+                     ("""{"maxSeconds":40,"name":"   "}""", "empty name"),
+                     ("""{"maxSeconds":40,"name":"X","category":"nope"}""", "unknown category"),
+                     ("""{"maxSeconds":40,"name":"de validat"}""", "the name of the one being split"),
+                 })
+            (await client.PostAsync($"{Api}/signatures/{sig.Id}/split-by-duration", Json(json))).StatusCode.Should().Be(HttpStatusCode.BadRequest, why);
+
+        (await client.PostAsync($"{Api}/signatures/987654/split-by-duration", Json("""{"maxSeconds":40,"name":"X"}"""))).StatusCode.Should().Be(HttpStatusCode.NotFound);
+        using var outside = app.Client(NilmApiFactory.PublicIp);
+        (await outside.PostAsync($"{Api}/signatures/{sig.Id}/split-by-duration", Json("""{"maxSeconds":40,"name":"X"}"""))).StatusCode.Should().Be(HttpStatusCode.Forbidden);
+    }
+
+    [Fact]
+    public async Task DurationRoutes_NeedTheToken()
+    {
+        using var secured = new NilmApiFactory { Token = "test-token-2" };
+        var sig = await secured.AddSignatureAsync("Cu token", 1000, source: SignatureLabelSource.User);
+        using var anonymous = secured.Client();
+        using var wrong = secured.Client(apiKey: "wrong");
+        using var good = secured.Client(apiKey: "test-token-2");
+        var band = $"{Api}/signatures/{sig.Id}/duration-band";
+        var split = $"{Api}/signatures/{sig.Id}/split-by-duration";
+
+        (await anonymous.PostAsync(band, Json("""{"minSeconds":1}"""))).StatusCode.Should().Be(HttpStatusCode.Unauthorized);
+        (await wrong.PostAsync(split, Json("""{"maxSeconds":40,"name":"X"}"""))).StatusCode.Should().Be(HttpStatusCode.Unauthorized);
+        (await good.PostAsync(band, Json("""{"minSeconds":1}"""))).StatusCode.Should().Be(HttpStatusCode.OK);
+        (await good.PostAsync(split, Json("""{"maxSeconds":40,"name":"X"}"""))).StatusCode.Should().Be(HttpStatusCode.OK);
+    }
+
     [Fact]
     public async Task HideAndUnhide_404_And403()
     {

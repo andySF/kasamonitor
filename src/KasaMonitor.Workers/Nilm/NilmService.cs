@@ -175,6 +175,13 @@ public enum MarkOutcome
 /// <summary>The result of <see cref="NilmService.MarkAsync"/>: <see cref="Event"/> = the labelled event (matched).</summary>
 public sealed record NilmMarkResult(MarkOutcome Outcome, NilmMark Mark, MeterEvent? Event);
 
+/// <summary>
+/// What „împarte după durată” did or, with <see cref="DryRun"/>, would do: <see cref="TargetId"/> null = a new signature;
+/// <see cref="Applied"/> false when nothing changed (a dry run, or no run to move).
+/// </summary>
+public sealed record DurationSplitResult(bool DryRun, bool Applied, long SignatureId, long? TargetId, string TargetName, int Runs, int Events,
+    int SkippedUserRuns, double EnergyWh, DurationSpread MovedDurations, DurationSpread RemainingDurations);
+
 /// <summary>The NILM settings in effect.</summary>
 public sealed record NilmSettings(bool Enabled, int MinEventDeltaW, int ClusterWindowDays, bool MlEnabled);
 
@@ -738,6 +745,12 @@ public sealed class NilmService : BackgroundService
             // label —, then the nearest other signature within eps.
             sigId ??= SignatureClusterer.Assign(EventFeatures.Of(e), e.LabelPlugId, _signatures.Where(s => s.IsAnchor).Select(AnchorCentre.Of),
                 _signatures.Where(s => !s.IsAnchor).Select(SignatureCentre.Of));
+            // The two sides of a duration split wait in one signature, so a switch-on and its switch-off still pair.
+            if (sigId is { } assigned && DurationBands.Canonical(assigned, EventFeatures.Of(e), _signatures) is var waits && waits != assigned)
+            {
+                sigId = waits;
+                if (e.Source == EventLabelSource.Model) e = e with { Label = null, Source = EventLabelSource.None };
+            }
             if (sigId is null)
             {
                 var (mp, mq, mt) = SignatureClusterer.Means(new[] { EventFeatures.Of(e) });
@@ -770,11 +783,35 @@ public sealed class NilmService : BackgroundService
             if (change.Opened is { } opened) runs[opened.StartEventId] = opened;
             foreach (var c in change.Closed) runs[c.StartEventId] = c;
         }
+        // Before they are saved: the energy of the moved runs counts for the signature they end up in.
+        var moves = await DurationMovesAsync(repo, runs, _signatures, ct);
         await SaveRunsAsync(runs.Values.ToList(), ct, sp);
+        await repo.MoveRunsAsync(moves, ct);
         // Before the plug rule: an anonymous signature named by the ground truth keeps that name when it gets linked.
         await NameFromGroundTruthAsync(repo, stored, truths, ct);
-        await RefreshSignaturesAsync(repo, stored.Select(e => e.SignatureId!.Value).Distinct().ToList(), ct);
+        await RefreshSignaturesAsync(repo, stored.Select(e => e.SignatureId!.Value).Concat(moves.SelectMany(m => new[] { m.FromSignatureId, m.TargetId })).Distinct().ToList(), ct);
         await ConsumeMarksAsync(sp, repo, stored, ct);
+    }
+
+    /// <summary>
+    /// The closed runs that left the band of their signature and have somewhere to go (<see cref="DurationBands.Target"/>):
+    /// each changes signature in <paramref name="runs"/> (not stored yet); the moves returned are for its events.
+    /// </summary>
+    private async Task<IReadOnlyList<RunMove>> DurationMovesAsync(INilmRepository repo, Dictionary<long, ApplianceRun> runs,
+        IReadOnlyCollection<ApplianceSignature> signatures, CancellationToken ct)
+    {
+        var moves = new List<RunMove>();
+        foreach (var run in runs.Values.ToList())
+        {
+            if (signatures.FirstOrDefault(s => s.Id == run.SignatureId) is not { } source || !DurationBands.IsOutOfBand(run, source)) continue;
+            var on = await repo.GetEventAsync(run.StartEventId, ct);
+            var off = await repo.GetEventAsync(run.EndEventId!.Value, ct);
+            if (DurationBands.Target(run, on, off, source, signatures) is not { } target) continue;
+            moves.Add(new RunMove(run.Id, run.StartEventId, run.EndEventId!.Value, source.Id, target.Id, target.Name));
+            runs[run.StartEventId] = run with { SignatureId = target.Id };
+            _log.LogInformation("NILM: run of {Seconds:0} s moved by its duration from signature #{From} to #{To}", DurationBands.Seconds(run), source.Id, target.Id);
+        }
+        return moves;
     }
 
     /// <summary>
@@ -958,7 +995,7 @@ public sealed class NilmService : BackgroundService
                     named = named with { Category = cat.Key, Icon = cat.Icon };
                 }
             }
-            else if (sig.PlugId is { } linked && sig.Count > 0 && !excluded.Contains(linked))
+            else if (sig.PlugId is { } linked && sig.Count > 0 && !excluded.Contains(linked) && !await KeepsPlugOfOriginAsync(repo, sig, ct))
             {
                 // Unlinked only when the plug no longer explains it; excluding the plug from learning keeps the link.
                 named = sig.LabelSource == SignatureLabelSource.Plug
@@ -970,6 +1007,13 @@ public sealed class NilmService : BackgroundService
             if (i >= 0) _signatures[i] = named; else _signatures.Add(named);
         }
     }
+
+    /// <summary>
+    /// The side of a duration split linked to the plug of the signature it came from stays linked while that one is: its
+    /// pulses are often too short for the plug to label them (docs/nilm.md, section 7), but the plug measures them.
+    /// </summary>
+    private static async Task<bool> KeepsPlugOfOriginAsync(INilmRepository repo, ApplianceSignature sig, CancellationToken ct) =>
+        sig.SplitFromId is { } origin && await repo.GetSignatureAsync(origin, ct) is { } parent && parent.PlugId == sig.PlugId;
 
     // ------------------------------------------------------------------ nightly: re-clustering, runs, training
 
@@ -1024,7 +1068,10 @@ public sealed class NilmService : BackgroundService
 
             var free = events.Where(e => !IsPinned(e, signatures)).ToList();
             var anchors = signatures.Values.Where(s => s.IsAnchor).Select(AnchorCentre.Of).ToList();
-            var anchorOf = free.Select(e => SignatureClusterer.NearestAnchor(EventFeatures.Of(e), e.LabelPlugId, anchors)).ToArray();
+            var all = signatures.Values.ToList();
+            var anchorOf = free.Select(e => SignatureClusterer.NearestAnchor(EventFeatures.Of(e), e.LabelPlugId, anchors) is { } a
+                ? DurationBands.Canonical(a, EventFeatures.Of(e), all)
+                : (long?)null).ToArray();
             var rest = Enumerable.Range(0, free.Count).Where(i => anchorOf[i] is null).ToList();
             var features = rest.Select(i => EventFeatures.Of(free[i])).ToList();
             var restLabels = await LowPriority.Run(() => SignatureClusterer.Cluster(features), "nilm-cluster");
@@ -1132,12 +1179,13 @@ public sealed class NilmService : BackgroundService
     }
 
     /// <summary>
-    /// An event the re-clustering never moves: labelled by the user, or labelled by the plug its signature is linked to.
+    /// An event the re-clustering never moves: labelled by the user, moved by its run's duration, or labelled by the plug
+    /// its signature is linked to.
     /// The other events of a labelled signature go through the anchors again (they stay when within its radius), so a
     /// signature's centre cannot ratchet away by keeping everything it once caught.
     /// </summary>
     private static bool IsPinned(MeterEvent e, IReadOnlyDictionary<long, ApplianceSignature> signatures) =>
-        e.Source == EventLabelSource.User
+        e.Source is EventLabelSource.User or EventLabelSource.DurationRule
         || (e.LabelPlugId is { } plug && e.SignatureId is { } sid && signatures.TryGetValue(sid, out var s) && s.PlugId == plug);
 
     /// <summary>
@@ -1178,7 +1226,7 @@ public sealed class NilmService : BackgroundService
             return false;
         await repo.MoveSignatureAsync(absorbedId, survivorId, ct);
         var takeCategory = into.Category == ApplianceCategories.Other && source.Category != ApplianceCategories.Other;
-        await repo.UpdateSignatureAsync(into with
+        await repo.UpdateSignatureAsync(DurationBands.Inherit(into, source) with
         {
             LabelSource = byUser && into.LabelSource == SignatureLabelSource.Cluster ? SignatureLabelSource.User : into.LabelSource,
             PlugId = into.PlugId ?? source.PlugId,
@@ -1258,10 +1306,14 @@ public sealed class NilmService : BackgroundService
             foreach (var c in change.Closed) runs[c.StartEventId] = c;
         }
         foreach (var c in _runs.Expire(nowUtc)) runs[c.StartEventId] = c;
+        // The anchors may have given a band's signature a run that does not fit it: the same rule as when a run closes.
+        var moves = await DurationMovesAsync(repo, runs, await repo.ListSignaturesAsync(ct), ct);
         // Rebuilt runs are not new energy: keep the cumulative metric as it is.
         var saved = await repo.SaveRunsAsync(await CorrectAllAsync(sp, runs.Values.ToList(), nowUtc - CorrectRecent, ct), ct);
         foreach (var r in saved.Where(r => r.IsOpen)) _runs.Track(r);
         _openSnapshot = _runs.Open();
+        await repo.MoveRunsAsync(moves, ct);
+        if (moves.Count > 0) await RefreshSignaturesAsync(repo, moves.SelectMany(m => new[] { m.FromSignatureId, m.TargetId }).Distinct().ToList(), ct);
     }
 
     /// <summary>A rebuild corrects (house-power check, 3 queries per run) only the runs that ended this recently; older ones keep the nominal energy.</summary>
@@ -1616,10 +1668,13 @@ public sealed class NilmService : BackgroundService
         if (await repo.GetSignatureAsync(id, ct) is not { } sig) return null;
         var from = WindowStart(now);
         var events = await repo.ListEventsBySignaturesAsync(new[] { id }, from, ct);
-        var runs = await repo.ListRunsBySignatureAsync(id, from, ct);
+        // The repetition always looks at its 30 days, whatever the window of the rest of the sheet.
+        var repeatFrom = now - SignatureProfiles.RepetitionPeriod;
+        var loaded = await repo.ListRunsBySignatureAsync(id, from < repeatFrom ? from : repeatFrom, ct);
+        var runs = loaded.Where(r => r.EndUtc is not { } end || end >= from).ToList();
         var plugs = _plugs.Count > 0 ? _plugs : await scope.ServiceProvider.GetRequiredService<IPlugRepository>().ListAllAsync(ct);
         var excluded = plugs.Where(p => PlugNilmStates.IsIgnored(p.NilmState)).Select(p => p.Id).ToList();
-        var profile = SignatureProfiles.Of(id, events, runs, excluded, now, _tz);
+        var profile = SignatureProfiles.Of(id, events, runs, excluded, now, _tz) with { Repetition = SignatureProfiles.Repetition(loaded, now) };
         var plugId = profile.TopPlugId ?? sig.PlugId;
         var alias = plugId is { } pid ? plugs.FirstOrDefault(p => p.Id == pid)?.Alias ?? profile.TopPlugLabel : null;
         return new SignatureProfileView(sig, profile, alias, sig.PlugId is not null && sig.PlugId == plugId);
@@ -1706,6 +1761,80 @@ public sealed class NilmService : BackgroundService
         await RebuildRunsAsync(sp, ids, WindowStart(_clock()), _clock(), ct);
         return parts.Count;
     }, ct);
+
+    /// <summary>
+    /// Sets the duration band of a signature (both null clear it). Only future closed runs and the next rebuild of the runs
+    /// feel it; what already stands in the signature moves only with <see cref="SplitByDurationAsync"/>. False when it does
+    /// not exist. The caller validates the band (<see cref="DurationBands.Invalid"/>).
+    /// </summary>
+    public Task<bool> SetDurationBandAsync(long id, int? minSeconds, int? maxSeconds, CancellationToken ct) => UnderGateAsync(async (_, repo) =>
+    {
+        if (await repo.GetSignatureAsync(id, ct) is not { } s) return false;
+        await repo.UpdateSignatureAsync(s with { MinRunSeconds = minSeconds, MaxRunSeconds = maxSeconds }, ct);
+        return true;
+    }, ct);
+
+    /// <summary>
+    /// „Împarte după durată”: the paired runs of a signature up to <paramref name="maxSeconds"/> and their events go to the
+    /// signature named <paramref name="name"/> (<see cref="DurationBands.ExistingTarget"/>, otherwise a new one, labelled by
+    /// the user), with the source <see cref="EventLabelSource.DurationRule"/>; the bands of both are set
+    /// (<see cref="DurationBands.AfterSplit"/>); the centres are recalculated, the energy per day follows the runs. An event
+    /// labelled by the user holds its run where it is. With <paramref name="dryRun"/> nothing is written and the processing
+    /// is not locked. Runs of every stored day move, not only those of the window. Null when the signature does not exist.
+    /// </summary>
+    public async Task<DurationSplitResult?> SplitByDurationAsync(long id, int maxSeconds, string name, string? category, bool dryRun, CancellationToken ct)
+    {
+        name = SignatureNaming.CleanName(name);
+        if (dryRun)
+        {
+            using var scope = _scopes.CreateScope();
+            var repo = scope.ServiceProvider.GetRequiredService<INilmRepository>();
+            if (await PlanDurationSplitAsync(repo, id, maxSeconds, name, ct) is not { } preview) return null;
+            return Describe(id, name, preview.Plan, preview.Target, dryRun: true, applied: false);
+        }
+
+        return await UnderGateAsync<DurationSplitResult?>(async (_, repo) =>
+        {
+            if (await PlanDurationSplitAsync(repo, id, maxSeconds, name, ct) is not { } p) return null;
+            if (p.Plan.Moved.Count == 0) return Describe(id, name, p.Plan, p.Target, dryRun: false, applied: false);
+
+            var target = p.Target;
+            if (target is null)
+            {
+                var cat = ApplianceCategories.Get(category ?? p.Source.Category);
+                // Its centre starts where its runs are: an old run alone never reaches the recalculation of the window.
+                target = await repo.AddSignatureAsync(new ApplianceSignature(0, name, cat.Icon, cat.Key, p.Plan.Moved.Average(r => r.PowerW), p.Source.MeanDeltaQ,
+                    p.Source.MeanTransient, 0, null, SignatureLabelSource.User, null, false), ct);
+            }
+            else if (category is not null)
+            {
+                var cat = ApplianceCategories.Get(category);
+                target = target with { Category = cat.Key, Icon = cat.Icon };
+            }
+            var (s, t) = DurationBands.AfterSplit(p.Source, target, maxSeconds);
+            await repo.UpdateSignatureAsync(s, ct);
+            await repo.UpdateSignatureAsync(t, ct);
+            await repo.MoveRunsAsync(p.Plan.Moved.Select(r => new RunMove(r.Id, r.StartEventId, r.EndEventId!.Value, id, t.Id, t.Name)).ToList(), ct);
+            await RefreshSignaturesAsync(repo, new[] { id, t.Id }, ct);
+            _log.LogInformation("NILM: signature #{From} split at {Seconds} s: {Runs} runs moved to #{To} ({Name})", id, maxSeconds, p.Plan.Moved.Count, t.Id, t.Name);
+            return Describe(id, t.Name, p.Plan, t, dryRun: false, applied: true);
+        }, ct);
+    }
+
+    private static async Task<(ApplianceSignature Source, ApplianceSignature? Target, DurationSplitPlan Plan)?> PlanDurationSplitAsync(INilmRepository repo, long id,
+        int maxSeconds, string name, CancellationToken ct)
+    {
+        if (await repo.GetSignatureAsync(id, ct) is not { } source) return null;
+        var runs = await repo.ListRunsBySignatureAsync(id, DateTimeOffset.UnixEpoch, ct);
+        var events = (await repo.ListEventsBySignaturesAsync(new[] { id }, DateTimeOffset.UnixEpoch, ct)).ToDictionary(e => e.Id);
+        var plan = DurationBands.PlanSplit(runs, events, maxSeconds);
+        var power = plan.Moved.Count > 0 ? plan.Moved.Average(r => r.PowerW) : source.MeanDeltaP;
+        return (source, DurationBands.ExistingTarget(name, power, source, await repo.ListSignaturesAsync(ct)), plan);
+    }
+
+    private static DurationSplitResult Describe(long id, string name, DurationSplitPlan plan, ApplianceSignature? target, bool dryRun, bool applied) =>
+        new(dryRun, applied, id, target?.Id, target?.Name ?? name, plan.Moved.Count, plan.Events, plan.SkippedUserRuns, plan.EnergyWh,
+            plan.MovedDurations, plan.RemainingDurations);
 
     /// <summary>
     /// The user's label of one event ("a fost boilerul"): the event gets the label and moves to the signature with that

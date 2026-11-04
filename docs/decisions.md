@@ -360,3 +360,52 @@ describe: what links several values (totals, cost, cycles, NILM) cannot be self-
 
 **Consequences.** A Zigbee2MQTT or ESPHome device needs no code; the rich pages stay what they were. OpenMetrics
 scraping, commands and Shelly over MQTT are not in 0.11 (no real target yet / no authentication / RPC stays better).
+
+---
+
+## 0.13.0 – Duration bands set by hand; the median filter measured and left out
+
+**Context.** An espresso machine (pulses of ≈ 1.43 kW, 10–20 s) and a kettle (≈ 1.4–1.5 kW continuous, 1–7 min) on one
+plug fell into one signature named by the user. ΔP and ΔQ cannot separate them, and neither can the ML.NET classifier,
+which has the same features. The duration of a run can.
+
+**Decision: an explicit band, not an inferred one.** A signature has `MinRunSeconds`/`MaxRunSeconds`, set only by the user
+(the „fișa”, the API). The durations of a signature are a mixture exactly when the band would be needed: inferring it from
+the runs means separating the two groups first, with nothing to check the result against, and an inferred band
+that drifts moves energy silently from one day to another. A wrong hand-set band is visible and can be corrected; a dry
+run of the split shows the two groups of durations before anything moves. Inference stays an open idea.
+
+**Decision: the rule acts when a run closes, not on the match.** A switch-on's duration is unknown until its switch-off,
+so an anchor cannot use it; the run is moved afterwards, with both events (source `DurationRule`), only if exactly one
+other signature fits. An event labelled by the user holds the whole run: moving only its partner would break the pair at
+the next rebuild. The two sides of a split can have the same centre, so new events near them all wait in the side
+that was split from (otherwise a switch-on and its switch-off could land apart and never pair). To know that two
+signatures are such a pair the table also keeps `SplitFromId`, without a foreign key: a merge moves it to the survivor, a
+deletion ends it. The moved events do not train the classifier: it is told nothing about the duration, so they would
+only add two classes with the same features.
+
+**Decision: the median filter stays out.** Replayed with `tools/KasaMonitor.NilmReplay` on the real main meter
+(172,892 stored seconds, ≈ 63 hours, minimum step 30 W), with a 3-second centred median setting the levels and the transient
+taken from the raw seconds. It was to be integrated only if it reduced the false events without losing or moving real
+steps:
+
+| | actual | median |
+|---|---:|---:|
+| events | 7,109 | 8,245 |
+| of which \|ΔP\| ≥ 100 W | 1,055 | 1,143 |
+| a step and its opposite within 5 s (likely false) | 447 | 657 |
+| \|ΔP\| ≥ 100 W without a lasting change in the raw levels | 244 | 253 |
+| \|ΔP\| ≥ 100 W confirmed by the raw levels, absent from the other mode | 38 | 134 |
+
+Of the 5,007 events common within ±2 s, 1,404 moved by a second or more and 2,186 changed their rise time; of those
+with \|ΔP\| ≥ 100 W, 139 changed by more than eps. So it does not reduce the likely false events, it adds to them (probably because the
+filtered series settles more easily, so more small transitions count as steps), and it loses or moves real ones. It did find
+134 lasting steps the detector misses, and in a measured espresso cycle it started one pulse on its own second where
+a wobble had opened the transition 7 s early. That is a reason to look again with a different gate, not to change
+every event's timing and transient now. The detector is unchanged.
+
+**Consequences.** One migration after `InitialCreate` (three nullable columns). A band only applies from then on (and
+at the next rebuild of the runs); what already stands in a signature moves with the split. A split-off signature of a
+plug-measured one stays linked to that plug, though the plug cannot label pulses under ≈ 15 s, or its energy would be
+subtracted twice from the rest of the house. The Prometheus counter of a signature keeps what it counted before a split, like
+after a rebuild of the runs.

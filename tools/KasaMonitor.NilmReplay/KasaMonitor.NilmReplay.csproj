@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Offline replay of a main meter's stored seconds through MeterEventDetector: as it runs, and with a 3 s median on the
+       power that sets the levels. The evidence of the 0.13.0 decision on the median filter (docs/decisions.md). -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>KasaMonitor.NilmReplay</RootNamespace>
+    <AssemblyName>kasa-nilm-replay</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\KasaMonitor.Core\KasaMonitor.Core.csproj" />
+  </ItemGroup>
+</Project>

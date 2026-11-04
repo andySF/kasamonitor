@@ -34,7 +34,21 @@ public static class NilmApi
         EventDto? Event, SignatureDto? Signature);
 
     public sealed record SignatureDto(long Id, string Name, string Category, string LabelSource, string? PlugAlias, bool PlugLinked,
-        double MeanDeltaP, double MeanDeltaQ, double MeanTransient, int Count, bool Hidden, DateTimeOffset? LastSeen);
+        double MeanDeltaP, double MeanDeltaQ, double MeanTransient, int Count, bool Hidden, DateTimeOffset? LastSeen,
+        int? MinRunSeconds = null, int? MaxRunSeconds = null, long? SplitFromId = null);
+
+    /// <summary>Body of <c>POST /signatures/{id}/duration-band</c>: both null clear the band.</summary>
+    public sealed record DurationBandRequest(int? MinSeconds, int? MaxSeconds);
+
+    /// <summary>Body of <c>POST /signatures/{id}/split-by-duration</c>: <see cref="DryRun"/> absent = true.</summary>
+    public sealed record SplitByDurationRequest(int? MaxSeconds, string? Name, string? Category, bool? DryRun);
+
+    public sealed record SpreadDto(int Count, double? P10, double? P50, double? P90);
+
+    public sealed record SplitByDurationDto(bool DryRun, bool Applied, long SignatureId, long? TargetId, string TargetName, int Runs, int Events,
+        int SkippedUserRuns, double EnergyWh, SpreadDto Moved, SpreadDto Remaining, SignatureDto? Signature, SignatureDto? Target);
+
+    public sealed record RepetitionDto(SpreadDto Durations, SpreadDto Intervals, int Sessions, double? PulsesPerSessionP50, double? EnergyPerSessionWhP50);
 
     public sealed record EventDto(long Id, DateTimeOffset Ts, double DeltaP, double DeltaQ, double DeltaPf, double TransientRatio,
         bool TransientKnown, double RiseSeconds, double PowerBeforeW, string? Label, string Source, long? SignatureId, string? SignatureName);
@@ -42,7 +56,7 @@ public static class NilmApi
     public sealed record ProfileDto(int Events, int OnEvents, int OffEvents, double MeanDeltaP, double StdDeltaP, double MeanDeltaQ,
         double? MeanTransient, int TransientKnown, double StepPowerFactor, int Runs, double? MedianRunSeconds, double? P10RunSeconds,
         double? P90RunSeconds, IReadOnlyList<int> Hours, string? PlugAlias, bool PlugLinked, double TopPlugShare,
-        DateTimeOffset? FirstSeen, DateTimeOffset? LastSeen, double Last7DaysWh);
+        DateTimeOffset? FirstSeen, DateTimeOffset? LastSeen, double Last7DaysWh, RepetitionDto? Repetition);
 
     public sealed record SheetDto(SignatureDto Signature, ProfileDto Profile, IReadOnlyList<EventDto> Events);
 
@@ -145,6 +159,34 @@ public static class NilmApi
             Log(http).LogInformation("NILM API: signature {Id} added to {TargetId} ({Outcome}) from {Ip}", id, targetId, outcome, Ip(http));
             var item = await nilm.GetSignatureAsync(kept, ct);
             return Results.Ok(new AddToDto(outcome == AddToOutcome.Merged ? "merged" : "named", id, targetId, item is null ? null : ToDto(item)));
+        })));
+
+        Write(api.MapPost("/signatures/{id:long}/duration-band", (long id, DurationBandRequest body, NilmService nilm, HttpContext http, CancellationToken ct) => Guard(async () =>
+        {
+            if (DurationBands.Invalid(body.MinSeconds, body.MaxSeconds) is { } invalid) return Error(StatusCodes.Status400BadRequest, invalid);
+            if (!await nilm.SetDurationBandAsync(id, body.MinSeconds, body.MaxSeconds, ct)) return NotFound(id);
+            Log(http).LogInformation("NILM API: signature {Id} duration band {Min}..{Max} s from {Ip}",
+                id, body.MinSeconds?.ToString() ?? "-", body.MaxSeconds?.ToString() ?? "-", Ip(http));
+            return await Current(nilm, id, ct);
+        })));
+
+        Write(api.MapPost("/signatures/{id:long}/split-by-duration", (long id, SplitByDurationRequest body, NilmService nilm, HttpContext http, CancellationToken ct) => Guard(async () =>
+        {
+            if (body.MaxSeconds is not { } max || max <= 0) return Error(StatusCodes.Status400BadRequest, "„maxSeconds” trebuie să fie un număr pozitiv.");
+            var name = SignatureNaming.CleanName(body.Name);
+            if (name.Length == 0) return Error(StatusCodes.Status400BadRequest, "Lipsește „name”.");
+            if (UnknownCategory(body.Category) is { } bad) return bad;
+            if (await nilm.GetSignatureAsync(id, ct) is not { } current) return NotFound(id);
+            if (string.Equals(current.Signature.Name, name, StringComparison.OrdinalIgnoreCase))
+                return Error(StatusCodes.Status400BadRequest, "Semnătura nouă trebuie să aibă alt nume decât cea împărțită.");
+            var dryRun = body.DryRun ?? true;
+            if (await nilm.SplitByDurationAsync(id, max, name, body.Category, dryRun, ct) is not { } r) return NotFound(id);
+            if (!dryRun)
+                Log(http).LogInformation("NILM API: signature {Id} split at {Max} s into {Name}: {Runs} runs moved, from {Ip}", id, max, r.TargetName, r.Runs, Ip(http));
+            var source = r.Applied ? await nilm.GetSignatureAsync(id, ct) : current;
+            var target = r.TargetId is { } tid ? await nilm.GetSignatureAsync(tid, ct) : null;
+            return Results.Ok(new SplitByDurationDto(r.DryRun, r.Applied, r.SignatureId, r.TargetId, r.TargetName, r.Runs, r.Events, r.SkippedUserRuns, r.EnergyWh,
+                ToDto(r.MovedDurations), ToDto(r.RemainingDurations), source is null ? null : ToDto(source), target is null ? null : ToDto(target)));
         })));
 
         Write(api.MapPost("/signatures/{id:long}/hide", (long id, NilmService nilm, HttpContext http, CancellationToken ct) =>
@@ -252,7 +294,11 @@ public static class NilmApi
 
     private static SignatureDto ToDto(SignatureListItem i) => new(i.Signature.Id, i.Signature.Name, i.Signature.Category,
         i.Signature.LabelSource.ToString(), i.PlugAlias, i.PlugLinked, i.Signature.MeanDeltaP, i.Signature.MeanDeltaQ, i.Signature.MeanTransient,
-        i.Signature.Count, i.Signature.Hidden, i.Signature.LastSeenUtc);
+        i.Signature.Count, i.Signature.Hidden, i.Signature.LastSeenUtc, i.Signature.MinRunSeconds, i.Signature.MaxRunSeconds, i.Signature.SplitFromId);
+
+    private static SpreadDto ToDto(DurationSpread s) => new(s.Count, s.P10, s.P50, s.P90);
+
+    private static RepetitionDto ToDto(RunRepetition r) => new(ToDto(r.Durations), ToDto(r.Intervals), r.Sessions, r.PulsesPerSessionP50, r.EnergyPerSessionWhP50);
 
     private static EventDto ToDto(MeterEvent e, string? signatureName) => new(e.Id, e.TsUtc, e.DeltaP, e.DeltaQ, e.DeltaPf, e.TransientRatio,
         e.TransientKnown, e.RiseSeconds, e.PowerBeforeW, e.Label, e.Source.ToString(), e.SignatureId, signatureName);
@@ -262,7 +308,7 @@ public static class NilmApi
         var p = v.Profile;
         return new ProfileDto(p.Events, p.OnEvents, p.OffEvents, p.MeanDeltaP, p.StdDeltaP, p.MeanDeltaQ, p.MeanTransient, p.TransientKnown,
             p.StepPowerFactor, p.Runs, p.MedianRunSeconds, p.P10RunSeconds, p.P90RunSeconds, p.Hours, v.PlugAlias, v.PlugLinked, p.TopPlugShare,
-            p.FirstSeenUtc, p.LastSeenUtc, p.Last7DaysWh);
+            p.FirstSeenUtc, p.LastSeenUtc, p.Last7DaysWh, p.Repetition is { } r ? ToDto(r) : null);
     }
 
     private static PlugDto ToDto(PlugNilmRow p) => new(p.PlugId, p.Alias, p.SingleAppliance, p.ApplianceName, p.ApplianceCategory, p.State.ToString());

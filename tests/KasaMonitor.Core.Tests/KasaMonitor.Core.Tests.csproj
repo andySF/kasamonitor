@@ -13,6 +13,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\KasaMonitor.Core\KasaMonitor.Core.csproj" />
+    <ProjectReference Include="..\..\tools\KasaMonitor.NilmReplay\KasaMonitor.NilmReplay.csproj" />
   </ItemGroup>
 
   <ItemGroup>

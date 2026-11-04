@@ -32,7 +32,7 @@ sqlcmd -S <server>,1433 -U sa -C -i deploy/sql/create-database.sql -v PASSWORD="
 ```
 
 The script is idempotent (it skips what exists). The app never creates the database: it connects as `kasamonitor` and
-applies its EF Core migrations (one `InitialCreate` in 0.12.0) at every start. The database collation is case- and
+applies its EF Core migrations (`InitialCreate` since 0.12.0, and those added after it) at every start. The database collation is case- and
 accent-sensitive whatever the server's collation is: MAC addresses, sensor ids and setting keys compare exactly, as they
 did in SQLite.
 

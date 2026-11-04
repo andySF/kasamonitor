@@ -246,6 +246,42 @@ else
                                                                 <span class="text-secondary">nicio rulare încheiată</span>
                                                             }
                                                         </dd>
+                                                        @if (p.Repetition is { } rep)
+                                                        {
+                                                            <dt class="col-sm-5 fw-normal text-secondary" title="Rulările încheiate din ultimele 30 de zile; doar informativ, nu intră în clasificare">Durată tipică</dt>
+                                                            <dd class="col-sm-7 mb-1">
+                                                                @if (rep.Durations.Count > 0)
+                                                                {
+                                                                    <span>@UiFormat.DurationRo(rep.Durations.P50) <span class="text-secondary">(p10–p90: @UiFormat.DurationRo(rep.Durations.P10) – @UiFormat.DurationRo(rep.Durations.P90))</span></span>
+                                                                }
+                                                                else
+                                                                {
+                                                                    <span class="text-secondary">—</span>
+                                                                }
+                                                            </dd>
+                                                            <dt class="col-sm-5 fw-normal text-secondary" title="Între două porniri consecutive, fără pauzele de peste 6 ore; ultimele 30 de zile">Se repetă la</dt>
+                                                            <dd class="col-sm-7 mb-1">
+                                                                @if (rep.Intervals.Count > 0)
+                                                                {
+                                                                    <span>@UiFormat.DurationRo(rep.Intervals.P50) <span class="text-secondary">(p10–p90: @UiFormat.DurationRo(rep.Intervals.P10) – @UiFormat.DurationRo(rep.Intervals.P90))</span></span>
+                                                                }
+                                                                else
+                                                                {
+                                                                    <span class="text-secondary">—</span>
+                                                                }
+                                                            </dd>
+                                                            <dt class="col-sm-5 fw-normal text-secondary" title="Sesiune: rulări la cel mult 2 minute între oprire și pornire; medianele din ultimele 30 de zile">Într-o sesiune</dt>
+                                                            <dd class="col-sm-7 mb-1">
+                                                                @if (rep.Sessions > 0)
+                                                                {
+                                                                    <span>@(rep.PulsesPerSessionP50 == 1 ? "1 puls" : rep.PulsesPerSessionP50?.ToString("0.#") + " pulsuri"), @rep.EnergyPerSessionWhP50?.ToString("0") Wh <span class="text-secondary">(medianele din @UiFormat.Count(rep.Sessions, "sesiune", "sesiuni"))</span></span>
+                                                                }
+                                                                else
+                                                                {
+                                                                    <span class="text-secondary">—</span>
+                                                                }
+                                                            </dd>
+                                                        }
                                                         <dt class="col-sm-5 fw-normal text-secondary">Priza</dt>
                                                         <dd class="col-sm-7 mb-1">
                                                             @if (pv.PlugAlias is { } plugAlias)
@@ -300,6 +336,12 @@ else
                                                             </select>
                                                             <button class="btn btn-outline-primary" @onclick="() => AskAddTo(s)" disabled="@(Blocked || _addTo == 0)"
                                                                     title="Dacă e aceeași componentă (centre apropiate), evenimentele trec la aparatul ales; altfel semnătura primește doar numele și categoria lui">Adaugă…</button>
+                                                        </div>
+                                                        <div class="input-group input-group-sm mt-2">
+                                                            <span class="input-group-text" title="Cât durează o rulare a acestui aparat. O rulare în afara benzii trece la singura altă semnătură a cărei bandă o cuprinde; gol = fără limită">Bandă de durată, s</span>
+                                                            <input class="form-control" type="number" min="0" placeholder="min" @bind="_bandMin" disabled="@Blocked" />
+                                                            <input class="form-control" type="number" min="0" placeholder="max" @bind="_bandMax" disabled="@Blocked" />
+                                                            <button class="btn btn-outline-secondary" @onclick="() => SaveBandAsync(s.Id)" disabled="@Blocked">Salvează</button>
                                                         </div>
                                                         @if (_confirmText is not null)
                                                         {
@@ -520,6 +562,7 @@ else
     private bool _confirmRegroup;
     private long? _expanded;
     private SignatureProfileView? _profile;
+    private int? _bandMin, _bandMax;
     private long _mergeWith, _addTo;
     private string? _confirmText;
     private Func<Task>? _confirmAction;
@@ -677,6 +720,7 @@ else
         {
             _profile = _expanded is { } id ? await Nilm.GetProfileAsync(id, CancellationToken.None) : null;
             if (_profile is null) _expanded = null;
+            (_bandMin, _bandMax) = (_profile?.Signature.MinRunSeconds, _profile?.Signature.MaxRunSeconds);
         }
         catch (Exception ex)
         {
@@ -729,6 +773,14 @@ else
         _expanded = survivor;
         await ReloadProfileAsync();
         return "Semnăturile au fost unite.";
+    });
+
+    private Task SaveBandAsync(long id) => RunAsync(async () =>
+    {
+        if (DurationBands.Invalid(_bandMin, _bandMax) is { } invalid) return invalid;
+        if (!await Nilm.SetDurationBandAsync(id, _bandMin, _bandMax, CancellationToken.None)) return "Semnătura nu mai există.";
+        await ReloadProfileAsync();
+        return _bandMin is null && _bandMax is null ? "Banda de durată a fost ștearsă." : "Banda de durată a fost salvată.";
     });
 
     private Task AddToAsync(long id, long into) => RunAsync(async () =>

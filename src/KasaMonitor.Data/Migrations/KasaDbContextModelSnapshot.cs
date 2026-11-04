@@ -98,6 +98,9 @@ namespace KasaMonitor.Data.Migrations
                     b.Property<long?>("LastSeen")
                         .HasColumnType("bigint");
 
+                    b.Property<int?>("MaxRunSeconds")
+                        .HasColumnType("int");
+
                     b.Property<double>("MeanDeltaP")
                         .HasColumnType("float");
 
@@ -107,6 +110,9 @@ namespace KasaMonitor.Data.Migrations
                     b.Property<double>("MeanTransient")
                         .HasColumnType("float");
 
+                    b.Property<int?>("MinRunSeconds")
+                        .HasColumnType("int");
+
                     b.Property<string>("Name")
                         .IsRequired()
                         .HasMaxLength(200)
@@ -114,6 +120,9 @@ namespace KasaMonitor.Data.Migrations
 
                     b.Property<Guid?>("PlugId")
                         .HasColumnType("uniqueidentifier");
+
+                    b.Property<long?>("SplitFromId")
+                        .HasColumnType("bigint");
 
                     b.HasKey("Id");
 

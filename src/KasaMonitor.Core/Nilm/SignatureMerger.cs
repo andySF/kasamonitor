@@ -28,7 +28,8 @@ public sealed record MergeStep(long SurvivorId, long AbsorbedId, MergeReason Rea
 /// <summary>
 /// The automatic merge of signatures that are the same component (nightly job, startup after a missed night, „Regrupează
 /// acum”). Never merged: two signatures linked to different plugs, two signatures the user named differently, hidden
-/// ones. Otherwise two signatures are merged when
+/// ones, two signatures with disjoint duration bands (<see cref="DurationBands.Disjoint"/>: their runs say they are
+/// different appliances, however alike their steps). Otherwise two signatures are merged when
 /// <list type="bullet">
 /// <item>(c) the user gave them the same name <b>and</b> their centres are within the anchor radius
 /// (<see cref="SignatureClusterer.AnchorScale"/>; the same name on distant components stays two rows);</item>
@@ -128,6 +129,7 @@ public static class SignatureMerger
     private static (MergeReason? Reason, double Score) Reason(Group a, Group b)
     {
         if (a.Signature.PlugId is { } pa && b.Signature.PlugId is { } pb && pa != pb) return (null, 0);
+        if (DurationBands.Disjoint(a.Signature, b.Signature)) return (null, 0);
         var d = SignatureClusterer.Distance(a.Centre, b.Centre);
         (MergeReason? Reason, double Score) result;
         var nameA = UserName(a.Signature);
@@ -256,7 +258,7 @@ public static class SignatureMerger
             foreach (var (plug, n) in gone.PlugEvents) plugs[plug] = plugs.GetValueOrDefault(plug) + n;
             var merged = new Group
             {
-                Signature = keep.Signature with
+                Signature = DurationBands.Inherit(keep.Signature, gone.Signature) with
                 {
                     PlugId = keep.Signature.PlugId ?? gone.Signature.PlugId,
                     Count = keep.Signature.Count + gone.Signature.Count,

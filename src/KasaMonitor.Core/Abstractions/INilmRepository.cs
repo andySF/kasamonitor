@@ -15,6 +15,13 @@ public interface INilmRepository
     /// </summary>
     Task<IReadOnlyList<MeterEvent>> AddEventsAsync(IReadOnlyList<MeterEvent> events, CancellationToken ct);
 
+    /// <summary>
+    /// Moves runs and their two events to other signatures in one transaction (<see cref="DurationBands"/>): the events
+    /// take the source <see cref="EventLabelSource.DurationRule"/> and the label of the move; an event labelled by the
+    /// user never moves. A move with <see cref="RunMove.RunId"/> 0 only moves the events (its run is not stored yet).
+    /// </summary>
+    Task MoveRunsAsync(IReadOnlyList<RunMove> moves, CancellationToken ct);
+
     /// <summary>Updates the signature and the label of an event.</summary>
     Task UpdateEventAsync(MeterEvent e, CancellationToken ct);
 

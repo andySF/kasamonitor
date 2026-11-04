@@ -42,6 +42,70 @@ public class NilmRepositoryTests
     }
 
     [Fact]
+    public async Task DurationBand_RoundTrips_AndMoveRuns_TakesRunAndEventsToTheTarget_ButNeverAUsersLabel()
+    {
+        using var db = new TestDbFactory();
+        var repo = new NilmRepository(db.CreateContext());
+        var kettle = await repo.AddSignatureAsync(new ApplianceSignature(0, "Fierbător", "i", "cooking", 1430, 90, 1, 0, null, SignatureLabelSource.User, null, false,
+            MinRunSeconds: 40), CancellationToken.None);
+        var espresso = await repo.AddSignatureAsync(new ApplianceSignature(0, "Espressor", "i", "cooking", 1430, 90, 1, 0, null, SignatureLabelSource.User, null, false,
+            MaxRunSeconds: 40, SplitFromId: kettle.Id), CancellationToken.None);
+
+        var back = await new NilmRepository(db.CreateContext()).GetSignatureAsync(espresso.Id, CancellationToken.None);
+        back.Should().BeEquivalentTo(espresso);
+        back!.MaxRunSeconds.Should().Be(40);
+        back.MinRunSeconds.Should().BeNull();
+        back.SplitFromId.Should().Be(kettle.Id);
+        await repo.UpdateSignatureAsync(back with { MinRunSeconds = 5, MaxRunSeconds = 35 }, CancellationToken.None);
+        (await repo.ListSignaturesAsync(CancellationToken.None)).Single(s => s.Id == espresso.Id).Should().Match<ApplianceSignature>(s => s.MinRunSeconds == 5 && s.MaxRunSeconds == 35);
+
+        var stored = await repo.AddEventsAsync(new[] { E(0, 1430, kettle.Id), E(15, -1430, kettle.Id), E(100, 1430, kettle.Id), E(115, -1430, kettle.Id) }, CancellationToken.None);
+        await repo.UpdateEventAsync(stored[1] with { Label = "Bucatarie", Source = EventLabelSource.AutoPlug, LabelPlugId = Main }, CancellationToken.None);
+        await repo.UpdateEventAsync(stored[2] with { Label = "Fierbător", Source = EventLabelSource.User }, CancellationToken.None);
+        var runs = await repo.SaveRunsAsync(new[]
+        {
+            new ApplianceRun(0, kettle.Id, stored[0].TsUtc, stored[1].TsUtc, 1430, 6, stored[0].Id, stored[1].Id),
+            new ApplianceRun(0, kettle.Id, stored[2].TsUtc, stored[3].TsUtc, 1430, 6, stored[2].Id, stored[3].Id),
+        }, CancellationToken.None);
+
+        await repo.MoveRunsAsync(Array.Empty<RunMove>(), CancellationToken.None);
+        await repo.MoveRunsAsync(new[]
+        {
+            new RunMove(runs[0].Id, stored[0].Id, stored[1].Id, kettle.Id, espresso.Id, "Espressor"),
+            new RunMove(0, stored[2].Id, stored[3].Id, kettle.Id, espresso.Id, "Espressor"),
+        }, CancellationToken.None);
+
+        var fresh = new NilmRepository(db.CreateContext());
+        (await fresh.GetEventAsync(stored[0].Id, CancellationToken.None)).Should().Match<MeterEvent>(e => e.SignatureId == espresso.Id && e.Source == EventLabelSource.DurationRule && e.Label == "Espressor");
+        (await fresh.GetEventAsync(stored[1].Id, CancellationToken.None)).Should().Match<MeterEvent>(e => e.SignatureId == espresso.Id && e.Source == EventLabelSource.DurationRule && e.LabelPlugId == Main,
+            "the plug that saw it stays known");
+        (await fresh.GetEventAsync(stored[2].Id, CancellationToken.None)).Should().Match<MeterEvent>(e => e.SignatureId == kettle.Id && e.Source == EventLabelSource.User && e.Label == "Fierbător");
+        (await fresh.GetEventAsync(stored[3].Id, CancellationToken.None))!.SignatureId.Should().Be(espresso.Id, "a move without a stored run still moves its events");
+        (await fresh.ListRunsBySignatureAsync(espresso.Id, T, CancellationToken.None)).Select(r => r.Id).Should().Equal(runs[0].Id);
+        (await fresh.ListRunsBySignatureAsync(kettle.Id, T, CancellationToken.None)).Select(r => r.Id).Should().Equal(new[] { runs[1].Id }, "run id 0 touches no stored run");
+
+        (await fresh.ListLabeledEventsAsync(Array.Empty<Guid>(), 100, CancellationToken.None)).Select(e => e.Id).Should().Equal(new[] { stored[2].Id }, "a rule's move teaches nothing");
+        (await fresh.RecomputeSignaturesAsync(new[] { espresso.Id }, T, CancellationToken.None)).Single().Count.Should().Be(3, "the centre includes them");
+    }
+
+    [Fact]
+    public async Task SplitOrigin_FollowsAMerge_AndEndsWithADeletion()
+    {
+        using var db = new TestDbFactory();
+        var repo = new NilmRepository(db.CreateContext());
+        ApplianceSignature New(string name, long? from = null) => new(0, name, "i", "other", 100, 0, 1, 0, null, SignatureLabelSource.User, null, false, SplitFromId: from);
+        var a = await repo.AddSignatureAsync(New("a"), CancellationToken.None);
+        var b = await repo.AddSignatureAsync(New("b"), CancellationToken.None);
+        var child = await repo.AddSignatureAsync(New("c", a.Id), CancellationToken.None);
+
+        await repo.MoveSignatureAsync(a.Id, b.Id, CancellationToken.None);
+        (await repo.GetSignatureAsync(child.Id, CancellationToken.None))!.SplitFromId.Should().Be(b.Id);
+
+        await repo.DeleteSignatureAsync(b.Id, CancellationToken.None);
+        (await repo.GetSignatureAsync(child.Id, CancellationToken.None))!.SplitFromId.Should().BeNull();
+    }
+
+    [Fact]
     public async Task Signatures_DefaultName_SqlRecompute_PlugShare_AndDeleteClearsEventsAndRuns()
     {
         using var db = new TestDbFactory();

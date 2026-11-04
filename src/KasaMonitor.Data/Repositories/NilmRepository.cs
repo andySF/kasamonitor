@@ -20,7 +20,7 @@ public sealed class NilmRepository : INilmRepository
 
     private static ApplianceSignature ToModel(ApplianceSignatureEntity s) => new(s.Id, s.Name, s.Icon, s.Category, s.MeanDeltaP,
         s.MeanDeltaQ, s.MeanTransient, s.Count, s.LastSeen is { } ls ? FromUnix(ls) : null, NilmSources.SignatureFromInt(s.LabelSource),
-        s.PlugId, s.Hidden);
+        s.PlugId, s.Hidden, s.MinRunSeconds, s.MaxRunSeconds, s.SplitFromId);
 
     private static ApplianceRun ToModel(ApplianceRunEntity r) => new(r.Id, r.SignatureId, FromUnix(r.StartTs),
         r.EndTs is { } end ? FromUnix(end) : null, r.PowerW, r.EstimatedWh, r.StartEventId, r.EndEventId, r.HouseBeforeW,
@@ -47,6 +47,9 @@ public sealed class NilmRepository : INilmRepository
         s.LabelSource = (int)m.LabelSource;
         s.PlugId = m.PlugId;
         s.Hidden = m.Hidden;
+        s.MinRunSeconds = m.MinRunSeconds;
+        s.MaxRunSeconds = m.MaxRunSeconds;
+        s.SplitFromId = m.SplitFromId;
     }
 
     private static void Copy(ApplianceRun m, ApplianceRunEntity r)
@@ -246,6 +249,7 @@ public sealed class NilmRepository : INilmRepository
             await using var tx = await _db.Database.BeginTransactionAsync(ct);
             await _db.MeterEvents.Where(e => e.SignatureId == id).ExecuteUpdateAsync(u => u.SetProperty(e => e.SignatureId, (long?)null), ct);
             await _db.ApplianceRuns.Where(r => r.SignatureId == id).ExecuteDeleteAsync(ct);
+            await _db.ApplianceSignatures.Where(s => s.SplitFromId == id).ExecuteUpdateAsync(u => u.SetProperty(s => s.SplitFromId, (long?)null), ct);
             await _db.ApplianceSignatures.Where(s => s.Id == id).ExecuteDeleteAsync(ct);
             await tx.CommitAsync(ct);
         });
@@ -259,9 +263,37 @@ public sealed class NilmRepository : INilmRepository
             await using var tx = await _db.Database.BeginTransactionAsync(ct);
             var moved = await _db.MeterEvents.Where(e => e.SignatureId == fromId).ExecuteUpdateAsync(u => u.SetProperty(e => e.SignatureId, (long?)intoId), ct);
             await _db.ApplianceRuns.Where(r => r.SignatureId == fromId).ExecuteUpdateAsync(u => u.SetProperty(r => r.SignatureId, intoId), ct);
+            await _db.ApplianceSignatures.Where(s => s.SplitFromId == fromId).ExecuteUpdateAsync(u => u.SetProperty(s => s.SplitFromId, (long?)intoId), ct);
             await _db.ApplianceSignatures.Where(s => s.Id == fromId).ExecuteDeleteAsync(ct);
             await tx.CommitAsync(ct);
             return moved;
+        });
+    }
+
+    public async Task MoveRunsAsync(IReadOnlyList<RunMove> moves, CancellationToken ct)
+    {
+        if (moves.Count == 0) return;
+        var user = (int)EventLabelSource.User;
+        var rule = (int)EventLabelSource.DurationRule;
+        await _db.Database.CreateExecutionStrategy().ExecuteAsync(async () =>
+        {
+            await using var tx = await _db.Database.BeginTransactionAsync(ct);
+            foreach (var group in moves.GroupBy(m => (m.TargetId, m.Label)))
+            {
+                var (target, label) = group.Key;
+                foreach (var chunk in group.Chunk(500))
+                {
+                    var events = chunk.SelectMany(m => new[] { m.StartEventId, m.EndEventId }).ToList();
+                    await _db.MeterEvents.Where(e => events.Contains(e.Id) && e.Source != user).ExecuteUpdateAsync(u => u
+                        .SetProperty(e => e.SignatureId, (long?)target)
+                        .SetProperty(e => e.Source, rule)
+                        .SetProperty(e => e.Label, label), ct);
+                    var runs = chunk.Where(m => m.RunId != 0).Select(m => m.RunId).ToList();
+                    if (runs.Count > 0)
+                        await _db.ApplianceRuns.Where(r => runs.Contains(r.Id)).ExecuteUpdateAsync(u => u.SetProperty(r => r.SignatureId, target), ct);
+                }
+            }
+            await tx.CommitAsync(ct);
         });
     }
 

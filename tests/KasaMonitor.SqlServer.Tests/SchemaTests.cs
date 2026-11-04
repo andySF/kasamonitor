@@ -3,27 +3,58 @@ using KasaMonitor.Data;
 using KasaMonitor.Data.Entities;
 using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 
 namespace KasaMonitor.SqlServer.Tests;
 
-/// <summary>The single migration (InitialCreate), the database of create-database.sql and the constraints, on SQL Server.</summary>
+/// <summary>The migrations, the database of create-database.sql and the constraints, on SQL Server.</summary>
 public class SchemaTests
 {
     [SqlServerFact]
-    public async Task InitialCreate_IsTheOnlyMigration_AndCreatesEveryTableOfTheModel()
+    public async Task TheMigrations_CreateEveryTableOfTheModel()
     {
         var cs = await MsSql.NewDatabaseAsync("kasa_schema");
         await using var ctx = MsSql.Context(cs);
-        ctx.Database.GetMigrations().Should().ContainSingle().Which.Should().EndWith("_InitialCreate");
+        ctx.Database.GetMigrations().Select(m => m[(m.IndexOf('_') + 1)..]).Should().Equal("InitialCreate", "DurationBands");
 
         await ctx.Database.MigrateAsync();
 
-        (await ctx.Database.GetAppliedMigrationsAsync()).Should().ContainSingle().Which.Should().EndWith("_InitialCreate");
+        (await ctx.Database.GetAppliedMigrationsAsync()).Should().HaveCount(2);
         ctx.Database.HasPendingModelChanges().Should().BeFalse("the migration matches the model");
         var tables = await ctx.Database.SqlQueryRaw<string>("SELECT name AS Value FROM sys.tables WHERE name NOT LIKE '__EF%'").ToListAsync();
         tables.Should().BeEquivalentTo(ctx.Model.GetEntityTypes().Select(e => e.GetTableName()));
         tables.Should().Contain(["Plugs", "Samples", "LiveSamples", "LiveMinuteAggregates", "MeterEvents", "HeatingReadings", "MieleCycles",
             "ClimateSensors", "ClimateReadings", "ClimateDaily"]);
+    }
+
+    [SqlServerFact]
+    public async Task DurationBands_AppliesOverExistingData_AndLeavesEverySignatureWithoutABand()
+    {
+        var cs = await MsSql.NewDatabaseAsync("kasa_bands");
+        await using var ctx = MsSql.Context(cs);
+        var migrator = ctx.GetService<IMigrator>();
+        var first = ctx.Database.GetMigrations().First();
+        await migrator.MigrateAsync(first);
+        await ctx.Database.ExecuteSqlRawAsync("""
+            INSERT INTO ApplianceSignatures (Name, Icon, Category, MeanDeltaP, MeanDeltaQ, MeanTransient, Count, LabelSource, Hidden)
+            VALUES (N'Fierbător', 'bi-fire', 'cooking', 1430, 90, 1, 120, 2, 0)
+            """);
+
+        await ctx.Database.MigrateAsync();
+
+        var kept = await ctx.ApplianceSignatures.AsNoTracking().SingleAsync();
+        kept.Name.Should().Be("Fierbător");
+        kept.Count.Should().Be(120);
+        kept.MinRunSeconds.Should().BeNull();
+        kept.MaxRunSeconds.Should().BeNull();
+        kept.SplitFromId.Should().BeNull();
+
+        kept.MaxRunSeconds = 40;
+        kept.SplitFromId = 7;
+        ctx.ApplianceSignatures.Update(kept);
+        await ctx.SaveChangesAsync();
+        (await ctx.ApplianceSignatures.AsNoTracking().SingleAsync()).MaxRunSeconds.Should().Be(40);
     }
 
     [SqlServerFact]

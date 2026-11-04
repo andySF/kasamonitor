@@ -14,7 +14,7 @@ public sealed class MeterEventEntity
     public double PowerBeforeW { get; set; }
     public long? SignatureId { get; set; }
     public string? Label { get; set; }
-    /// <summary><see cref="KasaMonitor.Core.Nilm.EventLabelSource"/>: 0 none, 1 auto-plug, 2 user, 3 model.</summary>
+    /// <summary><see cref="KasaMonitor.Core.Nilm.EventLabelSource"/>: 0 none, 1 auto-plug, 2 user, 3 model, 4 duration rule.</summary>
     public int Source { get; set; }
     public Guid? LabelPlugId { get; set; }
 }
@@ -35,6 +35,11 @@ public sealed class ApplianceSignatureEntity
     public int LabelSource { get; set; }
     public Guid? PlugId { get; set; }
     public bool Hidden { get; set; }
+    /// <summary>Duration band of its runs (<see cref="KasaMonitor.Core.Nilm.DurationBands"/>); null = no limit.</summary>
+    public int? MinRunSeconds { get; set; }
+    public int? MaxRunSeconds { get; set; }
+    /// <summary>The signature it was split from by duration (no foreign key: a merge or a deletion only ends the relation).</summary>
+    public long? SplitFromId { get; set; }
 }
 
 /// <summary>One run of an appliance (table ApplianceRuns). <see cref="StartTs"/>/<see cref="EndTs"/> = unix seconds, UTC.</summary>

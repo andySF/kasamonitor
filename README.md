@@ -7,7 +7,7 @@ plugs and energy meters (e.g. Shelly EM Gen3, local JSON-RPC; the only write is 
 with SQL Server, a web UI on port 8910 and a Prometheus `/metrics` endpoint. An optional Prometheus + Grafana stack
 with a ready-made dashboard and alert rules is included.
 
-Version: **0.12.5** (`Directory.Build.props`). Docker image: `duobit/kasamonitor`.
+Version: **0.13.0** (`Directory.Build.props`). Docker image: `duobit/kasamonitor`.
 
 **Requirements:** SQL Server 2019+ (any edition reachable from the Docker host; Express is limited to 10 GB per
 database), a Docker host on the same LAN as the devices (host networking). Up to 0.11 the data were in a SQLite file;
@@ -90,11 +90,12 @@ TP-Link (Tapo app) account in `/settings/tplink` and press **Adaugă** → TP-Li
   in the address) for electricity, gas and boiler, Miele, detected consumers, climate (with heating degree days and the
   energy signature), costs and events; Δ at the same share of the previous period, drill-down, CSV per section; and
   „Rapoarte” on `/centrala` (gas, boiler electricity, heat produced). See [History](#history-history-istoric).
-- **Version in the menu**: „v0.12.5” at the right of the navigation bar; the tooltip shows the commit and the build time.
+- **Version in the menu**: „v0.13.0” at the right of the navigation bar; the tooltip shows the commit and the build time.
 - **Browser errors in the server log**: JavaScript errors and the Blazor error banner are reported to
   `POST /api/client-error` and logged at Warning (category `KasaMonitor.ClientErrors`), so `docker logs` shows them.
 - **HTTP API for the appliance detection** (`/api/nilm/*`, LAN only): list, sheet, label, merge, add to, hide, regroup,
-  train and raw events with `curl`, the same actions as `/consumatori`, plus „acum am pornit X” marks (`/api/nilm/mark`). See [HTTP API (LAN)](#http-api-lan).
+  train and raw events with `curl`, the same actions as `/consumatori`, plus „acum am pornit X” marks (`/api/nilm/mark`),
+  duration bands and the split of a signature by duration. See [HTTP API (LAN)](#http-api-lan).
 
 The web UI uses Bootstrap 5 and Bootstrap Icons, served locally (no CDN). Texts on Plugs/Settings/Integration are in Romanian.
 
@@ -1262,7 +1263,9 @@ meter** (`/dispozitive`) with the live stream on (1 s). Page `/consumatori`, men
    table), split it (re-clustered alone with half the eps), open its **„fișa”** (the card button: ΔP mean ± standard
    deviation, ΔQ, the step's power factor, the transient or „necunoscut, n din m”, switch-ons/offs, the typical run
    length — median and p10–p90 —, a 24-bar histogram of the hours of the day, the plug it matches and in what share,
-   first/last seen, energy over 7 days; the same data points drive the automatic merge), and from the „fișa” „Unește
+   first/last seen, energy over 7 days; the same data points drive the automatic merge; and, for information only, over
+   the last 30 days „Durată tipică”, „Se repetă la” — between switch-ons, pauses over 6 h left out — and „Într-o sesiune”
+   — runs at most 120 s apart: pulses and energy per session), the duration band (see **Duration bands** below), and from the „fișa” „Unește
    cu…” (the survivor is chosen as in the automatic merge; a confirmation says which one stays and which one goes) or
    „Adaugă la aparatul…” (to a signature you named or one linked to a plug, not hidden; with a confirmation): when the
    two centres are within 1.5 × eps (the same component) the events move into the chosen one; otherwise (a washing
@@ -1314,6 +1317,22 @@ meter** (`/dispozitive`) with the live stream on (1 s). Page `/consumatori`, men
    `kasa_nilm_*` (see Metrics; per signature, unchanged).
 10. **Retention**: none since 0.9.2 — events and runs are kept without limit (the history of `/history`; before: 365 days).
 
+**Duration bands** (since 0.13.0). Two appliances with the same step (an espresso machine's pulses of ≈ 1.43 kW for
+10–20 s, a kettle's ≈ 1.45 kW for 1–7 minutes) differ only by how long a run lasts. A signature can have a band, minimum
+and maximum seconds, inclusive (the „fișa” or `POST /api/nilm/signatures/{id}/duration-band`); it is set only by you,
+never inferred. When a run closes with its own switch-off and its duration is out of the band of its signature, it moves
+to the **only** other signature, not hidden, whose band holds the duration, with no plug or the same plug, and whose
+centre is within 1.5 × eps of the switch-on's |ΔP| and ΔQ (or the first signature's centre, when one was split from
+the other: the two can have the same centre). Run, both events and energy per day move; the events take the source
+„după durată” and the re-clustering no longer moves them (the centres include them). None or several candidates: it stays. An
+event you labelled holds its whole run in place; a run closed by the house level or by the 6-hour limit is never moved. Two
+signatures with disjoint bands are never merged (touching at the limit counts as disjoint), and the moved events do not
+train the model. `POST /api/nilm/signatures/{id}/split-by-duration` separates what already stands in a signature: a dry
+run unless told otherwise, it shows both groups of durations and the energy that would move, then moves the paired runs up
+to the limit, of every stored day, to the signature with that name (a compatible one, or a new one), and sets both bands.
+A side split off a signature measured by a plug stays measured by that plug, so its energy is never subtracted twice.
+Overlapping runs (kettle and espresso machine at once) pair first in, first out, so their durations are not reliable.
+
 **How it learns.** A signature is a **component**, not necessarily a whole appliance: a washing machine is a heater
 (≈ 2 kW), a drum motor (≈ 250–300 W pulses) and a pump; a kettle is one heater. Your labels come first: a signature
 you named or that a plug confirms is an **anchor**, tried before the anonymous groups with a wider tolerance (1.5 ×
@@ -1324,7 +1343,7 @@ unknown only when the step took ≥ 1 s and the ratio is ≤ 1.5**. A step that 
 started by a small wobble before the real step, can only make the measured peak smaller (≈ 0–1); a peak above 1.5 can
 only be real (a motor's inrush, whose settling also makes the rise last 2 s or more). Several signatures that turn out to be the
 same component are **merged automatically** (nightly, at startup after a missed night, „Regrupează acum”). Never
-merged: two linked to different plugs (checked first), two you named differently, hidden ones. Otherwise when (c) you
+merged: two linked to different plugs (checked first), two with disjoint duration bands, two you named differently, hidden ones. Otherwise when (c) you
 gave them the same name and their centres are within 1.5 × eps (the same name on distant components stays two rows),
 (a) their centres are within eps (|ΔP|, ΔQ, and the transient only when both know it), (b) both are linked to the same
 plug, or clearly „posibil” it (≥ 2 events and ≥ 30 % of them from that plug), and their |ΔP| differ by less than 15 %,
@@ -1406,10 +1425,12 @@ backfill, the nightly job or another regroup; retry in a few seconds).
 | Route | What it does (button on `/consumatori`) |
 |---|---|
 | `GET /api/nilm/signatures[?all=true]` | the signatures: id, name, category, labelSource, plugAlias (the plug that measures it, or the „posibil” plug), plugLinked, meanDeltaP, meanDeltaQ, meanTransient, count, hidden, lastSeen. By default the page's filter (plug-measured ones, and the detected ones with ≥ 3 events, a name of their own or a „posibil” plug, not hidden); `all=true` adds the rare and hidden ones. Most events first |
-| `GET /api/nilm/signatures/{id}` | the sheet („fișa”: profile over the window) and the newest 50 events (ts, deltaP, deltaQ, label, source, …) |
+| `GET /api/nilm/signatures/{id}` | the sheet („fișa”: profile over the window, with `repetition` over the last 30 days: `durations`, `intervals`, `sessions`, `pulsesPerSessionP50`, `energyPerSessionWhP50`), the duration band in `signature`, and the newest 50 events (ts, deltaP, deltaQ, label, source, …) |
 | `POST /api/nilm/signatures/{id}/label` | body `{"name": "…", "category": "washer"}`, both optional but not both missing: rename (a user label) and/or set the category (`fridge`, `boiler`, `cooking`, `washer`, `hvac`, `lighting`, `electronics`, `other`) |
 | `POST /api/nilm/signatures/{id}/merge-into/{targetId}` | „Unește cu…”: the survivor is chosen by the rule of the automatic merge (your name, then a plug, then more events); the answer gives `survivorId` and `absorbedId` |
 | `POST /api/nilm/signatures/{id}/add-to/{targetId}` | „Adaugă la aparatul…”: `outcome` = `merged` (close centres: the events move to the target) or `named` (distant: the signature takes the target's name and category, two rows stay) |
+| `POST /api/nilm/signatures/{id}/duration-band` | the duration band ([Duration bands](#appliance-detection-nilm)): body `{"minSeconds": 45, "maxSeconds": null}`, integers ≥ 0, min < max; both `null` clear it (`400` otherwise). Only runs that close from then on, and the next rebuild of the runs, feel it. The answer is the signature, with `minRunSeconds`, `maxRunSeconds`, `splitFromId` |
+| `POST /api/nilm/signatures/{id}/split-by-duration` | body `{"maxSeconds": 40, "name": "Espressor", "category": "cooking", "dryRun": true}`: the paired runs up to `maxSeconds`, of every stored day, and their events go to the signature with that name and a compatible ΔP, or a new one labelled by you (`category` absent: the one of the signature split). Its band ends at `maxSeconds`; the band of `{id}` starts there unless it has one. An event you labelled holds its run. **`dryRun` defaults to `true`** and then nothing is written. The answer: `dryRun`, `applied` (`false` when nothing changed), `targetId` (`null` for a new one), `targetName`, `runs`, `events`, `skippedUserRuns`, `energyWh`, `moved` and `remaining` (`count`, `p10`, `p50`, `p90` seconds), `signature`, `target` |
 | `POST /api/nilm/signatures/{id}/hide`, `…/unhide` | hide / show again |
 | `POST /api/nilm/mark` | „acum am pornit X” (ground truth, no button): body `{"name": "Fierbător", "category": "cooking", "at": "2026-11-02T12:15:00+02:00"}`, `category` and `at` optional (default: now). The stored main-meter event with \|ΔP\| ≥ 100 W nearest to `at` within ±90 s is labelled by you, like an event label on `/consumatori` (it moves to the signature of that name if one exists; otherwise its automatic signature, or a new one, takes the name and the category): `outcome` = `matched`, with the event and its signature. Without such an event yet (the appliance starts in a few seconds, or the event still waits the 45 s for the plugs' readings) the mark waits in memory up to 10 minutes (`pendingUntil`; lost at a restart) and the detector gives it the first event ≥ 100 W it stores from `at` − 90 s on: `outcome` = `pending`. A time more than 45 s + 90 s in the past without such an event: `404` |
 | `POST /api/nilm/regroup` | „Regrupează acum”: events, anchored, clusters, signatures, moved, merged, the merges with their reason, and the training that follows |
@@ -1428,6 +1449,9 @@ curl -s -X POST "$K/api/nilm/signatures/53/label" -H "Content-Type: application/
      -d '{"name": "Mașina de spălat", "category": "washer"}'
 curl -s -X POST "$K/api/nilm/signatures/55/merge-into/53"
 curl -s -X POST "$K/api/nilm/signatures/61/add-to/53"
+curl -s -X POST "$K/api/nilm/signatures/28/duration-band" -H "Content-Type: application/json" -d '{"minSeconds": 45, "maxSeconds": null}'
+curl -s -X POST "$K/api/nilm/signatures/28/split-by-duration" -H "Content-Type: application/json" -d '{"maxSeconds": 40, "name": "Espressor", "category": "cooking"}'
+curl -s -X POST "$K/api/nilm/signatures/28/split-by-duration" -H "Content-Type: application/json" -d '{"maxSeconds": 40, "name": "Espressor", "category": "cooking", "dryRun": false}'
 curl -s -X POST "$K/api/nilm/signatures/70/hide"
 curl -s -X POST "$K/api/nilm/signatures/70/unhide"
 curl -s -X POST "$K/api/nilm/mark" -H "Content-Type: application/json" -d '{"name": "Fierbător", "category": "cooking"}'
@@ -1495,8 +1519,8 @@ dotnet test KasaMonitor.sln
 ```
 
 Most tests run the data layer on SQLite in memory (same EF model, `EnsureCreated`). `tests/KasaMonitor.SqlServer.Tests`
-runs on a real SQL Server in Docker (Testcontainers, `mcr.microsoft.com/mssql/server:2022-latest`): the `InitialCreate`
-migration, the collation, the repository tests again, the app start-up and the data migration tool. It is skipped when
+runs on a real SQL Server in Docker (Testcontainers, `mcr.microsoft.com/mssql/server:2022-latest`): the
+migrations, the collation, the repository tests again, the app start-up and the data migration tool. It is skipped when
 Docker is not available (or with `KASA_SQLSERVER_TESTS=off`).
 
 To run the app locally, give it a development database (never a production one) through the user secrets of the web
@@ -1529,6 +1553,10 @@ To publish under your own Docker Hub account, change the image name (`-Repo` par
 2. `docker compose -f deploy/docker-compose.yml --env-file kasamonitor.env pull && docker compose -f deploy/docker-compose.yml --env-file kasamonitor.env up -d`
    (Portainer: *Update the stack* with *Re-pull image and redeploy*). New migrations are applied at start-up.
 3. Check `http://<host>:8910/health`, `/dispozitive` (Adaugă → Scanează acum) and `curl -s http://<host>:8910/metrics | grep kasa_online`.
+
+0.13.0 adds one migration (`DurationBands`: three nullable columns on `ApplianceSignatures`), applied at start-up over the existing
+data; nothing moves until a band is set. `tools/KasaMonitor.NilmReplay` (`dotnet run --project tools/KasaMonitor.NilmReplay -- <meter.csv>`) replays
+a CSV of the main meter's seconds through the event detector, with and without a median; it is not part of the image.
 
 ### From SQLite (0.11 and earlier) to 0.12.0
 

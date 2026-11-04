@@ -19,7 +19,7 @@ Run `dotnet build` before `dotnet test --no-build`; never run two builds in one 
 **SQL Server tests.** The database is SQL Server; most tests still run the EF model on SQLite in memory (`EnsureCreated`,
 the migrations are SQL Server's). `tests/KasaMonitor.SqlServer.Tests` needs Docker: it starts
 `mcr.microsoft.com/mssql/server:2022-latest` once (Testcontainers), runs `deploy/sql/create-database.sql`, applies
-`InitialCreate`, and runs the schema/collation tests, the repository tests of `KasaMonitor.Data.Tests` again (linked
+the migrations, and runs the schema/collation tests, the repository tests of `KasaMonitor.Data.Tests` again (linked
 files, a SQL Server `TestDbFactory`), the app start-up with `/health`, and the data migration tool. Without Docker the
 suite is skipped (also with `KASA_SQLSERVER_TESTS=off`). Only this suite:
 `dotnet test tests/KasaMonitor.SqlServer.Tests`. The tool on a real `kasa.db` copy (opt-in):
@@ -56,7 +56,7 @@ suite is skipped (also with `KASA_SQLSERVER_TESTS=off`). Only this suite:
 
 `src/KasaMonitor.Core` (rules, protocols), `.Data` (EF Core), `.Workers` (background services, states),
 `.Web` (Blazor, `/metrics`, API); tests mirror them under `tests/` (plus `KasaMonitor.SqlServer.Tests`); `tools/` has
-the SQLite → SQL Server data migration tool; `deploy/` has the Dockerfile, the stack and `sql/create-database.sql`.
+the SQLite → SQL Server data migration tool and the NILM detector replay; `deploy/` has the Dockerfile, the stack and `sql/create-database.sql`.
 Layers, data flow, tables, workers and how to add an integration: `docs/architecture.md`.
 Why things are the way they are: `docs/decisions.md`. The appliance detection: `docs/nilm.md`. What the plugs' local
 APIs offer: `docs/device-api-capabilities.md`.

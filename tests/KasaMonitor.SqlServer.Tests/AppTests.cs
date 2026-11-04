@@ -44,7 +44,7 @@ public class AppTests
 
         (await client.GetStringAsync("/health")).Should().Contain("healthy");
         await using (var ctx = MsSql.Context(cs))
-            (await ctx.Database.GetAppliedMigrationsAsync()).Should().ContainSingle().Which.Should().EndWith("_InitialCreate");
+            (await ctx.Database.GetAppliedMigrationsAsync()).Should().BeEquivalentTo(ctx.Database.GetMigrations());
         // The key ring is written at the first protected value (a password saved in /settings).
         var protector = app.Services.GetRequiredService<KasaMonitor.Core.Abstractions.ISecretProtector>();
         protector.Unprotect(protector.Protect("x")).Should().Be("x");

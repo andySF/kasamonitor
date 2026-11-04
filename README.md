@@ -1578,8 +1578,8 @@ To publish under your own Docker Hub account, change the image name (`-Repo` par
    (Portainer: *Update the stack* with *Re-pull image and redeploy*). New migrations are applied at start-up.
 3. Check `http://<host>:8910/health`, `/dispozitive` (Adaugă → Scanează acum) and `curl -s http://<host>:8910/metrics | grep kasa_online`.
 
-0.13.2 has no migration. The runs of a single-appliance plug are taken over at the first pass after the start: its runs from events are replaced
-from the first stored reading of the plug on (older ones stay), and new ones come from the plug. Shadows of the last 6 hours are marked at once, the
+0.13.2 has no migration. The runs of a single-appliance plug are taken over at the first pass after the start: the runs of every signature of the plug are replaced
+from the later of the plug's first stored reading and the start of the clustering window (older ones stay), and new ones come from the plug. Shadows of the last 6 hours are marked at once, the
 others at the first regrouping (03:30, at a start when the last one is older than 24 h, or „Regrupează acum”); until then the detected
 energy still holds them. `GET /api/nilm/events` can return the new source `PlugShadow`. `tools/KasaMonitor.NilmReplay` has `--plug-shadows <plug-stream.csv> <events.csv>`, which
 prints these rules' results on your own data.

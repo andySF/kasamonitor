@@ -198,6 +198,55 @@ public class NilmPlugRunsTests
     }
 
     [Fact]
+    public async Task ARestart_WithARunStillOpen_KeepsOneRun_WithTheSameStart_AndItsWholeEnergy()
+    {
+        using var rig = await RigAsync();
+        await rig.PlugStreamAsync(rig.Fridge, 0, 900, 60, (300, 1200));
+        rig.Now = T0.AddSeconds(900);
+        await rig.Service().RunOnceAsync(CancellationToken.None);
+        (await rig.AllRunsAsync()).Should().ContainSingle().Which.IsOpen.Should().BeTrue();
+
+        var restarted = rig.Service();
+        await restarted.RunOnceAsync(CancellationToken.None);
+        rig.Now = rig.Now.AddSeconds(30);
+        await restarted.RunOnceAsync(CancellationToken.None);
+
+        var open = (await rig.AllRunsAsync()).Should().ContainSingle("neither a duplicate nor a lost run").Subject;
+        open.IsOpen.Should().BeTrue();
+        open.StartUtc.Should().Be(T0.AddSeconds(300));
+        (await restarted.GetOverviewAsync(0, 0, CancellationToken.None)).PlugMeasured.Should().ContainSingle().Which.ActiveW.Should().Be(60);
+
+        await rig.PlugStreamAsync(rig.Fridge, 901, 1800, 60, (300, 1200));
+        rig.Now = T0.AddSeconds(1800);
+        await restarted.RunOnceAsync(CancellationToken.None);
+
+        var closed = (await rig.AllRunsAsync()).Should().ContainSingle().Subject;
+        closed.Id.Should().Be(open.Id, "after the restart it goes on on its own row");
+        closed.StartUtc.Should().Be(T0.AddSeconds(300));
+        closed.EndUtc.Should().Be(T0.AddSeconds(1500));
+        closed.EstimatedWh.Should().BeApproximately(1200 * 60 / 3600.0, 1e-6, "the seconds before the restart count too");
+    }
+
+    [Fact]
+    public async Task ARestart_AfterTheRunEndedWhileItWasDown_ClosesThatRun()
+    {
+        using var rig = await RigAsync();
+        await rig.PlugStreamAsync(rig.Fridge, 0, 900, 60, (300, 1200));
+        rig.Now = T0.AddSeconds(900);
+        await rig.Service().RunOnceAsync(CancellationToken.None);
+
+        await rig.PlugStreamAsync(rig.Fridge, 901, 1800, 60, (300, 1200));
+        rig.Now = T0.AddSeconds(1800);
+        await rig.Service().RunOnceAsync(CancellationToken.None);
+
+        var run = (await rig.AllRunsAsync()).Should().ContainSingle().Subject;
+        run.StartUtc.Should().Be(T0.AddSeconds(300));
+        run.EndUtc.Should().Be(T0.AddSeconds(1500));
+        run.EndReason.Should().Be(RunEndReason.Paired);
+        run.EstimatedWh.Should().BeApproximately(1200 * 60 / 3600.0, 1e-6);
+    }
+
+    [Fact]
     public async Task LiveAndRebuilt_GiveTheSameRuns_AndAnOpenRunClosesOnItsOwnRow()
     {
         using var rig = await RigAsync();
@@ -407,6 +456,54 @@ public class NilmPlugRunsTests
         (await rig.RunsOfAsync(fridge.Id)).Should().ContainSingle(r => r.IsOpen && r.FromPlug);
     }
 
+    [Theory]
+    [InlineData(true)]    // cleared on the page: the service knows at once
+    [InlineData(false)]   // the service learns it when it reads the plugs again
+    public async Task ATransitionWaitingForItsCheck_MarksNothing_AfterTheFlagWasCleared(bool throughTheService)
+    {
+        using var rig = await RigAsync();
+        // Another plug keeps the pass going: the check runs while any plug has a single appliance.
+        var other = await rig.AddPlugAsync("aabbccddee02", "Priza AC", PlugRole.Plug, PlugProtocols.Legacy);
+        using (var ctx = rig.Db.CreateContext()) await new PlugRepository(ctx).SetApplianceAsync(other, true, "AC", "hvac", CancellationToken.None);
+        await rig.PlugStreamAsync(rig.Fridge, 0, 500, 60, (300, 100_000));
+        rig.Now = T0.AddSeconds(355);   // the transition of T0 + 300 is known, and 60 s old only at T0 + 360
+        var svc = rig.Service();
+        await svc.RunOnceAsync(CancellationToken.None);
+        var stored = await rig.AddEventsAsync(new[] { Ev(rig, 298, 60) });
+
+        if (throughTheService)
+        {
+            await svc.SetPlugApplianceAsync(rig.Fridge, false, null, null, CancellationToken.None);
+        }
+        else
+        {
+            using var ctx = rig.Db.CreateContext();
+            await new PlugRepository(ctx).SetApplianceAsync(rig.Fridge, false, null, null, CancellationToken.None);
+        }
+        rig.Now = T0.AddSeconds(400);
+        await svc.RunOnceAsync(CancellationToken.None);
+
+        var e = await rig.EventAsync(stored[0].Id);
+        e.Source.Should().Be(EventLabelSource.None, "the plug has several consumers now");
+        e.LabelPlugId.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task ATransitionOfAPlugStillFlagged_DoesMark_TheControlOfTheCaseAbove()
+    {
+        using var rig = await RigAsync();
+        await rig.PlugStreamAsync(rig.Fridge, 0, 500, 60, (300, 100_000));
+        rig.Now = T0.AddSeconds(355);
+        var svc = rig.Service();
+        await svc.RunOnceAsync(CancellationToken.None);
+        var stored = await rig.AddEventsAsync(new[] { Ev(rig, 298, 60) });
+
+        rig.Now = T0.AddSeconds(400);
+        await svc.RunOnceAsync(CancellationToken.None);
+
+        (await rig.EventAsync(stored[0].Id)).Source.Should().Be(EventLabelSource.PlugShadow);
+    }
+
     [Fact]
     public async Task AShadow_SurvivesTheRegrouping_DbscanAndTheAnchorsDoNotTouchIt_AndTheResultIsTheSameTwice()
     {
@@ -529,6 +626,26 @@ public class NilmPlugRunsTests
         row.Last7DaysWh.Should().BeApproximately(42 * 900 * 62 / 3600.0, 1);
         (await rig.Repo(r => r.ListEventsBySignaturesAsync(new[] { sig.Id }, DateTimeOffset.UnixEpoch, CancellationToken.None))).Should().BeEmpty();
         (await rig.RunsOfAsync(sig.Id)).Should().HaveCount(42);
+    }
+
+    [Fact]
+    public async Task TheRowsOfThePlugs_AreOrderedByWhatTheyShow_NotByTheEventsOfTheSignature()
+    {
+        using var rig = await RigAsync();
+        var plain = await rig.AddPlugAsync("aabbccddee02", "Priza birou", PlugRole.Plug, PlugProtocols.Legacy);
+        var other = await rig.AddSignatureAsync("Priza birou", 40, plain, count: 9);   // its last event: 5 days ago
+        await rig.PlugStreamAsync(rig.Fridge, 0, 1200, 60, (300, 300));
+        rig.Now = T0.AddSeconds(1200);
+        var svc = rig.Service();
+
+        await svc.RunOnceAsync(CancellationToken.None);
+
+        var rows = (await svc.GetOverviewAsync(0, 0, CancellationToken.None)).PlugMeasured;
+        rows.Should().HaveCount(2);
+        rows[0].FromPlug.Should().NotBeNull("no confirmed event, but its last switch-on is the newest");
+        rows[0].Signature.LastSeenUtc.Should().BeNull("the signature itself stays as it is");
+        rows[0].Signature.Count.Should().Be(0);
+        rows[1].Signature.Id.Should().Be(other.Id);
     }
 
     [Fact]

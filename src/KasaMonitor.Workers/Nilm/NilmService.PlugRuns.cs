@@ -63,7 +63,7 @@ public sealed partial class NilmService
         if (nowUtc - _lastPlugStep < PlugStepInterval) return;
         _lastPlugStep = nowUtc;
         var single = _plugs.Where(p => p.Appliance is not null).ToList();
-        foreach (var gone in _plugTracks.Keys.Where(id => single.All(p => p.Id != id)).ToList()) _plugTracks.Remove(gone);
+        foreach (var gone in _plugTracks.Keys.Where(id => single.All(p => p.Id != id)).ToList()) ForgetPlug(gone);
         if (single.Count > 0)
         {
             using var scope = _scopes.CreateScope();
@@ -86,6 +86,13 @@ public sealed partial class NilmService
             await CheckShadowsAsync(scope.ServiceProvider, nowUtc, ct);
         }
         _openSnapshot = OpenRuns();
+    }
+
+    /// <summary>A plug that no longer has a single appliance: no timeline, and no transition of it still waits to mark a shadow.</summary>
+    private void ForgetPlug(Guid plugId)
+    {
+        _plugTracks.Remove(plugId);
+        _transitionsToCheck.RemoveAll(x => x.PlugId == plugId);
     }
 
     /// <summary>Where a plug catches up from: the start of its newest run from the plug in the window, otherwise the window.</summary>

@@ -91,6 +91,8 @@ ones. So a confirmation stays strict (above), and the rest is read from the plug
 - **Transitions.** On a 1-second grid (its stream, otherwise its polls, a row holding at most 70 s), the plug is on from 20 W. A
   change is real when it still holds 5 s after its first second, which is its moment; its step is the median of [t + 3 s, t + 20 s]
   minus that of [t − 20 s, t − 3 s]. Without data there is no transition across the gap. On the same 68 h this gives 242 transitions.
+  A plug without a stream must therefore be polled at least every 70 s: with rarer polls every hole restarts the state, so it gives no
+  transition and no run, while its runs from events are still replaced.
 - **Shadows.** An event with no plug's or user's word on it (source none or model) is a **shadow** of the plug when it is the only
   candidate of a transition: the same sign, |ΔP − step| ≤ 15 W, at most 5 s before it. It gets the source `plug-shadow`, no label and
   no signature: it forms no run and is no longer subtracted from the rest of the house. It is not a confirmation, so it never feeds
@@ -183,7 +185,8 @@ than 70 s) it closes at the last second with data as uncertain (`Timeout`), with
 
 A rebuild (a regrouping, a merge, a start) replays the stored readings, deletes what stands from there on and writes the same runs
 again; nothing older than the plug's first data goes, since nothing could rebuild it, so old runs from events stay there. Live, every
-10 s the seconds that arrived are fed to the same timeline, 30 s behind now because the stream's rows are written every 10 s.
+10 s the seconds that arrived are fed to the same timeline, 30 s behind now because the stream's rows are written every 10 s. A row
+that comes more than 30 s late (writes of the stream failing twice in a row) is past the timeline, so only the next rebuild sees it.
 Those signatures stay measured by the plug, so these runs never enter the detected energy, „Acum pornite”,
 `kasa_appliance_*` or the „Consumatori” section of `/history`. Their row on `/consumatori` shows, from these runs and over the same window,
 the switch-ons, the mean level, the duration and the repetition, calculated when the page asks; `Count` stays the number of

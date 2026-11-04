@@ -102,7 +102,13 @@ public sealed record NilmMetricSnapshot(IReadOnlyList<NilmMetricItem> Appliances
 /// <see cref="FromPlug"/>: a signature of a plug with a single appliance, whose row shows what the plug measured.
 /// </summary>
 public sealed record SignatureRow(ApplianceSignature Signature, double TodayWh, double Last30DaysWh, double? ActiveW, string? PossiblePlug = null,
-    int UncertainRuns = 0, double Last7DaysWh = 0, PlugRunSummary? FromPlug = null);
+    int UncertainRuns = 0, double Last7DaysWh = 0, PlugRunSummary? FromPlug = null)
+{
+    /// <summary>The signature with what its row shows, for ordering: with <see cref="FromPlug"/>, the plug's last switch-on, switch-ons and level.</summary>
+    public ApplianceSignature AsShown => FromPlug is { } plug
+        ? Signature with { LastSeenUtc = plug.LastStartUtc, Count = plug.Starts, MeanDeltaP = plug.MeanPowerW ?? Signature.MeanDeltaP }
+        : Signature;
+}
 
 /// <summary>One event of the last 24 h on /consumatori.</summary>
 public sealed record EventRow(MeterEvent Event, string? SignatureName);
@@ -1574,7 +1580,7 @@ public sealed partial class NilmService : BackgroundService
                 ? Row(s) with { FromPlug = PlugRunSummary.Of(await repo.ListRunsBySignatureAsync(s.Id, window, ct), window, now) }
                 : Row(s));
         var measured = SignatureSorting.Sorted(measuredRows,
-            r => r.Signature, r => r.TodayWh, r => r.Last7DaysWh, r => r.Last30DaysWh, SignatureSorting.Default, SignatureSorting.DefaultDescending);
+            r => r.AsShown, r => r.TodayWh, r => r.Last7DaysWh, r => r.Last30DaysWh, SignatureSorting.Default, SignatureSorting.DefaultDescending);
 
         var names = signatures.ToDictionary(s => s.Id, s => s.Name);
         var eventsTotal = await repo.CountEventsAsync(now.AddHours(-24), now, ct);
@@ -1677,7 +1683,7 @@ public sealed partial class NilmService : BackgroundService
             if (before.SingleAppliance && !single)
             {
                 // Its runs come from the events again.
-                _plugTracks.Remove(plugId);
+                ForgetPlug(plugId);
                 await RebuildRunsAsync(sp, linked, WindowStart(_clock()), _clock(), ct);
             }
             else if (!before.SingleAppliance && single)

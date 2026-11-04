@@ -54,8 +54,14 @@ public class NilmExclusiveSignatureTests
         }
 
         public Task<ApplianceSignature> AddSignatureAsync(string name, double p, Guid? plug, SignatureLabelSource source = SignatureLabelSource.Plug,
-            int count = 0, int? min = null, int? max = null, long? splitFrom = null) =>
-            Repo(r => r.AddSignatureAsync(new ApplianceSignature(0, name, "bi-box", "other", p, 0, 0, count, T0.AddDays(-5), source, plug, false, min, max, splitFrom), CancellationToken.None));
+            int count = 0, int? min = null, int? max = null, long? splitFrom = null, bool hidden = false) =>
+            Repo(r => r.AddSignatureAsync(new ApplianceSignature(0, name, "bi-box", "other", p, 0, 0, count, T0.AddDays(-5), source, plug, hidden, min, max, splitFrom), CancellationToken.None));
+
+        public async Task SetStateAsync(Guid plug, PlugNilmState state)
+        {
+            using var ctx = Db.CreateContext();
+            await new PlugRepository(ctx).SetNilmStateAsync(plug, state, CancellationToken.None);
+        }
 
         public Task<IReadOnlyList<MeterEvent>> AddEventsAsync(IEnumerable<MeterEvent> events) => Repo(r => r.AddEventsAsync(events.ToList(), CancellationToken.None));
 
@@ -226,7 +232,8 @@ public class NilmExclusiveSignatureTests
         var emptied = await rig.SigAsync(sig.Id);
         emptied.Count.Should().Be(0);
         emptied.PlugId.Should().Be(rig.Fridge);
-        emptied.MeanDeltaP.Should().Be(39, "no event yet to set it");
+        emptied.MeanDeltaP.Should().Be(0, "nothing in it: the row does not show the old drifted centre");
+        emptied.MeanDeltaQ.Should().Be(0);
         (await first.GetOverviewAsync(0, 0, CancellationToken.None)).PlugMeasured.Should().ContainSingle().Which.Signature.Id.Should().Be(sig.Id);
 
         // Two fridge cycles of 120 W, confirmed by the plug.
@@ -439,7 +446,120 @@ public class NilmExclusiveSignatureTests
     }
 
     [Fact]
-    public async Task EventsOlderThanTheWindow_LeaveToo_WithTheirRuns_SoTheCentreIsNotFedByThem()
+    public async Task AMergeByTheUserIntoAnAnonymousSignature_LabelsWithTheAppliance_NotWithTheUnknownName()
+    {
+        using var rig = await RigAsync();
+        var fridge = await rig.AddSignatureAsync("Frigider", 60, rig.Fridge, count: 2);
+        var anon = await rig.AddSignatureAsync("", 37, null, SignatureLabelSource.Cluster, count: 2);
+        var from = T0.AddDays(-3);
+        await rig.AddEventsAsync(Pair((at, p) => Confirmed(rig, at, p, fridge.Id), from, 60).Concat(Pair((at, p) => Ev(rig, at, p, anon.Id), from.AddMinutes(1), 37)));
+
+        (await rig.Service().MergeAsync(fridge.Id, anon.Id, CancellationToken.None)).Should().BeTrue("the selector above the table lets the user choose the survivor");
+
+        var events = await rig.EventsOfAsync(anon.Id);
+        events.Should().HaveCount(4);
+        events.Where(e => e.Source == EventLabelSource.User).Should().HaveCount(2).And.OnlyContain(e => e.Label == "Frigider", "never a class „Necunoscut #n” of the classifier");
+        (await rig.SigAsync(anon.Id)).PlugId.Should().Be(rig.Fridge);
+    }
+
+    [Fact]
+    public async Task EventsMovedByADurationThePlugDidNotConfirm_LeaveAtTheRegrouping_TheConfirmedOnesStay()
+    {
+        using var rig = await RigAsync();
+        var sig = await rig.AddSignatureAsync("Frigider", 60, rig.Fridge, count: 4);
+        var from = T0.AddDays(-3);
+        await rig.AddEventsAsync(Pair((at, p) => Ev(rig, at, p, sig.Id, EventLabelSource.DurationRule, "Frigider"), from, 37)
+            .Concat(Pair((at, p) => Ev(rig, at, p, sig.Id, EventLabelSource.DurationRule, "Frigider", rig.Fridge), from.AddMinutes(1), 60)));
+
+        await rig.Service().RegroupNowAsync(CancellationToken.None);
+
+        var left = await rig.EventsOfAsync(sig.Id);
+        left.Should().HaveCount(2).And.OnlyContain(e => e.LabelPlugId == rig.Fridge && Math.Abs(Math.Abs(e.DeltaP) - 60) < 1);
+    }
+
+    [Fact]
+    public async Task AHiddenSignatureOfThePlug_TakesNothingUnconfirmed_OnTheLivePath()
+    {
+        using var rig = await RigAsync();
+        var hidden = await rig.AddSignatureAsync("Frigider", 1430, rig.Fridge, count: 5, hidden: true);
+        await rig.HouseAsync(1800, 1430, (120, 180));
+        rig.Now = T0.AddMinutes(31);
+
+        await rig.Service().RunOnceAsync(CancellationToken.None);
+
+        (await rig.AllEventsAsync()).Should().HaveCount(2).And.OnlyContain(e => e.SignatureId != null && e.SignatureId != hidden.Id);
+    }
+
+    [Fact]
+    public async Task AHiddenSignatureOfThePlug_StillTakesItsConfirmations_WithoutADuplicate()
+    {
+        using var rig = await RigAsync();
+        var hidden = await rig.AddSignatureAsync("Frigider", 120, rig.Fridge, count: 5, hidden: true);
+        await rig.HouseAsync(1800, 120, (300, 600), (1200, 300));
+        await rig.PlugReadingsAsync(rig.Fridge, 1800, 120, (300, 600), (1200, 300));
+        rig.Now = T0.AddMinutes(31);
+
+        await rig.Service().RunOnceAsync(CancellationToken.None);
+
+        (await rig.SignaturesAsync()).Should().ContainSingle().Which.Id.Should().Be(hidden.Id);
+        (await rig.EventsOfAsync(hidden.Id)).Should().HaveCount(4).And.OnlyContain(e => e.Source == EventLabelSource.AutoPlug);
+    }
+
+    [Fact]
+    public async Task APlugExcludedFromLearning_WithASingleAppliance_LabelsAndLinks_AndStaysOutOfTheTraining()
+    {
+        // Found in production: SingleAppliance = true, NilmState = IgnoredManual, so the fridge's plug never labelled anything.
+        using var rig = await RigAsync();
+        await rig.SetStateAsync(rig.Fridge, PlugNilmState.IgnoredManual);
+        await rig.HouseAsync(1800, 120, (300, 600), (1200, 300));
+        await rig.PlugReadingsAsync(rig.Fridge, 1800, 120, (300, 600), (1200, 300));
+        rig.Now = T0.AddMinutes(31);
+        var svc = rig.Service();
+
+        await svc.RunOnceAsync(CancellationToken.None);
+
+        var events = await rig.AllEventsAsync();
+        events.Should().HaveCount(4).And.OnlyContain(e => e.Source == EventLabelSource.AutoPlug && e.LabelPlugId == rig.Fridge && e.Label == "Frigider");
+        var sig = (await rig.SignaturesAsync()).Should().ContainSingle().Subject;
+        sig.PlugId.Should().Be(rig.Fridge);
+        sig.Name.Should().Be("Frigider");
+        sig.Category.Should().Be("fridge");
+        events.Should().OnlyContain(e => e.SignatureId == sig.Id);
+
+        // The state in the data stays what it was, and the page and the API say what the plug does.
+        var row = (await svc.ListPlugsAsync(CancellationToken.None)).Single(p => p.PlugId == rig.Fridge);
+        row.State.Should().Be(PlugNilmState.IgnoredManual);
+        row.LabelsEvents.Should().BeTrue();
+
+        // Its labels count for the merge and the link; the training still leaves them out.
+        await svc.NightlyAsync(rig.Now, CancellationToken.None);
+        (await rig.EventsOfAsync(sig.Id)).Should().HaveCount(4);
+        (await rig.SigAsync(sig.Id)).PlugId.Should().Be(rig.Fridge);
+        var plugs = await new PlugRepository(rig.Db.CreateContext()).ListAllAsync(CancellationToken.None);
+        NilmService.TrainingExcluded(plugs).Should().Contain(rig.Fridge);
+        (await rig.Repo(r => r.ListLabeledEventsAsync(NilmService.TrainingExcluded(plugs), 100, CancellationToken.None))).Should().BeEmpty();
+    }
+
+    [Theory]
+    [InlineData(PlugNilmState.IgnoredManual)]
+    [InlineData(PlugNilmState.IgnoredAuto)]
+    public async Task APlugExcludedFromLearning_WithoutASingleAppliance_StillDoesNotLabel(PlugNilmState state)
+    {
+        using var rig = await RigAsync(single: false);
+        await rig.SetStateAsync(rig.Fridge, state);
+        await rig.HouseAsync(1800, 120, (300, 600), (1200, 300));
+        await rig.PlugReadingsAsync(rig.Fridge, 1800, 120, (300, 600), (1200, 300));
+        rig.Now = T0.AddMinutes(31);
+        var svc = rig.Service();
+
+        await svc.RunOnceAsync(CancellationToken.None);
+
+        (await rig.AllEventsAsync()).Should().HaveCount(4).And.OnlyContain(e => e.Source == EventLabelSource.None && e.LabelPlugId == null);
+        (await svc.ListPlugsAsync(CancellationToken.None)).Single(p => p.PlugId == rig.Fridge).LabelsEvents.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task EventsOlderThanTheWindow_LeaveToo_WithTheirRuns()
     {
         using var rig = await RigAsync();
         var fridge = await rig.AddSignatureAsync("Frigider", 39, rig.Fridge, count: 4);

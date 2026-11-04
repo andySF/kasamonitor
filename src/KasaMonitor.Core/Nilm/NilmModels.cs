@@ -111,6 +111,10 @@ public static class PlugNilmStates
         PlugNilmState.IgnoredManual => "exclusă din învățare",
         _ => null,
     };
+
+    /// <summary>The badge of a plug: one with a single appliance labels its events in any state, so it never says „exclusă”.</summary>
+    public static string? Badge(PlugNilmState s, bool singleAppliance) =>
+        singleAppliance && IsIgnored(s) ? "etichetează, nu antrenează modelul" : Badge(s);
 }
 
 /// <summary>How a run ended (column <c>ApplianceRuns.EndReason</c>).</summary>

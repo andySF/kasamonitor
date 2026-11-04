@@ -81,7 +81,7 @@ public static class NilmApi
     public sealed record ApplianceRequest(string? Name, string? Category, bool? Single);
 
     /// <summary>A plug that can label events: <see cref="ApplianceName"/> = the appliance's name in effect when <see cref="Single"/>.</summary>
-    public sealed record PlugDto(Guid Id, string Alias, bool Single, string? ApplianceName, string? Category, string NilmState);
+    public sealed record PlugDto(Guid Id, string Alias, bool Single, string? ApplianceName, string? Category, string NilmState, bool LabelsEvents);
 
     public static RouteGroupBuilder MapNilmApi(this IEndpointRouteBuilder app)
     {
@@ -311,7 +311,7 @@ public static class NilmApi
             p.FirstSeenUtc, p.LastSeenUtc, p.Last7DaysWh, p.Repetition is { } r ? ToDto(r) : null);
     }
 
-    private static PlugDto ToDto(PlugNilmRow p) => new(p.PlugId, p.Alias, p.SingleAppliance, p.ApplianceName, p.ApplianceCategory, p.State.ToString());
+    private static PlugDto ToDto(PlugNilmRow p) => new(p.PlugId, p.Alias, p.SingleAppliance, p.ApplianceName, p.ApplianceCategory, p.State.ToString(), p.LabelsEvents);
 
     private static TrainDto ToDto(NilmTrainResult t) => new(t.Trained, t.LabeledEvents, t.LabeledClasses,
         t.Info?.Classes ?? Array.Empty<string>(), t.Info?.Accuracy, t.Info?.Folds, t.Info?.Examples, t.Duration.TotalSeconds);

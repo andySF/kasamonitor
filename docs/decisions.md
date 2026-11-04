@@ -427,22 +427,35 @@ the automatic merge (only with another signature of the same plug, both with con
 tighter radius was not enough: a UPS and a compressor can have the same step, and only the plug tells them apart.
 
 **Decision: the cleaning happens at the regrouping, on what is already there.** No migration and no separate job. What does
-not belong leaves through the anchors and DBSCAN like any free event. What the job does not read (older than the window or
-than the newest 20,000) leaves without a signature: left in place it would keep feeding the centre, which is computed over the
-whole window, and DBSCAN and the rebuild of the runs stop at those same limits. An emptied signature stays, since it is the
-plug's.
+not belong leaves through the anchors and DBSCAN like any free event. What the job does not read leaves without a signature,
+since DBSCAN stops at the same limits: inside the window but past the newest 20,000 it would keep feeding the centre, and
+older than the window it feeds nothing but would stay on the sheet and in the runs. The old runs of those events are deleted and
+nothing rebuilds them, so that part of the signature's history is gone; it was mostly other loads. An emptied signature stays,
+since it is the plug's, with its centre at 0 until the next confirmation.
 
 **Decision: a drifted centre never makes a duplicate.** Until the first regrouping the stored centre is still wrong, so
 a confirmation that misses every stored centre of its plug looks at the confirmed events behind them, then at a signature
 with none (which takes it as its first), and only then starts a new signature: a real new component.
 
-**Decision: a hand-made decision stands.** A merge by hand stays possible; the events the user brings in take the user's
-label, since otherwise the next regrouping would undo it. What the signature caught before the merge is not confirmed by it. A
-split by hand also stands: `DurationRule` events stay, and the duration rule itself refuses an unconfirmed run, so what
-remains of that source is the user's decision (or a plug's label moved with its run).
+**Decision: what the user merges stands, an unconfirmed duration does not.** A merge by hand stays possible; the events the
+user brings in take the user's label with the appliance's name, since otherwise the next regrouping would undo it. What the signature
+caught before the merge is not confirmed by it. Those labels train the classifier and can form a class with the appliance's
+name; a prediction of it counts as no label. A `DurationRule` event stays only with the plug's label (the move keeps it): one
+without it leaves at the regrouping, even from a split by hand, because a split made before the first cleaning would otherwise
+pin hundreds of caught events for good.
 
-**Consequences.** The number of events in „Necunoscut” goes up; that is correct, and they were never the appliance's. Pulses
-under ≈ 15 s, which the plug cannot label (`docs/nilm.md`, section 7), leave the plug's signature; the plug's own measurement
-stays the reference for its energy. The detector, `PlugEventMatcher` and the duration bands themselves are unchanged. Plugs with
+**Decision: a plug with a single appliance labels whatever its state of learning.** The fridge's plug of the measurement above
+had `SingleAppliance` set and `NilmState = IgnoredManual`, from before it was marked, and a plug excluded from learning cannot
+label: that is why none of the 1,969 events was `auto-plug`, and the invariant alone would have left its signature empty for good.
+The state speaks of the training, which such a plug stays out of anyway, so it no longer stops the labels, the link or the plug
+share. The stored value is not changed. `GET /api/nilm/plugs` keeps `nilmState` and adds `labelsEvents`; the badges say what the
+plug does. A plug with several consumers excluded from learning still labels nothing.
+
+**Consequences.** The number of events in „Necunoscut” goes up. Real steps of the appliance that the plug does not confirm, such
+as pulses under ≈ 15 s (`docs/nilm.md`, section 7), leave the plug's signature; the plug's own measurement stays the reference
+for its energy. They now count as detected energy and are subtracted from the rest of the house while the plug measures them too,
+where before they were not subtracted: the rest of the house is a little too low by that much. Events already stored are not
+labelled again. A hidden signature no longer takes new events from the assignment (a signature of a plug still takes the
+plug's confirmations), so what lies near a hidden anonymous one goes to another signature. The detector, `PlugEventMatcher` and the duration bands themselves are unchanged. Plugs with
 several consumers keep the old rule. The first regrouping after
 the upgrade does the cleaning (at 03:30, at a start when the last one is older than 24 h, or on „Regrupează acum”).

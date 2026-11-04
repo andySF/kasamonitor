@@ -1396,14 +1396,16 @@ automatically on upgrade (columns `Plugs.SingleAppliance`, `ApplianceName`, `App
   there by hand. An event near its centre that the plug did not confirm goes to another signature or to „Necunoscut”, and so
   does a prediction of the model; the automatic merge joins it only with another signature of the same plug. The next
   regrouping removes what got in before: runs, centre and count are rebuilt from what stays, and an emptied signature stays as
-  the plug's until its next confirmation. A merge by hand is still possible (the events you bring in take your label), and so is
-  a split by duration. Pulses under ≈ 15 s, which a plug cannot label, leave the signature, and the number of events in
-  „Necunoscut” goes up: both are expected. The plug's own energy does not change.
+  the plug's until its next confirmation. A merge by hand is still possible (the events you bring in take your label with the
+  appliance's name), and so is a split by duration, where only what the plug confirmed stays. Pulses under ≈ 15 s, which a plug
+  cannot label, leave the signature, and the number of events in „Necunoscut” goes up: both are expected. The plug's own energy
+  does not change, but such a step now counts as detected and is subtracted from the rest of the house as well.
 - **Out of the ML model.** Its events are explained completely by the plug, so they are neither examples nor a class
   of the classifier (the training set leaves out the labels of the excluded plugs and of the single-appliance ones).
   The plug is **not** excluded from learning (`NilmIgnored` is untouched): it still labels and links its events, so they
-  never become „Necunoscut”; it is also never excluded automatically for matching too many events per hour. Changing
-  the flag retrains the model on the next pass when ML is on.
+  never become „Necunoscut”; it is also never excluded automatically for matching too many events per hour. Since 0.13.1 it
+  labels and links even when it was excluded from learning by hand: that state speaks only of the training (the value stays
+  stored, `GET /api/nilm/plugs` shows it next to `labelsEvents`). Changing the flag retrains the model on the next pass when ML is on.
 - **Where the name appears.** The plug keeps its alias (`/dispozitive`, history, `kasa_*` metrics); the appliance's name is
   shown where the plug stands for an appliance: the bubble and the row of the home page, the Sankey, `/consumatori`
   (its signatures, in „Măsurate de prize” with the badge *priză cu un singur aparat*, never among the unknown ones),
@@ -1445,7 +1447,7 @@ backfill, the nightly job or another regroup; retry in a few seconds).
 | `POST /api/nilm/mark` | „acum am pornit X” (ground truth, no button): body `{"name": "Fierbător", "category": "cooking", "at": "2026-11-02T12:15:00+02:00"}`, `category` and `at` optional (default: now). The stored main-meter event with \|ΔP\| ≥ 100 W nearest to `at` within ±90 s is labelled by you, like an event label on `/consumatori` (it moves to the signature of that name if one exists; otherwise its automatic signature, or a new one, takes the name and the category): `outcome` = `matched`, with the event and its signature. Without such an event yet (the appliance starts in a few seconds, or the event still waits the 45 s for the plugs' readings) the mark waits in memory up to 10 minutes (`pendingUntil`; lost at a restart) and the detector gives it the first event ≥ 100 W it stores from `at` − 90 s on: `outcome` = `pending`. A time more than 45 s + 90 s in the past without such an event: `404` |
 | `POST /api/nilm/regroup` | „Regrupează acum”: events, anchored, clusters, signatures, moved, merged, the merges with their reason, and the training that follows |
 | `POST /api/nilm/train` | „Antrenează acum”: trained, labelled events and classes, the classes, cross-validated accuracy, folds, duration |
-| `GET /api/nilm/plugs` | the plugs that can label events (polled, role *plug*): id, alias, single, applianceName (the name in effect when `single`: the alias when none was given), category, nilmState (`Auto`, `IgnoredAuto`, `IgnoredManual`, `AlwaysUse`) |
+| `GET /api/nilm/plugs` | the plugs that can label events (polled, role *plug*): id, alias, single, applianceName (the name in effect when `single`: the alias when none was given), category, nilmState (`Auto`, `IgnoredAuto`, `IgnoredManual`, `AlwaysUse`: the state of learning), labelsEvents (whether it labels events: a plug with a single appliance always does) |
 | `POST /api/nilm/plugs/{id}/appliance` | „un singur aparat pe priză” (the checkbox on `/dispozitive`): body `{"name": "Frigider", "category": "fridge", "single": true}`; `single` defaults to `true` (`false` clears the flag, name and category are kept), an empty `name` = the alias, no `category` = unchanged. The plug's linked signatures take the name and category at once. `404` for an unknown id or a meter ([Single-appliance plugs](#single-appliance-plugs)) |
 | `GET /api/nilm/events?from=…&to=…&minAbsDeltaP=…` | the raw stored events (diagnostics), oldest first; `from`/`to` ISO 8601 (default: the last 24 h, at most 31 days), `minAbsDeltaP` in W (default 0) |
 
@@ -1566,7 +1568,9 @@ To publish under your own Docker Hub account, change the image name (`-Repo` par
 
 0.13.1 has no migration. The signature of a single-appliance plug is cleaned at the first regrouping after the upgrade (03:30, at
 a start when the last one is older than 24 h, or „Regrupează acum” on `/consumatori`); until then its count stays as it was, and
-new events already keep out.
+new events already keep out. A single-appliance plug that was excluded from learning starts labelling new events; stored events
+are not labelled again. A hidden signature no longer takes new events, except the confirmations of its plug. `GET /api/nilm/plugs`
+adds `labelsEvents`.
 
 0.13.0 adds one migration (`DurationBands`: three nullable columns on `ApplianceSignatures`), applied at start-up over the existing
 data; nothing moves until a band is set. `tools/KasaMonitor.NilmReplay` (`dotnet run --project tools/KasaMonitor.NilmReplay -- <meter.csv>`) replays

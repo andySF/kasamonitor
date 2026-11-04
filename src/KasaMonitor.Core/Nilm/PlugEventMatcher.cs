@@ -4,7 +4,8 @@ namespace KasaMonitor.Core.Nilm;
 public readonly record struct PlugPowerPoint(DateTimeOffset TsUtc, double PowerW);
 
 /// <summary>
-/// The readings of one plug around an event. <see cref="CanLabel"/> = false for a plug excluded from learning: it cannot
+/// The readings of one plug around an event. <see cref="CanLabel"/> = false for a plug that does not label
+/// (<see cref="KasaMonitor.Core.Models.Plug.LabelsNilmEvents"/>; excluded from learning, without a single appliance): it cannot
 /// label the event, but it still counts when deciding whether more than one plug moved.
 /// </summary>
 public sealed record PlugSeries(Guid PlugId, string Alias, IReadOnlyList<PlugPowerPoint> Points, bool CanLabel = true);

@@ -70,7 +70,8 @@ The plugs already measure some appliances. 45 s after an event, the plugs' readi
   whose level moved the same way by ≥ 60 % of |ΔP| (a UPS moving at the same time makes the event ambiguous), and
   that plug step has not labelled another event.
 - A plug that matches more than 20 events in an hour (a UPS, a PC) is a variable load and is excluded from learning
-  automatically; this can be undone by hand.
+  automatically; this can be undone by hand. A plug excluded from learning does not label, but still makes an event
+  ambiguous. A plug with a single appliance labels and links whatever its state of learning, and never trains the classifier.
 
 When ≥ 3 events and ≥ 60 % of a signature's events come from the same plug, the signature is **linked** to the plug:
 its consumption is measured by the plug itself, so it is listed separately, kept out of „Acum pornite” and from the
@@ -80,7 +81,12 @@ skips the thresholds (see decisions, 0.9.1).
 **The signature of a plug with a single appliance is exclusive** (decisions, 0.13.1): it holds only events that plug
 confirmed and events the user put there by hand. Nothing else enters it, on any path. A step the plug could not confirm
 (a pulse under ≈ 15 s, section 7) therefore leaves it, even though the plug did measure it; the plug's own energy is
-unaffected, and the number of events in „Necunoscut” goes up. That is correct: they were never the appliance's.
+unaffected, and the number of events in „Necunoscut” goes up.
+
+This has a price in the balance. A real step of the appliance that the plug does not confirm now lands in an unknown signature,
+so its run counts as detected energy and is subtracted from the rest of the house, while the plug measures the same
+energy too. Before, it sat in the plug's signature and was not subtracted. The rest of the house is therefore a little too low
+by what the plug fails to confirm; the invariant was chosen knowing that, since a drifted centre costs more.
 
 ## 3. Signatures: grouping events
 
@@ -103,11 +109,12 @@ drum motor (≈ 250–300 W pulses) and a pump; a kettle is one heater.
   events of the last 30 days are clustered again on a low-priority thread. Events labelled by the user or by the
   plug of their signature never move. Every other event passes the anchors again (it stays in a labelled signature only
   while within 1.5 × eps, so a signature cannot ratchet away by keeping everything it once caught); DBSCAN groups the
-  rest; empty automatic signatures are deleted. In an exclusive signature only what the plug confirmed, what the user
-  labelled and what a duration split put there stays; the rest goes through the anchors and DBSCAN again. Events the job
-  does not read (older than the window or than the newest 20,000) leave too, without a signature, or they would keep
-  feeding the centre. Runs, centre and count are rebuilt from what stays. An emptied exclusive signature is not deleted: it
-  is the plug's, and the next confirmation sets its centre. A confirmation never makes a new signature only because a
+  rest; empty automatic signatures are deleted. In an exclusive signature only what the plug confirmed and what the user
+  labelled stays; the rest goes through the anchors and DBSCAN again. Events the job does not read leave too, without a
+  signature: inside the window but past the newest 20,000 they would keep feeding the centre, and older than the window
+  they feed nothing but would stay on the sheet and in its runs. Their old runs are deleted and nothing rebuilds them,
+  so that part of the signature's history is gone. Runs, centre and count are rebuilt from what stays. An emptied exclusive
+  signature is not deleted: it is the plug's, its centre shows 0, and the next confirmation sets it. A confirmation never makes a new signature only because a
   stored centre drifted: it first looks at the confirmed events behind each centre of its plug, then at a signature with
   none, and only then starts a new one (a new component).
 - **Automatic merge.** Several signatures that are the same component are merged, never across two different plugs,
@@ -119,8 +126,10 @@ drum motor (≈ 250–300 W pulses) and a pump; a kettle is one heater.
   the times shifted by ±1 hour (a dense small load is „together” with everything by chance). The survivor is the
   user-named one, else the plug-linked one, else the one with more events; the absorbed signature's events and all its
   runs move to it. An exclusive signature takes part only with another signature of the same plug, both with events the plug
-  confirmed. A merge by hand stays possible: the events the user brings in take the user's label, so the next
-  re-clustering does not undo it; what the signature caught before is not confirmed by that merge.
+  confirmed. A merge by hand stays possible: the events the user brings in take the user's label with the appliance's name,
+  so the next re-clustering does not undo it; what the signature caught before is not confirmed by that merge. Being
+  the user's labels, those events train the classifier, where they can form a class with the appliance's name; a prediction of
+  it counts as no label (above).
 - **The „sheet”** of a signature (ΔP mean ± deviation, ΔQ, power factor, transient or „unknown n of m”, typical run
   length with percentiles, a 24-bar histogram of hours, plug share, energy over 7 days) is computed on demand from the
   events and runs, by the same function that feeds the automatic merge, so what the user sees is what the rule used.
@@ -171,9 +180,9 @@ for 1–7 minutes) have the same step, so they fall into one signature. What dif
   compatible one (a band of its own must start at zero and end at the limit or below it: a band of 50–100 s is another
   component), otherwise to a new one named by the user. T ends at the limit, S starts there unless it has a band of
   its own. Signatures and moves are written in one transaction. If S is measured by a plug so is T, even if the plug cannot label its pulses (section 7): a split moves
-  energy between two names and must not take it out of the plug's side of the balance. A split by hand of an exclusive
-  signature is the user's decision and stands: its events keep the plug's label and stay at the re-clustering. New pulses the
-  plug cannot label go to neither side.
+  energy between two names and must not take it out of the plug's side of the balance. In a split by hand of an exclusive
+  signature the events the plug confirmed keep its label and stay at the re-clustering; those it did not confirm leave at
+  the next one, on either side. New pulses the plug cannot label go to neither side.
 - **Waiting in one place.** Two sides of a split can have the same centre, so „the nearest” would give a switch-on to one
   and its switch-off to the other, and the run would never pair. Every new event near such a pair therefore goes to S; the
   run's duration sends it across when it closes. So a pulse still running counts under S („Acum pornite”,

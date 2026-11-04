@@ -42,6 +42,15 @@ public sealed record Plug(
     public bool TeachesNilm => IsPolled && Role == PlugRole.Plug && !KasaMonitor.Core.Nilm.PlugNilmStates.IsIgnored(NilmState);
 
     /// <summary>
+    /// Its changes label appliance events: it teaches the detection, or it has a single appliance, which it explains
+    /// completely whatever its state of learning (that state speaks only of the training, which it stays out of).
+    /// </summary>
+    public bool LabelsNilmEvents => TeachesNilm || (IsPolled && Role == PlugRole.Plug && SingleAppliance);
+
+    /// <summary>Its labels do not count for the plug rule and the profiles: excluded from learning, unless it has a single appliance.</summary>
+    public bool IgnoredForLabels => KasaMonitor.Core.Nilm.PlugNilmStates.IsIgnored(NilmState) && !SingleAppliance;
+
+    /// <summary>
     /// „Un singur aparat pe priză” (<see cref="SingleAppliance"/>): the name of that appliance — <see cref="ApplianceName"/>,
     /// or the alias when none was given; null for a plug with several (or unknown) consumers.
     /// </summary>

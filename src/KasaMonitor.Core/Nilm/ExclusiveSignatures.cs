@@ -24,12 +24,10 @@ public static class ExclusiveSignatures
         e.LabelPlugId == plug && e.Source is EventLabelSource.AutoPlug or EventLabelSource.DurationRule;
 
     /// <summary>
-    /// What stays in a signature exclusive to <paramref name="plug"/>: what the plug confirmed, what the user labelled, and
-    /// what a duration rule put there. That rule refuses an unconfirmed event since 0.13.1 (<see cref="DurationBands.Target"/>),
-    /// so the unconfirmed ones left come from „împarte după durată”, a decision of the user.
+    /// What stays in a signature exclusive to <paramref name="plug"/>: what the plug confirmed (a run moved or split by its
+    /// duration keeps the plug's label) and what the user labelled. An event moved by a duration without that label leaves.
     /// </summary>
-    public static bool Belongs(MeterEvent e, Guid plug) =>
-        e.Source is EventLabelSource.User or EventLabelSource.DurationRule || ConfirmedBy(e, plug);
+    public static bool Belongs(MeterEvent e, Guid plug) => e.Source == EventLabelSource.User || ConfirmedBy(e, plug);
 
     /// <summary>
     /// The signature an event waits in (<see cref="DurationBands.Canonical"/>), unless that is an exclusive one the event

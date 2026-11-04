@@ -70,7 +70,7 @@ public class ExclusiveSignatureTests
     [InlineData(EventLabelSource.None, false, false)]
     [InlineData(EventLabelSource.None, true, false)]
     [InlineData(EventLabelSource.DurationRule, true, true)]
-    [InlineData(EventLabelSource.DurationRule, false, true)]
+    [InlineData(EventLabelSource.DurationRule, false, false)]
     public void WhatBelongsInTheSignature(EventLabelSource source, bool byThePlug, bool belongs) =>
         ExclusiveSignatures.Belongs(E(source: source, plug: byThePlug ? Fridge : Other), Fridge).Should().Be(belongs);
 
@@ -79,7 +79,7 @@ public class ExclusiveSignatureTests
     {
         ExclusiveSignatures.ConfirmedBy(Confirmed(), Fridge).Should().BeTrue();
         ExclusiveSignatures.ConfirmedBy(E(source: EventLabelSource.DurationRule, plug: Fridge), Fridge).Should().BeTrue();
-        ExclusiveSignatures.ConfirmedBy(E(source: EventLabelSource.DurationRule), Fridge).Should().BeFalse("only the user's split can leave such an event there");
+        ExclusiveSignatures.ConfirmedBy(E(source: EventLabelSource.DurationRule), Fridge).Should().BeFalse("moved by a duration, never seen by the plug");
         ExclusiveSignatures.ConfirmedBy(E(source: EventLabelSource.User), Fridge).Should().BeFalse();
         ExclusiveSignatures.ConfirmedBy(E(source: EventLabelSource.AutoPlug, plug: Other), Fridge).Should().BeFalse();
     }
@@ -179,6 +179,24 @@ public class ExclusiveSignatureTests
         ExclusiveSignatures.PlugSignature(at60, Fridge, new[] { drifted }, new[] { E(37), E(-37) }, none).Should().Be((1L, true), "nothing confirmed: it takes this one as its first");
         ExclusiveSignatures.PlugSignature(at60, Fridge, new[] { Sig(1, 39, plug: Fridge, count: 0) }, Array.Empty<MeterEvent>(), none).Should().Be((1L, true), "emptied");
         ExclusiveSignatures.PlugSignature(at60, Fridge, new[] { drifted }, Array.Empty<MeterEvent>(), new HashSet<long> { 1 }).Should().BeNull("created for another component of this same batch");
+    }
+
+    /// <summary>Measured in production: a plug with a single appliance, excluded from learning by hand before it was marked, labelled nothing.</summary>
+    [Theory]
+    [InlineData(PlugNilmState.Auto, false, true, false, null)]
+    [InlineData(PlugNilmState.IgnoredManual, false, false, true, "exclusă din învățare")]
+    [InlineData(PlugNilmState.IgnoredAuto, false, false, true, "exclusă automat din învățare (zgomotoasă)")]
+    [InlineData(PlugNilmState.Auto, true, true, false, null)]
+    [InlineData(PlugNilmState.IgnoredManual, true, true, false, "etichetează, nu antrenează modelul")]
+    [InlineData(PlugNilmState.IgnoredAuto, true, true, false, "etichetează, nu antrenează modelul")]
+    public void APlugWithASingleAppliance_LabelsWhateverItsStateOfLearning_AndStaysOutOfTheTraining(PlugNilmState state, bool single, bool labels, bool ignoredForLabels, string? badge)
+    {
+        var plug = new Plug(Fridge, "aabbccddee00", IPAddress.Loopback, "Priza", false, "", "", "", "", T0, T0, false, null, NilmState: state, SingleAppliance: single);
+        plug.LabelsNilmEvents.Should().Be(labels);
+        plug.IgnoredForLabels.Should().Be(ignoredForLabels);
+        plug.ExcludedFromTraining.Should().Be(single || PlugNilmStates.IsIgnored(state), "the training stays out of it");
+        PlugNilmStates.Badge(state, single).Should().Be(badge);
+        (plug with { Role = PlugRole.MainMeter }).LabelsNilmEvents.Should().BeFalse("a meter measures more than one appliance");
     }
 
     [Fact]

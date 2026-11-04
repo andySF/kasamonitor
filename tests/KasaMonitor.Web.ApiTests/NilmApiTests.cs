@@ -513,6 +513,7 @@ public class NilmApiTests(NilmApiFactory app) : IClassFixture<NilmApiFactory>
         before.Alias.Should().Be("Priza bucatarie");
         before.Single.Should().BeFalse();
         before.NilmState.Should().Be("Auto");
+        before.LabelsEvents.Should().BeTrue();
 
         var url = $"{Api}/plugs/{plug}/appliance";
         using (var outside = app.Client(NilmApiFactory.PublicIp))
@@ -535,6 +536,19 @@ public class NilmApiTests(NilmApiFactory app) : IClassFixture<NilmApiFactory>
         var cleared = (await (await client.PostAsJsonAsync(url, new { single = false })).Content.ReadFromJsonAsync<NilmApi.PlugDto>())!;
         cleared.Single.Should().BeFalse();
         cleared.Category.Should().Be("fridge", "no category: unchanged");
+
+        // Excluded from learning: it no longer labels, unless it has a single appliance. The state itself stays as stored.
+        await app.Repo(async (_, sp) =>
+        {
+            await sp.GetRequiredService<IPlugRepository>().SetNilmStateAsync(plug, PlugNilmState.IgnoredManual, CancellationToken.None);
+            return true;
+        });
+        var excluded = (await client.GetFromJsonAsync<List<NilmApi.PlugDto>>($"{Api}/plugs"))!.Single(p => p.Id == plug);
+        excluded.NilmState.Should().Be("IgnoredManual");
+        excluded.LabelsEvents.Should().BeFalse();
+        var single = (await (await client.PostAsJsonAsync(url, new { name = "Frigider", single = true })).Content.ReadFromJsonAsync<NilmApi.PlugDto>())!;
+        single.NilmState.Should().Be("IgnoredManual");
+        single.LabelsEvents.Should().BeTrue();
     }
 
     [Fact]

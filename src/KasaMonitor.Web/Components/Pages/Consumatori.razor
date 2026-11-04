@@ -425,13 +425,14 @@ else
             <div class="text-secondary mb-2">
                 O priză care se potrivește cu peste @PlugNilmStates.MaxMatchesPerHour evenimente într-o oră (o sarcină variabilă, ex. un UPS) e exclusă automat:
                 etichetele ei nu se mai pun și nu intră în antrenarea modelului. Poți anula excluderea sau exclude o priză oricând (și din pagina Dispozitive).
+                O priză cu un singur aparat etichetează mereu și nu antrenează modelul.
             </div>
             <div class="d-flex flex-wrap gap-2">
                 @foreach (var p in _overview.Plugs)
                 {
                     var ignored = PlugNilmStates.IsIgnored(p.State);
-                    <span class="badge @(ignored ? "text-bg-warning" : "text-bg-light border") d-inline-flex align-items-center gap-1" title="@(PlugNilmStates.Badge(p.State) ?? (p.SingleAppliance ? "un singur aparat pe priză: etichetează evenimentele, nu antrenează modelul" : "folosită la învățare"))">
-                        @p.Alias@(p.State == PlugNilmState.IgnoredAuto ? " (exclusă automat)" : p.State == PlugNilmState.IgnoredManual ? " (exclusă)" : p.SingleAppliance ? " (un singur aparat)" : "")
+                    <span class="badge @(ignored && !p.SingleAppliance ? "text-bg-warning" : "text-bg-light border") d-inline-flex align-items-center gap-1" title="@(p.SingleAppliance ? "un singur aparat pe priză: etichetează evenimentele, nu antrenează modelul" : PlugNilmStates.Badge(p.State) ?? "folosită la învățare")">
+                        @p.Alias@(p.SingleAppliance ? " (un singur aparat)" : p.State == PlugNilmState.IgnoredAuto ? " (exclusă automat)" : p.State == PlugNilmState.IgnoredManual ? " (exclusă)" : "")
                         <button class="btn btn-link btn-sm p-0 ms-1" @onclick="() => SetPlugAsync(p.PlugId, ignored ? PlugNilmState.AlwaysUse : PlugNilmState.IgnoredManual)" disabled="@Blocked"
                                 title="@(ignored ? "Anulează excluderea (nu se mai exclude automat)" : "Exclude din învățare")"><i class="bi @(ignored ? "bi-arrow-counterclockwise" : "bi-x-circle")"></i></button>
                     </span>

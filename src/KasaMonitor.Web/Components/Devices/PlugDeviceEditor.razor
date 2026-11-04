@@ -48,9 +48,16 @@ else
                 <div class="form-check form-switch mb-1" title="Schimbările prizei etichetează evenimentele contorului general și antrenează modelul (pagina Consumatori)">
                     <input class="form-check-input" type="checkbox" id="nilm-@p.Id" checked="@(!nilmIgnored)" @onchange="e => SetNilmAsync(p, e.Value is true)" />
                     <label class="form-check-label" for="nilm-@p.Id">învățare consumatori</label>
-                    @if (KasaMonitor.Core.Nilm.PlugNilmStates.Badge(p.NilmState) is { } nilmBadge)
+                    @if (KasaMonitor.Core.Nilm.PlugNilmStates.Badge(p.NilmState, p.SingleAppliance) is { } nilmBadge)
                     {
-                        <span class="badge text-bg-warning ms-1" title="O priză cu sarcină variabilă (ex. UPS) se potrivește cu prea multe evenimente; bifează „învățare consumatori” ca să anulezi">@nilmBadge</span>
+                        @if (p.SingleAppliance)
+                        {
+                            <span class="badge text-bg-light border ms-1" title="O priză cu un singur aparat etichetează evenimentele indiferent de această setare și nu intră în antrenarea modelului">@nilmBadge</span>
+                        }
+                        else
+                        {
+                            <span class="badge text-bg-warning ms-1" title="O priză cu sarcină variabilă (ex. UPS) se potrivește cu prea multe evenimente; bifează „învățare consumatori” ca să anulezi">@nilmBadge</span>
+                        }
                     }
                 </div>
                 <div class="form-check form-switch mb-1" title="Pe priză e un singur aparat (ex. frigiderul): evenimentele contorului confirmate de priză primesc numele aparatului și nu intră în antrenarea modelului ML; aliasul prizei rămâne">

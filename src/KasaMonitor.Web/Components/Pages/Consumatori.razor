@@ -386,12 +386,13 @@ else
             <code>kasa_*</code>), așa că nu apar în „Acum pornite”, în energia detectată și nici în <code>kasa_appliance_*</code>. Redenumirea nu schimbă legătura cu priza.
             O priză bifată „un singur aparat pe priză” (pagina Dispozitive) își leagă semnătura de la primul eveniment confirmat, cu numele și categoria aparatului
             (insigna <span class="badge text-bg-info">priză cu un singur aparat</span>); evenimentele ei nu intră în antrenarea modelului ML.
+            Rândul ei vine din priză: porniri, putere, durată și repetare, în fereastra de @_overview.Settings.ClusterWindowDays zile.
         </div>
         @if (_overview.PlugMeasured.Count > 0)
         {
             <div class="table-responsive">
                 <table class="table table-sm align-middle mb-0 small">
-                    <thead class="table-light"><tr><th>Nume</th><th>Priza</th><th class="text-end">ΔP</th><th class="text-end">Evenim.</th><th>Ultima</th></tr></thead>
+                    <thead class="table-light"><tr><th>Nume</th><th>Priza</th><th class="text-end">ΔP</th><th class="text-end">Evenim. / porniri</th><th class="text-end">Durată</th><th class="text-end">Se repetă la</th><th>Ultima</th></tr></thead>
                     <tbody>
                         @foreach (var r in _overview.PlugMeasured)
                         {
@@ -408,9 +409,22 @@ else
                                         <span class="badge text-bg-info ms-1" title="Pe priză e un singur aparat („@measuredBy.ApplianceName”): evenimentele confirmate de ea sunt explicate complet și nu intră în antrenarea modelului ML">priză cu un singur aparat</span>
                                     }
                                 </td>
-                                <td class="text-end">@s.MeanDeltaP.ToString("0") W</td>
-                                <td class="text-end">@s.Count</td>
-                                <td class="text-nowrap">@(s.LastSeenUtc is { } ls ? UiFormat.FullLocal(ls) : "—")</td>
+                                @if (r.FromPlug is { } run)
+                                {
+                                    <td class="text-end" title="Nivelul median al rulărilor măsurate de priză">@((run.MeanPowerW ?? s.MeanDeltaP).ToString("0")) W</td>
+                                    <td class="text-end" title="Porniri măsurate de priză; semnătura are @s.Count evenimente confirmate">@run.Starts porniri</td>
+                                    <td class="text-end text-nowrap">@(run.Repetition.Durations.Count > 0 ? UiFormat.DurationRo(run.Repetition.Durations.P50) : "—")</td>
+                                    <td class="text-end text-nowrap">@(run.Repetition.Intervals.Count > 0 ? UiFormat.DurationRo(run.Repetition.Intervals.P50) : "—")</td>
+                                    <td class="text-nowrap">@(run.LastStartUtc is { } lastStart ? UiFormat.FullLocal(lastStart) : "—")</td>
+                                }
+                                else
+                                {
+                                    <td class="text-end">@s.MeanDeltaP.ToString("0") W</td>
+                                    <td class="text-end">@s.Count</td>
+                                    <td class="text-end">—</td>
+                                    <td class="text-end">—</td>
+                                    <td class="text-nowrap">@(s.LastSeenUtc is { } ls ? UiFormat.FullLocal(ls) : "—")</td>
+                                }
                             </tr>
                         }
                     </tbody>

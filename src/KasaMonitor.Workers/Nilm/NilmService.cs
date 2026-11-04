@@ -99,9 +99,10 @@ public sealed record NilmMetricSnapshot(IReadOnlyList<NilmMetricItem> Appliances
 /// <summary>
 /// One signature on /consumatori, with its energy today, over 7 and over 30 days. <see cref="PossiblePlug"/>: a plug that
 /// labelled some of its events but not enough to link it (fewer than 3, or under 60 %), shown as „posibil &lt;priză&gt;”.
+/// <see cref="FromPlug"/>: a signature of a plug with a single appliance, whose row shows what the plug measured.
 /// </summary>
 public sealed record SignatureRow(ApplianceSignature Signature, double TodayWh, double Last30DaysWh, double? ActiveW, string? PossiblePlug = null,
-    int UncertainRuns = 0, double Last7DaysWh = 0);
+    int UncertainRuns = 0, double Last7DaysWh = 0, PlugRunSummary? FromPlug = null);
 
 /// <summary>One event of the last 24 h on /consumatori.</summary>
 public sealed record EventRow(MeterEvent Event, string? SignatureName);
@@ -201,7 +202,9 @@ public sealed class NilmBusyException() : Exception("Procesare în curs (istoric
 /// <item>the signature: the predicted one for a model label; else the nearest anchor (labelled by the user or linked to a
 /// plug) within 1.5 × eps; else the nearest other signature within eps; else a new "Necunoscut #n"; a signature of a plug
 /// with a single appliance takes only what that plug confirmed (<see cref="ExclusiveSignatures"/>);</item>
-/// <item>runs opened/closed (<see cref="ApplianceRunBuilder"/>), events and runs written in one transaction each.</item>
+/// <item>runs opened/closed (<see cref="ApplianceRunBuilder"/>), events and runs written in one transaction each; the runs of a
+/// plug with a single appliance come from the plug instead (<see cref="PlugTimeline"/>), and an event that only repeats its step
+/// is marked afterwards (<see cref="PlugShadows"/>).</item>
 /// </list>
 /// Every night at <see cref="NightlyAt"/> (local), at startup when the last re-clustering is older than
 /// <see cref="ReclusterMaxAge"/>, and on „Regrupează acum”, the newest <see cref="SignatureClusterer.MaxEvents"/> events of
@@ -210,7 +213,7 @@ public sealed class NilmBusyException() : Exception("Procesare în curs (istoric
 /// outside the processing lock. Events and runs are never deleted (0.9.2: unlimited, the history of /history; the raw live
 /// samples they come from keep their own retention).
 /// </summary>
-public sealed class NilmService : BackgroundService
+public sealed partial class NilmService : BackgroundService
 {
     /// <summary>
     /// How long an event waits before it is labelled: the plug window after the event (20 s) plus two 10-second polls, so the plug readings
@@ -476,6 +479,7 @@ public sealed class NilmService : BackgroundService
             }
             now = _clock();
             await ProcessRipeAsync(now, await PlugsForRipeAsync(now, ct), ct);
+            await StepPlugsAsync(now, ct);
             await SaveRunsAsync(_runs.Expire(now), ct);
 
             if (now - _lastMarker >= MarkerInterval) await SaveMarkerAsync(ct);
@@ -787,9 +791,10 @@ public sealed class NilmService : BackgroundService
         }
 
         var runs = new Dictionary<long, ApplianceRun>();
+        var fromPlugs = _signatures.Where(s => ExclusiveSignatures.IsExclusive(s, exclusive)).Select(s => s.Id).ToHashSet();
         foreach (var e in stored)
         {
-            var change = _runs.Add(e);
+            var change = _runs.Add(ForTheRuns(e, fromPlugs));
             if (change.Opened is { } opened) runs[opened.StartEventId] = opened;
             foreach (var c in change.Closed) runs[c.StartEventId] = c;
         }
@@ -802,6 +807,13 @@ public sealed class NilmService : BackgroundService
         await RefreshSignaturesAsync(repo, stored.Select(e => e.SignatureId!.Value).Concat(moves.SelectMany(m => new[] { m.FromSignatureId, m.TargetId })).Distinct().ToList(), ct);
         await ConsumeMarksAsync(sp, repo, stored, ct);
     }
+
+    /// <summary>
+    /// An event as the run builder sees it: in a signature whose runs come from its plug it opens and pairs nothing, but a
+    /// switch-off still brings the house down for the runs of the others.
+    /// </summary>
+    private static MeterEvent ForTheRuns(MeterEvent e, IReadOnlySet<long> fromPlugs) =>
+        e.SignatureId is { } sid && fromPlugs.Contains(sid) ? e with { SignatureId = null } : e;
 
     /// <summary>
     /// The closed runs that left the band of their signature and have somewhere to go (<see cref="DurationBands.Target"/>):
@@ -936,7 +948,7 @@ public sealed class NilmService : BackgroundService
                     _applianceWh.AddOrUpdate(r.SignatureId, wh, (_, v) => v + wh);
             }
         }
-        _openSnapshot = _runs.Open();
+        _openSnapshot = OpenRuns();
     }
 
     /// <summary>The run's energy from the house power when no other event happened during it (<see cref="ApplianceEnergy.Corrected"/>).</summary>
@@ -1100,6 +1112,7 @@ public sealed class NilmService : BackgroundService
                 await LoadPlugsAsync(ct);   // a page can ask for this before the first pass of the service
                 using var scope = _scopes.CreateScope();
                 var repo = scope.ServiceProvider.GetRequiredService<INilmRepository>();
+                await RecalculateShadowsAsync(scope.ServiceProvider, nowUtc, ct);
                 events = await repo.ListNewestEventsAsync(WindowStart(nowUtc), nowUtc, SignatureClusterer.MaxEvents, ct);
                 signatures = (await repo.ListSignaturesAsync(ct)).ToDictionary(s => s.Id);
             }
@@ -1198,7 +1211,7 @@ public sealed class NilmService : BackgroundService
         var before = free.ToDictionary(e => e.Id, e => e.SignatureId);
         var changed = assignment.Where(kv => before[kv.Key] != kv.Value).ToDictionary(kv => kv.Key, kv => kv.Value);
         await repo.SetSignaturesAsync(changed, ct);
-        var strays = await ReleaseBeyondTheWindowAsync(repo, signatures.Values, exclusive, ct);
+        await ReleaseBeyondTheWindowAsync(repo, signatures.Values, exclusive, ct);
 
         _signatures = (await repo.ListSignaturesAsync(ct)).ToList();
         await RefreshSignaturesAsync(repo, _signatures.Select(s => s.Id).ToList(), ct);
@@ -1208,11 +1221,6 @@ public sealed class NilmService : BackgroundService
             await repo.DeleteSignatureAsync(s.Id, ct);
             _signatures.Remove(s);
         }
-        // The rebuild below covers the window. What left from before it takes its old runs along, and nothing rebuilds them
-        // elsewhere: those events have no signature now. A run lasts at most MaxOpen.
-        if (strays is { } oldest && oldest < WindowStart(nowUtc))
-            await RebuildRunsAsync(sp, _signatures.Where(s => ExclusiveSignatures.IsExclusive(s, exclusive)).Select(s => s.Id).ToList(), oldest - ApplianceRunBuilder.MaxOpen, nowUtc, ct);
-
         var merges = await AutoMergeAsync(repo, nowUtc, ct);
         var merged = merges.Count;
 
@@ -1226,14 +1234,15 @@ public sealed class NilmService : BackgroundService
     }
 
     /// <summary>
-    /// An event the re-clustering never moves: labelled by the user, moved by its run's duration, or labelled by the plug
-    /// its signature is linked to.
+    /// An event the re-clustering never moves: labelled by the user, moved by its run's duration, a shadow of a plug (it has no
+    /// signature, by design), or labelled by the plug its signature is linked to.
     /// The other events of a labelled signature go through the anchors again (they stay when within its radius), so a
     /// signature's centre cannot ratchet away by keeping everything it once caught. In a signature exclusive to its plug
     /// only what belongs there is pinned (<see cref="ExclusiveSignatures.Belongs"/>).
     /// </summary>
     private static bool IsPinned(MeterEvent e, IReadOnlyDictionary<long, ApplianceSignature> signatures, IReadOnlySet<Guid> exclusive)
     {
+        if (e.Source == EventLabelSource.PlugShadow) return true;
         var signature = e.SignatureId is { } sid ? signatures.GetValueOrDefault(sid) : null;
         if (signature?.PlugId is { } linked && exclusive.Contains(linked)) return ExclusiveSignatures.Belongs(e, linked);
         return e.Source is EventLabelSource.User or EventLabelSource.DurationRule || (e.LabelPlugId is { } plug && signature?.PlugId == plug);
@@ -1243,18 +1252,16 @@ public sealed class NilmService : BackgroundService
     /// What an exclusive signature still holds that does not belong there after the re-clustering: events older than the
     /// window or than the newest <see cref="SignatureClusterer.MaxEvents"/>, which the job does not read. They leave without
     /// a signature (DBSCAN stops at the same limits). Those inside the window but past the newest 20,000 would otherwise keep
-    /// feeding the centre; those older than the window do not feed it, but would stay on the sheet and in the runs of the
-    /// signature. Returns the time of the oldest one.
+    /// feeding the centre; those older than the window do not feed it, but would stay on the sheet of the signature. The runs
+    /// of the signature do not hang on them any more (<see cref="RebuildPlugRunsAsync"/>).
     /// </summary>
-    private static async Task<DateTimeOffset?> ReleaseBeyondTheWindowAsync(INilmRepository repo, IEnumerable<ApplianceSignature> signatures, IReadOnlySet<Guid> exclusive, CancellationToken ct)
+    private static async Task ReleaseBeyondTheWindowAsync(INilmRepository repo, IEnumerable<ApplianceSignature> signatures, IReadOnlySet<Guid> exclusive, CancellationToken ct)
     {
         var plugOf = signatures.Where(s => ExclusiveSignatures.IsExclusive(s, exclusive)).ToDictionary(s => s.Id, s => s.PlugId!.Value);
-        if (plugOf.Count == 0) return null;
+        if (plugOf.Count == 0) return;
         var strays = (await repo.ListEventsBySignaturesAsync(plugOf.Keys, DateTimeOffset.UnixEpoch, ct))
             .Where(e => !ExclusiveSignatures.Belongs(e, plugOf[e.SignatureId!.Value])).ToList();
-        if (strays.Count == 0) return null;
-        await repo.SetSignaturesAsync(strays.ToDictionary(e => e.Id, _ => (long?)null), ct);
-        return strays[0].TsUtc;   // the list is oldest first
+        if (strays.Count > 0) await repo.SetSignaturesAsync(strays.ToDictionary(e => e.Id, _ => (long?)null), ct);
     }
 
     /// <summary>
@@ -1374,21 +1381,38 @@ public sealed class NilmService : BackgroundService
 
     /// <summary>
     /// Deletes and rebuilds the runs of the given signatures (all when null) that started at or after <paramref name="fromUtc"/>
-    /// from their stored events (SQL-filtered by signature); the live run state continues from the result.
+    /// from their stored events (SQL-filtered by signature); the live run state continues from the result. The signatures of a plug
+    /// with a single appliance are rebuilt from the plug's readings (<see cref="RebuildPlugRunsAsync"/>), and their events form no run.
     /// </summary>
     private async Task RebuildRunsAsync(IServiceProvider sp, IReadOnlyCollection<long>? signatureIds, DateTimeOffset fromUtc, DateTimeOffset nowUtc,
         CancellationToken ct)
     {
         var repo = sp.GetRequiredService<INilmRepository>();
-        await repo.DeleteRunsAsync(signatureIds, fromUtc, ct);
+        if (_plugs.Count == 0) await LoadPlugsAsync(ct);
+        var exclusive = ExclusivePlugs;
+        var signatures = await repo.ListSignaturesAsync(ct);
+        var plugsToRebuild = _plugs.Where(p => p.Appliance is not null
+            && (signatureIds is null || signatures.Any(s => s.PlugId == p.Id && signatureIds.Contains(s.Id)))).ToList();
+        foreach (var plug in plugsToRebuild) await RebuildPlugRunsAsync(sp, plug, fromUtc, nowUtc, ct);
+
+        // Read after those: a plug without a signature has one now.
+        var fromPlugs = (await repo.ListSignaturesAsync(ct)).Where(s => ExclusiveSignatures.IsExclusive(s, exclusive)).Select(s => s.Id).ToHashSet();
+        var fromEvents = signatureIds?.Where(id => !fromPlugs.Contains(id)).ToList();
+        if (fromEvents is { Count: 0 })
+        {
+            _runs = new ApplianceRunBuilder(await repo.ListOpenRunsAsync(ct));
+            _openSnapshot = OpenRuns();
+            return;
+        }
+        await repo.DeleteRunsAsync(fromEvents, fromUtc, ct, exceptSignatureIds: fromPlugs);
         _runs = new ApplianceRunBuilder(await repo.ListOpenRunsAsync(ct));
-        var events = signatureIds is null
+        var events = fromEvents is null
             ? await repo.ListEventsAsync(fromUtc, nowUtc, ct)
-            : await repo.ListEventsBySignaturesAsync(signatureIds, fromUtc, ct);
+            : await repo.ListEventsBySignaturesAsync(fromEvents, fromUtc, ct);
         var runs = new Dictionary<long, ApplianceRun>();
         foreach (var e in events.Where(e => e.SignatureId is not null))
         {
-            var change = _runs.Add(e);
+            var change = _runs.Add(ForTheRuns(e, fromPlugs));
             if (change.Opened is { } opened) runs[opened.StartEventId] = opened;
             foreach (var c in change.Closed) runs[c.StartEventId] = c;
         }
@@ -1398,7 +1422,7 @@ public sealed class NilmService : BackgroundService
         // Rebuilt runs are not new energy: keep the cumulative metric as it is.
         var saved = await repo.SaveRunsAsync(await CorrectAllAsync(sp, runs.Values.ToList(), nowUtc - CorrectRecent, ct), ct);
         foreach (var r in saved.Where(r => r.IsOpen)) _runs.Track(r);
-        _openSnapshot = _runs.Open();
+        _openSnapshot = OpenRuns();
         await repo.MoveRunsAsync(moves, ct);
         if (moves.Count > 0) await RefreshSignaturesAsync(repo, moves.SelectMany(m => new[] { m.FromSignatureId, m.TargetId }).Distinct().ToList(), ct);
     }
@@ -1540,7 +1564,16 @@ public sealed class NilmService : BackgroundService
         var shown = listed.Skip(page * PageSize).Take(PageSize).ToList();
         var rare = rows.Count(r => !SignatureListing.ShownByDefault(r.Signature, r.PossiblePlug is not null));
         var cleanable = rows.Count(r => SignatureListing.IsRareAndOld(r.Signature, now, r.PossiblePlug is not null));
-        var measured = SignatureSorting.Sorted(signatures.Where(s => s.ConfirmedByPlug).Select(Row),
+        var plugs = _plugs.Count > 0 ? _plugs : await scope.ServiceProvider.GetRequiredService<IPlugRepository>().ListAllAsync(ct);
+        // The row of a signature of a plug with a single appliance shows what the plug measured, read here: Count stays its events.
+        var exclusive = ExclusiveSignatures.Plugs(plugs);
+        var window = WindowStart(now);
+        var measuredRows = new List<SignatureRow>();
+        foreach (var s in signatures.Where(s => s.ConfirmedByPlug))
+            measuredRows.Add(ExclusiveSignatures.IsExclusive(s, exclusive)
+                ? Row(s) with { FromPlug = PlugRunSummary.Of(await repo.ListRunsBySignatureAsync(s.Id, window, ct), window, now) }
+                : Row(s));
+        var measured = SignatureSorting.Sorted(measuredRows,
             r => r.Signature, r => r.TodayWh, r => r.Last7DaysWh, r => r.Last30DaysWh, SignatureSorting.Default, SignatureSorting.DefaultDescending);
 
         var names = signatures.ToDictionary(s => s.Id, s => s.Name);
@@ -1550,7 +1583,6 @@ public sealed class NilmService : BackgroundService
         var events = (await repo.ListEventsPageAsync(now.AddHours(-24), now, eventsPage * PageSize, PageSize, ct))
             .Select(e => new EventRow(e, e.SignatureId is { } sid && names.TryGetValue(sid, out var n) ? n : null)).ToList();
 
-        var plugs = _plugs.Count > 0 ? _plugs : await scope.ServiceProvider.GetRequiredService<IPlugRepository>().ListAllAsync(ct);
         var (labeled, classes) = await repo.CountLabeledAsync(TrainingExcluded(plugs), ct);
         var main = plugs.FirstOrDefault(p => p.Role == PlugRole.MainMeter && !p.IsArchived)?.Alias;
         var plugRows = PlugRows(plugs);
@@ -1642,6 +1674,16 @@ public sealed class NilmService : BackgroundService
             await LoadPlugsAsync(ct);
             var linked = (await repo.ListSignaturesAsync(ct)).Where(s => s.PlugId == plugId).Select(s => s.Id).ToList();
             await RefreshSignaturesAsync(repo, linked, ct);
+            if (before.SingleAppliance && !single)
+            {
+                // Its runs come from the events again.
+                _plugTracks.Remove(plugId);
+                await RebuildRunsAsync(sp, linked, WindowStart(_clock()), _clock(), ct);
+            }
+            else if (!before.SingleAppliance && single)
+            {
+                _lastPlugStep = DateTimeOffset.MinValue;   // the next pass takes its runs over
+            }
             if (before.SingleAppliance != single && _current.MlEnabled) _trainDue = true;
             var after = _plugs.First(p => p.Id == plugId);
             _log.LogInformation("NILM: plug {Alias}: single appliance {Single} ({Name}, {Category})", after.Alias, after.SingleAppliance,

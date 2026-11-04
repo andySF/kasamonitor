@@ -7,6 +7,8 @@ public interface ISampleRepository
     Task InsertAsync(Sample sample, CancellationToken ct);
     Task InsertManyAsync(IReadOnlyList<Sample> samples, CancellationToken ct);
     Task<IReadOnlyList<Sample>> ListByPlugAsync(Guid plugId, DateTimeOffset fromUtc, DateTimeOffset toUtc, CancellationToken ct);
+    /// <summary>The time of the plug's oldest reading with a power, or null.</summary>
+    Task<DateTimeOffset?> FirstReadingTsAsync(Guid plugId, CancellationToken ct);
     Task<int> CountOlderThanAsync(DateTimeOffset cutoffUtc, CancellationToken ct);
 
     /// <summary>Mean power (W) of the online samples with a power value per plug in [from, to), for the given plugs, in one grouped query.</summary>

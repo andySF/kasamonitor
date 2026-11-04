@@ -213,6 +213,24 @@ public class NilmApiTests(NilmApiFactory app) : IClassFixture<NilmApiFactory>
     }
 
     [Fact]
+    public async Task Events_ShowAShadowOfAPlug_AndTheUserCanLabelIt()
+    {
+        var events = await app.AddEventsAsync(null, 60);
+        var plug = Guid.NewGuid();
+        await app.Repo((r, _) => r.SetPlugShadowsAsync(new Dictionary<long, Guid> { [events[0].Id] = plug }, Array.Empty<long>(), CancellationToken.None).ContinueWith(_ => true));
+        var at = events[0].TsUtc;
+        using var client = app.Client();
+
+        var url = $"{Api}/events?from={Uri.EscapeDataString(at.AddSeconds(-1).ToString("O"))}&to={Uri.EscapeDataString(at.AddSeconds(1).ToString("O"))}";
+        var dto = (await client.GetFromJsonAsync<List<NilmApi.EventDto>>(url))!.Should().ContainSingle().Subject;
+
+        dto.Source.Should().Be("PlugShadow");
+        dto.SignatureId.Should().BeNull();
+        dto.SignatureName.Should().BeNull();
+        dto.Label.Should().BeNull();
+    }
+
+    [Fact]
     public async Task Events_RangeAndMinimumStep()
     {
         var events = await app.AddEventsAsync(null, 40, 600, -45, -610);

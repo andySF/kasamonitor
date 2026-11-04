@@ -28,7 +28,7 @@ KasaMonitor.sln
 │                                     tests again, app start-up and /health, the data migration tool
 ├── tools/
 │   ├── KasaMonitor.DataMigration     kasa-migrate: one-off copy of a SQLite kasa.db into SQL Server
-│   └── KasaMonitor.NilmReplay        kasa-nilm-replay: a stored meter series through the event detector, as it is and with a median
+│   └── KasaMonitor.NilmReplay        kasa-nilm-replay: a stored meter series through the event detector, as it is and with a median; a plug's stream through the rules of a single-appliance plug
 └── deploy/                   Dockerfile, the stack (docker-compose.yml), sql/create-database.sql, Prometheus/Grafana provisioning, build script
 ```
 

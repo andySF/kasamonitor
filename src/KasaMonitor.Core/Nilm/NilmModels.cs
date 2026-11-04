@@ -20,6 +20,12 @@ public enum EventLabelSource
     /// signature's centre, not an example of the classifier (ML.NET has no duration among its features).
     /// </summary>
     DurationRule = 4,
+
+    /// <summary>
+    /// The plug's own step seen again by the main meter (<see cref="PlugShadows"/>): no label, no signature, no run;
+    /// <see cref="MeterEvent.LabelPlugId"/> = the plug. Not a confirmation by that plug, never an example of the classifier.
+    /// </summary>
+    PlugShadow = 5,
 }
 
 /// <summary>How the name of a signature was decided (column <c>ApplianceSignatures.LabelSource</c>).</summary>
@@ -44,6 +50,7 @@ public static class NilmSources
         EventLabelSource.User => "user",
         EventLabelSource.Model => "model",
         EventLabelSource.DurationRule => "duration",
+        EventLabelSource.PlugShadow => "plug-shadow",
         _ => "none",
     };
 
@@ -53,6 +60,7 @@ public static class NilmSources
         EventLabelSource.User => "utilizator",
         EventLabelSource.Model => "model ML",
         EventLabelSource.DurationRule => "după durată",
+        EventLabelSource.PlugShadow => "umbră a prizei",
         _ => "—",
     };
 
@@ -261,5 +269,14 @@ public sealed record ApplianceRun(
     double HouseBeforeW = 0,
     RunEndReason EndReason = RunEndReason.Paired)
 {
+    /// <summary>
+    /// <see cref="StartEventId"/> of a run that comes from a plug and has no event behind it (<see cref="PlugTimeline"/>).
+    /// The column has no foreign key and event ids start at 1.
+    /// </summary>
+    public const long NoEvent = 0;
+
     public bool IsOpen => EndUtc is null;
+
+    /// <summary>Measured by a plug with a single appliance, not paired from events: the run builder never touches it.</summary>
+    public bool FromPlug => StartEventId == NoEvent;
 }

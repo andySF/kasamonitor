@@ -63,6 +63,24 @@ public sealed record SignatureProfile(
 /// <param name="EnergyPerSessionWhP50">Median of the energy per session.</param>
 public sealed record RunRepetition(DurationSpread Durations, DurationSpread Intervals, int Sessions, double? PulsesPerSessionP50, double? EnergyPerSessionWhP50);
 
+/// <summary>
+/// The row of a signature whose runs come from its plug (/consumatori): what the plug measured in the window, not what the
+/// signature's events say. Computed when the page asks for it; <see cref="ApplianceSignature.Count"/> stays the number of events.
+/// </summary>
+/// <param name="Starts">Runs from the plug started in the window.</param>
+/// <param name="MeanPowerW">Mean of their median levels; null without one.</param>
+/// <param name="LastStartUtc">The newest of them.</param>
+/// <param name="Repetition">Their durations and repetition (<see cref="SignatureProfiles.Repetition"/>).</param>
+public sealed record PlugRunSummary(int Starts, double? MeanPowerW, DateTimeOffset? LastStartUtc, RunRepetition Repetition)
+{
+    public static PlugRunSummary Of(IEnumerable<ApplianceRun> runs, DateTimeOffset fromUtc, DateTimeOffset nowUtc)
+    {
+        var fromPlug = runs.Where(r => r.FromPlug && r.StartUtc >= fromUtc).ToList();
+        return new PlugRunSummary(fromPlug.Count, fromPlug.Count > 0 ? fromPlug.Average(r => r.PowerW) : null,
+            fromPlug.Count > 0 ? fromPlug.Max(r => r.StartUtc) : null, SignatureProfiles.Repetition(fromPlug, nowUtc));
+    }
+}
+
 public static class SignatureProfiles
 {
     /// <summary>The energy column of the profile covers this many days.</summary>

@@ -22,6 +22,10 @@ public sealed class SampleRepository : ISampleRepository
         await _db.SaveChangesAsync(ct);
     }
 
+    public async Task<DateTimeOffset?> FirstReadingTsAsync(Guid plugId, CancellationToken ct) =>
+        await _db.Samples.AsNoTracking().Where(s => s.PlugId == plugId && s.Online && s.PowerMw != null)
+            .OrderBy(s => s.TimestampUtc).Select(s => (DateTimeOffset?)s.TimestampUtc).FirstOrDefaultAsync(ct);
+
     public async Task<IReadOnlyList<Sample>> ListByPlugAsync(Guid plugId, DateTimeOffset fromUtc, DateTimeOffset toUtc, CancellationToken ct) =>
         await _db.Samples
             .AsNoTracking()

@@ -451,7 +451,7 @@ public sealed class NilmRepository : INilmRepository
         return rows.Select(ToModel).ToList();
     }
 
-    public async Task<int> DeleteRunsAsync(IReadOnlyCollection<long>? signatureIds, DateTimeOffset fromUtc, CancellationToken ct)
+    public async Task<int> DeleteRunsAsync(IReadOnlyCollection<long>? signatureIds, DateTimeOffset fromUtc, CancellationToken ct, IReadOnlyCollection<long>? exceptSignatureIds = null)
     {
         var from = fromUtc.ToUnixTimeSeconds();
         var q = _db.ApplianceRuns.Where(r => r.StartTs >= from);
@@ -460,7 +460,37 @@ public sealed class NilmRepository : INilmRepository
             var ids = signatureIds.ToList();
             q = q.Where(r => ids.Contains(r.SignatureId));
         }
+        if (exceptSignatureIds is { Count: > 0 })
+        {
+            var except = exceptSignatureIds.ToList();
+            q = q.Where(r => !except.Contains(r.SignatureId));
+        }
         return await q.ExecuteDeleteAsync(ct);
+    }
+
+    public async Task SetPlugShadowsAsync(IReadOnlyDictionary<long, Guid> shadows, IReadOnlyCollection<long> released, CancellationToken ct)
+    {
+        if (shadows.Count == 0 && released.Count == 0) return;
+        int shadow = (int)EventLabelSource.PlugShadow, none = (int)EventLabelSource.None;
+        await _db.Database.CreateExecutionStrategy().ExecuteAsync(async () =>
+        {
+            await using var tx = await _db.Database.BeginTransactionAsync(ct);
+            foreach (var group in shadows.GroupBy(kv => kv.Value))
+            {
+                var plug = group.Key;
+                foreach (var chunk in group.Select(kv => kv.Key).Chunk(500))
+                    await _db.MeterEvents.Where(e => chunk.Contains(e.Id)).ExecuteUpdateAsync(u => u
+                        .SetProperty(e => e.Source, shadow)
+                        .SetProperty(e => e.Label, (string?)null)
+                        .SetProperty(e => e.SignatureId, (long?)null)
+                        .SetProperty(e => e.LabelPlugId, (Guid?)plug), ct);
+            }
+            foreach (var chunk in released.Chunk(500))
+                await _db.MeterEvents.Where(e => chunk.Contains(e.Id)).ExecuteUpdateAsync(u => u
+                    .SetProperty(e => e.Source, none)
+                    .SetProperty(e => e.LabelPlugId, (Guid?)null), ct);
+            await tx.CommitAsync(ct);
+        });
     }
 
     public async Task<int> DeleteOlderThanAsync(DateTimeOffset cutoffUtc, CancellationToken ct)

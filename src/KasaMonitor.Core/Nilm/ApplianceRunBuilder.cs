@@ -26,9 +26,10 @@ public sealed class ApplianceRunBuilder
 
     private readonly List<ApplianceRun> _open = new();
 
+    /// <param name="openRuns">The open runs to continue; a run from a plug is not one of them (<see cref="ApplianceRun.FromPlug"/>).</param>
     public ApplianceRunBuilder(IEnumerable<ApplianceRun>? openRuns = null)
     {
-        if (openRuns is not null) _open.AddRange(openRuns.Where(r => r.IsOpen).OrderBy(r => r.StartUtc));
+        if (openRuns is not null) _open.AddRange(openRuns.Where(r => r.IsOpen && !r.FromPlug).OrderBy(r => r.StartUtc));
     }
 
     /// <summary>

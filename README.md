@@ -7,7 +7,7 @@ plugs and energy meters (e.g. Shelly EM Gen3, local JSON-RPC; the only write is 
 with SQL Server, a web UI on port 8910 and a Prometheus `/metrics` endpoint. An optional Prometheus + Grafana stack
 with a ready-made dashboard and alert rules is included.
 
-Version: **0.13.1** (`Directory.Build.props`). Docker image: `duobit/kasamonitor`.
+Version: **0.13.2** (`Directory.Build.props`). Docker image: `duobit/kasamonitor`.
 
 **Requirements:** SQL Server 2019+ (any edition reachable from the Docker host; Express is limited to 10 GB per
 database), a Docker host on the same LAN as the devices (host networking). Up to 0.11 the data were in a SQLite file;
@@ -90,7 +90,7 @@ TP-Link (Tapo app) account in `/settings/tplink` and press **Adaugă** → TP-Li
   in the address) for electricity, gas and boiler, Miele, detected consumers, climate (with heating degree days and the
   energy signature), costs and events; Δ at the same share of the previous period, drill-down, CSV per section; and
   „Rapoarte” on `/centrala` (gas, boiler electricity, heat produced). See [History](#history-history-istoric).
-- **Version in the menu**: „v0.13.1” at the right of the navigation bar; the tooltip shows the commit and the build time.
+- **Version in the menu**: „v0.13.2” at the right of the navigation bar; the tooltip shows the commit and the build time.
 - **Browser errors in the server log**: JavaScript errors and the Blazor error banner are reported to
   `POST /api/client-error` and logged at Warning (category `KasaMonitor.ClientErrors`), so `docker logs` shows them.
 - **HTTP API for the appliance detection** (`/api/nilm/*`, LAN only): list, sheet, label, merge, add to, hide, regroup,
@@ -1395,11 +1395,23 @@ automatically on upgrade (columns `Plugs.SingleAppliance`, `ApplianceName`, `App
 - **Only what the plug confirmed** (since 0.13.1). Such a signature holds only events that plug confirmed and events you put
   there by hand. An event near its centre that the plug did not confirm goes to another signature or to „Necunoscut”, and so
   does a prediction of the model; the automatic merge joins it only with another signature of the same plug. The next
-  regrouping removes what got in before: runs, centre and count are rebuilt from what stays, and an emptied signature stays as
+  regrouping removes what got in before: centre and count are rebuilt from what stays, and an emptied signature stays as
   the plug's until its next confirmation. A merge by hand is still possible (the events you bring in take your label with the
-  appliance's name), and so is a split by duration, where only what the plug confirmed stays. Pulses under ≈ 15 s, which a plug
-  cannot label, leave the signature, and the number of events in „Necunoscut” goes up: both are expected. The plug's own energy
-  does not change, but such a step now counts as detected and is subtracted from the rest of the house as well.
+  appliance's name). Pulses under ≈ 15 s, which a plug cannot label, leave the signature, and the number of events in
+  „Necunoscut” goes up: both are expected.
+- **Runs from the plug** (since 0.13.2). The runs of such a plug come from its own power, never from events: it is on from 20 W, a
+  change must still hold after 5 s, the power of a run is its median level and its energy the integral of the plug. They stand on one
+  signature of the plug (most confirmations, then the lowest id; a new one when it has none), so a merge doubles nothing. If the data stop for
+  more than 70 s, a running run closes as uncertain with the energy measured so far. A split by duration of such a signature finds nothing to
+  move and a band does not act on it. On `/consumatori` its row in „Măsurate de prize” shows the switch-ons, the mean level, the duration and the
+  repetition measured by the plug, over the same window (a fridge with 84 transitions a day shows about 42 switch-ons a day); its sheet shows
+  the runs and its list of events what was confirmed. `GET /api/nilm/signatures` keeps `count` as the events it holds.
+- **Shadows** (since 0.13.2). A main-meter event without a confirmation that is the only candidate of a transition of the plug (the same
+  sign, |ΔP − the plug's step| ≤ 15 W, at most 5 s before it) is the plug's step seen again: it gets the source *umbră a prizei* (`PlugShadow`
+  in `GET /api/nilm/events`), no label and no signature, so it forms no run and is not subtracted from the rest of the house. It is no
+  confirmation and never trains the model. The regrouping does not move it and calculates the shadows again where the plug has data. You
+  can label it like any event. Limit: a small foreign step that happens to be the only candidate leaves „detected” with it (about 15 %
+  of the shadows, estimated). A step that is neither confirmed nor a shadow still counts as detected and is subtracted as well.
 - **Out of the ML model.** Its events are explained completely by the plug, so they are neither examples nor a class
   of the classifier (the training set leaves out the labels of the excluded plugs and of the single-appliance ones).
   The plug is **not** excluded from learning (`NilmIgnored` is untouched): it still labels and links its events, so they
@@ -1565,6 +1577,12 @@ To publish under your own Docker Hub account, change the image name (`-Repo` par
 2. `docker compose -f deploy/docker-compose.yml --env-file kasamonitor.env pull && docker compose -f deploy/docker-compose.yml --env-file kasamonitor.env up -d`
    (Portainer: *Update the stack* with *Re-pull image and redeploy*). New migrations are applied at start-up.
 3. Check `http://<host>:8910/health`, `/dispozitive` (Adaugă → Scanează acum) and `curl -s http://<host>:8910/metrics | grep kasa_online`.
+
+0.13.2 has no migration. The runs of a single-appliance plug are taken over at the first pass after the start: its runs from events are replaced
+from the first stored reading of the plug on (older ones stay), and new ones come from the plug. Shadows of the last 6 hours are marked at once, the
+others at the first regrouping (03:30, at a start when the last one is older than 24 h, or „Regrupează acum”); until then the detected
+energy still holds them. `GET /api/nilm/events` can return the new source `PlugShadow`. `tools/KasaMonitor.NilmReplay` has `--plug-shadows <plug-stream.csv> <events.csv>`, which
+prints these rules' results on your own data.
 
 0.13.1 has no migration. The signature of a single-appliance plug is cleaned at the first regrouping after the upgrade (03:30, at
 a start when the last one is older than 24 h, or „Regrupează acum” on `/consumatori`); until then its count stays as it was, and

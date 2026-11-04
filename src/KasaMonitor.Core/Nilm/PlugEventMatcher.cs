@@ -106,15 +106,20 @@ public static class PlugEventMatcher
     /// row at or before it, if that row is at most <see cref="MaxHold"/> old (a stable level counts once per second, a
     /// ramp only for the seconds it lasted).
     /// </summary>
-    public static List<PlugPowerPoint> Hold(IReadOnlyList<PlugPowerPoint> sorted, DateTimeOffset from, DateTimeOffset to)
+    /// <param name="sorted">The rows, oldest first.</param>
+    /// <param name="from">The first second.</param>
+    /// <param name="to">The last second.</param>
+    /// <param name="maxAge">How old a row may still count; <see cref="MaxHold"/> unless said otherwise.</param>
+    public static List<PlugPowerPoint> Hold(IReadOnlyList<PlugPowerPoint> sorted, DateTimeOffset from, DateTimeOffset to, TimeSpan? maxAge = null)
     {
+        var limit = maxAge ?? MaxHold;
         var list = new List<PlugPowerPoint>();
         var start = new DateTimeOffset(from.UtcTicks + (TimeSpan.TicksPerSecond - from.UtcTicks % TimeSpan.TicksPerSecond) % TimeSpan.TicksPerSecond, TimeSpan.Zero);
         var i = -1;
         for (var s = start; s <= to; s = s.AddSeconds(1))
         {
             while (i + 1 < sorted.Count && sorted[i + 1].TsUtc <= s) i++;
-            if (i >= 0 && s - sorted[i].TsUtc <= MaxHold) list.Add(new PlugPowerPoint(s, sorted[i].PowerW));
+            if (i >= 0 && s - sorted[i].TsUtc <= limit) list.Add(new PlugPowerPoint(s, sorted[i].PowerW));
         }
         return list;
     }

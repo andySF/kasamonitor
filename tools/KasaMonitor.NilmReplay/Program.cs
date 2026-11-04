@@ -2,10 +2,14 @@ using System.Globalization;
 using KasaMonitor.Core.Nilm;
 using KasaMonitor.NilmReplay;
 
+// kasa-nilm-replay --plug-shadows <plug-stream.csv> <events.csv>
+if (args.Length == 3 && args[0] == "--plug-shadows") return PlugShadowReplay.Run(args[1], args[2]);
+
 // kasa-nilm-replay <meter.csv> [--min-delta W] [--window <from ISO> <to ISO>]
 if (args.Length == 0 || !File.Exists(args[0]))
 {
     Console.Error.WriteLine("Usage: kasa-nilm-replay <meter.csv> [--min-delta W] [--window <from ISO 8601> <to ISO 8601>]");
+    Console.Error.WriteLine("   or: kasa-nilm-replay --plug-shadows <plug-stream.csv> <events.csv>");
     Console.Error.WriteLine("The CSV: Ts,PowerW,ApparentVa,VoltageV,CurrentA,Pf of the main meter (unix seconds). It stays outside the repository.");
     return 2;
 }

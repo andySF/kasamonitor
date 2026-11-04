@@ -459,3 +459,53 @@ labelled again. A hidden signature no longer takes new events from the assignmen
 plug's confirmations), so what lies near a hidden anonymous one goes to another signature. The detector, `PlugEventMatcher` and the duration bands themselves are unchanged. Plugs with
 several consumers keep the old rule. The first regrouping after
 the upgrade does the cleaning (at 03:30, at a start when the last one is older than 24 h, or on „Regrupează acum”).
+
+## 0.13.2 – The row of a single-appliance plug comes from the plug
+
+**Context.** After 0.13.1 the signature of a plug with a single appliance holds only what it confirmed, and that turned out to be
+little. Measured on 68 h of a fridge: 240 real transitions (84.5 a day, +44 W / −57 W median, 1,011 Wh a day), against a main meter
+with an event every ≈ 11 s and a threshold of 30 W, which often loses a step of that size. Starting from the transition, a single
+candidate in a window of −5…0 s and ±15 W occurs for 75 of 240 (31 %), while false moments give 11 (precision ≈ 85 %). A wider window
+gains chance coincidences faster than real ones. The event lags the transition by −8 s, −3 s, +2 s (p10, p50, p90).
+
+**Decision: no more matching.** Coverage is not raised by matching: that is the conclusion of the measurement. `PlugEventMatcher.Match`,
+`ExclusiveSignatures.Belongs` and the tolerances do not change, and nothing unconfirmed enters the signature. What the matcher was asked for
+is read from the plug itself: `PlugTimeline` (state from 20 W, a change that still holds after 5 s, the step from the medians of the windows)
+gives transitions and runs for any plug with `SingleAppliance`, the same code for a replay and for the live tick. The rule is
+general; plugs with several consumers keep their runs from events.
+
+**Decision: a row holds 70 s here, not 60.** `PlugEventMatcher.MaxHold` says that a stream row older than 60 s means no stream. In fact
+a row comes 60 s after the last one, but at the next sample: 262 of the 7,373 intervals between rows were 61–69 s. With 60 s these heartbeats are
+gaps, 62 of 118 runs end on one and hold 621 Wh a day. With `PlugTransitions.MaxRowAge` of 70 s the only gaps left are the 2 real ones (133 s
+and 578 s), and on the same data: 242 transitions (2 more than the first measurement, whose reset at a gap lost switch-ons right after a
+late heartbeat), 120 runs all ended by their switch-off, 989 Wh a day out of the plug's 1,015 (the rest is what stood outside a whole
+run: the standby under 20 W, and the runs cut by the ends of the data and by the gaps). `MaxHold` itself stays, since the matcher must not change.
+
+**Decision: a run without events, no migration.** `ApplianceRuns` has no foreign key, so `StartEventId` = 0 means „from a plug”
+(`ApplianceRun.FromPlug`, event ids start at 1), `EndEventId` stays null. No false rows in `MeterEvents`. The run builder of the events ignores these
+runs, and the events of such a signature reach it without a signature: they open and pair nothing, but a switch-off still closes the
+runs of the others by the house level. A run ended by a gap in the plug's data closes as `Timeout` at the last second with data, with
+the energy measured until then: there was no rule for missing data, and `Timeout` is what already says „uncertain, the duration does not
+count”. Unlike a `Timeout` of the events it has energy, because the plug measured it, and it has no 6-hour limit because the plug sees its end.
+
+**Decision: one signature, rebuilt from the plug's data only.** All the runs of the plug live on one of its signatures: most confirmed
+events, then the lowest id, a new one when it has none. A rebuild replaces the runs of all its signatures from a point on, so a merge
+or a split doubles nothing and a second rebuild gives the same. Nothing older than the plug's first data is deleted. So an event that leaves for
+being older than the window no longer takes old runs with it, as in 0.13.1. A split by duration of such a signature finds nothing to move, and a band
+does not act on these runs: they have no events, and a plug with one appliance has no second appliance to tell apart.
+
+**Decision: the row is calculated when the page asks.** Switch-ons, mean level, duration and repetition come from the stored runs of
+the window (`PlugRunSummary`), which is the simplest correct way: `Count` remains the events in the signature and no rule reads the row.
+The mean is of the runs' median levels (≈ 66 W), not of steps: transitions are not stored. „84 transitions a day” shows as about 42 switch-ons a day.
+
+**Decision: a shadow is marked, not labelled.** The single candidate of a transition (source none or model) gets the new source `PlugShadow`
+(5): no label, no signature, the plug in `LabelPlugId`. It is what stops the double subtraction of R4 in 0.13.1's review, without touching the
+invariant: `ConfirmedBy` and the training set do not accept it. Measured on the same data: 77 transitions with one candidate, 2 with several, 163
+with none; 63 events marked out of 8,211, since the 14 others are confirmed events, which count as candidates but are never marked. Since the
+step needs 20 s and the rows 30 s more, a transition is usually known after its event was stored (45 s), so the mark corrects an event already processed
+and rebuilds the runs of its signature. A re-clustering calculates the shadows again from the plug's data, and the same data give the same marks.
+
+**Consequences.** A false shadow takes a small foreign step out of „detected”: about 15 %, from the false moments above. A run that closed before its
+event was marked stays in the cumulative energy metric, a counter, as with every rebuild. `CorrectAsync` of the other runs still counts a shadow as
+„another event during the run”. The first rebuild deletes the runs from events of those signatures from the plug's first data on (30 days of stream, at most).
+The signatures involved are measured by a plug, so their runs were and stay out of „detected”, `kasa_appliance_*` and `/history`.

@@ -107,7 +107,13 @@ public interface INilmRepository
     Task<IReadOnlyList<ApplianceRun>> ListRunsAsync(DateTimeOffset fromUtc, DateTimeOffset toUtc, CancellationToken ct);
 
     /// <summary>Deletes the runs of the given signatures (all signatures when null) that started at or after <paramref name="fromUtc"/>.</summary>
-    Task<int> DeleteRunsAsync(IReadOnlyCollection<long>? signatureIds, DateTimeOffset fromUtc, CancellationToken ct);
+    Task<int> DeleteRunsAsync(IReadOnlyCollection<long>? signatureIds, DateTimeOffset fromUtc, CancellationToken ct, IReadOnlyCollection<long>? exceptSignatureIds = null);
+
+    /// <summary>
+    /// Marks events as shadows of a plug (<see cref="EventLabelSource.PlugShadow"/>: no signature, no label, the plug in
+    /// <c>LabelPlugId</c>) and releases former shadows (<see cref="EventLabelSource.None"/>, no plug, no signature). All or none.
+    /// </summary>
+    Task SetPlugShadowsAsync(IReadOnlyDictionary<long, Guid> shadows, IReadOnlyCollection<long> released, CancellationToken ct);
 
     /// <summary>Retention: deletes events and runs older than the cutoff (signatures stay).</summary>
     Task<int> DeleteOlderThanAsync(DateTimeOffset cutoffUtc, CancellationToken ct);

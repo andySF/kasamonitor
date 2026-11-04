@@ -28,6 +28,22 @@ public class SampleRepositoryTests
     }
 
     [Fact]
+    public async Task FirstReadingTs_IsTheOldestReadingWithAPower_OfThatPlug()
+    {
+        using var f = new TestDbFactory();
+        using var ctx = f.CreateContext();
+        var repo = new SampleRepository(ctx);
+        var plugId = Guid.NewGuid();
+        var t0 = new DateTimeOffset(2026, 11, 1, 10, 0, 0, TimeSpan.Zero);
+
+        (await repo.FirstReadingTsAsync(plugId, CancellationToken.None)).Should().BeNull();
+
+        await repo.InsertManyAsync(new[] { MakeSample(plugId, t0, power: null), MakeSample(plugId, t0.AddSeconds(10)), MakeSample(plugId, t0.AddSeconds(20)), MakeSample(Guid.NewGuid(), t0.AddSeconds(-50)) }, CancellationToken.None);
+
+        (await repo.FirstReadingTsAsync(plugId, CancellationToken.None)).Should().Be(t0.AddSeconds(10), "offline: no reading");
+    }
+
+    [Fact]
     public async Task InsertManyAsync_BulkInsertsRows()
     {
         using var f = new TestDbFactory();

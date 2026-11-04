@@ -165,10 +165,7 @@ public class NilmExclusiveSignatureTests
         var inside = await rig.EventsOfAsync(fridge.Id);
         inside.Should().HaveCount(86).And.OnlyContain(e => e.Source == EventLabelSource.AutoPlug && e.LabelPlugId == rig.Fridge);
 
-        var runs = await rig.RunsOfAsync(fridge.Id);
-        runs.Should().HaveCount(43, "rebuilt from what stays").And.OnlyContain(r => r.EndReason == RunEndReason.Paired && Math.Abs(r.PowerW - 60) < 1);
-        var ids = inside.Select(e => e.Id).ToHashSet();
-        runs.Should().OnlyContain(r => ids.Contains(r.StartEventId) && ids.Contains(r.EndEventId!.Value));
+        (await rig.RunsOfAsync(fridge.Id)).Should().BeEmpty("since 0.13.2 its runs come from the plug's readings, and this test has none");
 
         var unknown = (await rig.SignaturesAsync()).Where(s => s.Id != fridge.Id).ToList();
         unknown.Sum(s => s.Count).Should().Be(1900, "they went through DBSCAN and live in the unknown ones now");
@@ -559,7 +556,7 @@ public class NilmExclusiveSignatureTests
     }
 
     [Fact]
-    public async Task EventsOlderThanTheWindow_LeaveToo_WithTheirRuns()
+    public async Task EventsOlderThanTheWindow_LeaveToo_TheRunsBeforeThePlugsDataStay()
     {
         using var rig = await RigAsync();
         var fridge = await rig.AddSignatureAsync("Frigider", 39, rig.Fridge, count: 4);
@@ -584,7 +581,7 @@ public class NilmExclusiveSignatureTests
         (await rig.Repo(r => r.GetEventAsync(oldOn.Id, CancellationToken.None)))!.SignatureId.Should().BeNull("out of the job's reach: free, without a signature");
         (await rig.Repo(r => r.GetEventAsync(oldOff.Id, CancellationToken.None)))!.SignatureId.Should().BeNull();
         var runs = await rig.RunsOfAsync(fridge.Id);
-        runs.Should().HaveCount(2).And.OnlyContain(r => Math.Abs(r.PowerW - 60) < 1, "the old run of 37 W went with its events, the old confirmed one stayed");
+        runs.Should().HaveCount(2, "since 0.13.2 a rebuild deletes nothing older than the plug's first data: nothing could rebuild it");
         (await rig.EventsOfAsync(fridge.Id)).Should().HaveCount(4);
     }
 
@@ -624,7 +621,7 @@ public class NilmExclusiveSignatureTests
     }
 
     [Fact]
-    public async Task ASplitByHandOfAnExclusiveSignature_Stays_AndTheConfirmedEventsKeepTheirPlug()
+    public async Task ASplitByDurationOfAnExclusiveSignature_HasNothingToMove_ItsRunsAreThePlugs()
     {
         using var rig = await RigAsync();
         var s = await rig.AddSignatureAsync("Frigider", 1430, rig.Fridge, count: 8);
@@ -643,17 +640,9 @@ public class NilmExclusiveSignatureTests
 
         var split = await svc.SplitByDurationAsync(s.Id, 40, "Espressor", null, dryRun: false, CancellationToken.None);
 
-        split!.Applied.Should().BeTrue();
-        split.Runs.Should().Be(2);
-        var t = await rig.SigAsync(split.TargetId!.Value);
-        t.PlugId.Should().Be(rig.Fridge, "measured by the plug, as in 0.13.0");
-        (await rig.EventsOfAsync(t.Id)).Should().HaveCount(4).And.OnlyContain(e => e.Source == EventLabelSource.DurationRule && e.LabelPlugId == rig.Fridge);
-
-        await svc.NightlyAsync(rig.Now, CancellationToken.None);
-
-        (await rig.EventsOfAsync(t.Id)).Should().HaveCount(4, "the split stands");
-        (await rig.EventsOfAsync(s.Id)).Should().HaveCount(4);
-        (await rig.SigAsync(t.Id)).PlugId.Should().Be(rig.Fridge);
-        (await rig.SigAsync(t.Id)).SplitFromId.Should().Be(s.Id);
+        split!.Applied.Should().BeFalse("since 0.13.2 no run of it stands on events");
+        split.Runs.Should().Be(0);
+        (await rig.EventsOfAsync(s.Id)).Should().HaveCount(8, "the confirmed events stay");
+        (await rig.SignaturesAsync()).Should().ContainSingle();
     }
 }

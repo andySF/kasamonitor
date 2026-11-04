@@ -235,6 +235,57 @@ public class NilmRepositoryTests
     }
 
     [Fact]
+    public async Task PlugShadows_LoseSignatureAndLabel_NamePlug_StayOutOfTheTraining_AndCanBeReleased()
+    {
+        using var db = new TestDbFactory();
+        var repo = new NilmRepository(db.CreateContext());
+        var plug = Guid.NewGuid();
+        var a = await AddOne(repo, E(0, 60, 5) with { Label = "Boiler", Source = EventLabelSource.Model });
+        var b = await AddOne(repo, E(10, 60, 5));
+        var c = await AddOne(repo, E(20, 60, 5) with { Label = "Boiler", Source = EventLabelSource.User });
+
+        await repo.SetPlugShadowsAsync(new Dictionary<long, Guid> { [a.Id] = plug, [b.Id] = plug }, Array.Empty<long>(), CancellationToken.None);
+
+        var shadow = (await repo.GetEventAsync(a.Id, CancellationToken.None))!;
+        shadow.Source.Should().Be(EventLabelSource.PlugShadow);
+        shadow.SignatureId.Should().BeNull();
+        shadow.Label.Should().BeNull();
+        shadow.LabelPlugId.Should().Be(plug);
+        (await repo.ListEventsBySignaturesAsync(new long[] { 5 }, T.AddDays(-1), CancellationToken.None)).Select(e => e.Id).Should().Equal(c.Id);
+        (await repo.ListLabeledEventsAsync(Array.Empty<Guid>(), 100, CancellationToken.None)).Select(e => e.Id).Should().Equal(new[] { c.Id }, "a shadow is no example of the classifier");
+        (await repo.CountLabeledAsync(Array.Empty<Guid>(), CancellationToken.None)).Should().Be((1, 1));
+
+        await repo.SetPlugShadowsAsync(new Dictionary<long, Guid>(), new[] { a.Id }, CancellationToken.None);
+
+        var released = (await repo.GetEventAsync(a.Id, CancellationToken.None))!;
+        released.Source.Should().Be(EventLabelSource.None);
+        released.LabelPlugId.Should().BeNull();
+        released.SignatureId.Should().BeNull("the next re-clustering gives it one");
+        (await repo.GetEventAsync(b.Id, CancellationToken.None))!.Source.Should().Be(EventLabelSource.PlugShadow);
+    }
+
+    [Fact]
+    public async Task ARunFromAPlug_HasNoEvent_AndARebuildOfTheOthersLeavesIt()
+    {
+        using var db = new TestDbFactory();
+        var repo = new NilmRepository(db.CreateContext());
+        var saved = await repo.SaveRunsAsync(new[]
+        {
+            new ApplianceRun(0, 5, T, T.AddSeconds(60), 60, 1, ApplianceRun.NoEvent, null, 0, RunEndReason.Paired),
+            new ApplianceRun(0, 6, T, T.AddSeconds(60), 60, 1, 77, null),
+        }, CancellationToken.None);
+        saved[0].FromPlug.Should().BeTrue();
+
+        (await repo.DeleteRunsAsync(null, T, CancellationToken.None, exceptSignatureIds: new long[] { 5 })).Should().Be(1);
+
+        var left = (await repo.ListRunsAsync(T.AddDays(-1), T.AddDays(1), CancellationToken.None)).Should().ContainSingle().Subject;
+        left.SignatureId.Should().Be(5);
+        left.FromPlug.Should().BeTrue();
+        left.EndEventId.Should().BeNull();
+        left.EndReason.Should().Be(RunEndReason.Paired);
+    }
+
+    [Fact]
     public async Task SetSignatures_EventsBySignature_DeleteRunsFrom_AndRetention()
     {
         using var db = new TestDbFactory();

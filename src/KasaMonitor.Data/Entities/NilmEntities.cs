@@ -14,7 +14,7 @@ public sealed class MeterEventEntity
     public double PowerBeforeW { get; set; }
     public long? SignatureId { get; set; }
     public string? Label { get; set; }
-    /// <summary><see cref="KasaMonitor.Core.Nilm.EventLabelSource"/>: 0 none, 1 auto-plug, 2 user, 3 model, 4 duration rule.</summary>
+    /// <summary><see cref="KasaMonitor.Core.Nilm.EventLabelSource"/>: 0 none, 1 auto-plug, 2 user, 3 model, 4 duration rule, 5 shadow of a plug.</summary>
     public int Source { get; set; }
     public Guid? LabelPlugId { get; set; }
 }

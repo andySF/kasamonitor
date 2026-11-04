@@ -4,7 +4,7 @@ How KasaMonitor recognises appliances in the power of the whole house, for a tec
 conceptual explanation; thresholds, settings, metrics and every UI detail are in the README, section
 [Appliance detection (NILM)](../README.md#appliance-detection-nilm), and the HTTP routes in
 [HTTP API (LAN)](../README.md#http-api-lan). Why some rules look the way they do is in [decisions.md](decisions.md)
-(0.8.2, 0.9.1, 0.9.4, 0.13.0, 0.13.1).
+(0.8.2, 0.9.1, 0.9.4, 0.13.0, 0.13.1, 0.13.2).
 
 NILM (non-intrusive load monitoring) tries to say *which appliance* is on from one measurement at the mains entry. The
 approach here is deliberately simple, deterministic and explainable: every grouping and every merge can be
@@ -83,10 +83,24 @@ confirmed and events the user put there by hand. Nothing else enters it, on any 
 (a pulse under ≈ 15 s, section 7) therefore leaves it, even though the plug did measure it; the plug's own energy is
 unaffected, and the number of events in „Necunoscut” goes up.
 
-This has a price in the balance. A real step of the appliance that the plug does not confirm now lands in an unknown signature,
-so its run counts as detected energy and is subtracted from the rest of the house, while the plug measures the same
-energy too. Before, it sat in the plug's signature and was not subtracted. The rest of the house is therefore a little too low
-by what the plug fails to confirm; the invariant was chosen knowing that, since a drifted centre costs more.
+**The rest of that plug's story comes from the plug** (decisions, 0.13.2). Matching does not reach far: the main meter has an event
+about every 11 s and a threshold of 30 W, so most steps of a small appliance are lost in it. Measured on 68 h of a fridge, only
+31 % of its transitions have one candidate among the events, and widening the window adds chance coincidences faster than real
+ones. So a confirmation stays strict (above), and the rest is read from the plug's own power:
+
+- **Transitions.** On a 1-second grid (its stream, otherwise its polls, a row holding at most 70 s), the plug is on from 20 W. A
+  change is real when it still holds 5 s after its first second, which is its moment; its step is the median of [t + 3 s, t + 20 s]
+  minus that of [t − 20 s, t − 3 s]. Without data there is no transition across the gap. On the same 68 h this gives 242 transitions.
+- **Shadows.** An event with no plug's or user's word on it (source none or model) is a **shadow** of the plug when it is the only
+  candidate of a transition: the same sign, |ΔP − step| ≤ 15 W, at most 5 s before it. It gets the source `plug-shadow`, no label and
+  no signature: it forms no run and is no longer subtracted from the rest of the house. It is not a confirmation, so it never feeds
+  the centre or the classifier. A confirmed event in the window counts as a candidate too, and then nothing is marked; an event is a
+  shadow once. Because a step needs the 20 s after it, a transition is known after its event was stored, so the mark corrects it:
+  the event leaves its signature and the runs of that signature are built again. The user can label a shadow, and then it is the user's.
+
+A step of the appliance that is neither confirmed nor a shadow (two candidates, or a step measured far from the plug's) still lands in
+an unknown signature, so its run counts as detected energy and is subtracted from the rest of the house, while the plug
+measures the same energy too. The rest of the house is a little too low by that much. Section 7 has the opposite limit.
 
 ## 3. Signatures: grouping events
 
@@ -112,9 +126,11 @@ drum motor (≈ 250–300 W pulses) and a pump; a kettle is one heater.
   rest; empty automatic signatures are deleted. In an exclusive signature only what the plug confirmed and what the user
   labelled stays; the rest goes through the anchors and DBSCAN again. Events the job does not read leave too, without a
   signature: inside the window but past the newest 20,000 they would keep feeding the centre, and older than the window
-  they feed nothing but would stay on the sheet and in its runs. Their old runs are deleted and nothing rebuilds them,
-  so that part of the signature's history is gone. Runs, centre and count are rebuilt from what stays. An emptied exclusive
-  signature is not deleted: it is the plug's, its centre shows 0, and the next confirmation sets it. A confirmation never makes a new signature only because a
+  they feed nothing but would stay on the sheet. Centre and count are rebuilt from what stays. An emptied exclusive
+  signature is not deleted: it is the plug's, its centre shows 0, and the next confirmation sets it. Shadows are fixed: DBSCAN and
+  the anchors do not touch them. The job first calculates them again where the plug has data, with the same result for the same
+  data: an event that became the only candidate is marked, and a shadow nothing explains any more goes through the anchors and
+  DBSCAN like any event. A confirmation never makes a new signature only because a
   stored centre drifted: it first looks at the confirmed events behind each centre of its plug, then at a signature with
   none, and only then starts a new one (a new component).
 - **Automatic merge.** Several signatures that are the same component are merged, never across two different plugs,
@@ -158,6 +174,21 @@ power above its previous level (kept only between ½ and 2× the nominal value).
 signature (a run across midnight proportionally). **„Neidentificat”** (unidentified) = the house today − Σ plugs −
 Σ detected runs, never below 0.
 
+**The runs of a plug with a single appliance come from the plug** (section 2), not from events: on → off of its transitions, the
+power is the median level, the energy the integral of the plug's power. They live on one signature of the plug, the one with the
+most confirmed events, then the lowest id (a new one when it has none), and carry no event (`StartEventId` 0; the column has no foreign
+key, so there is no migration and no false row in `MeterEvents`). Its events open and pair nothing, but a switch-off still counts for
+the house level of the others' runs. A run has no 6-hour limit, since the plug sees its end; if the data stop (no row for more
+than 70 s) it closes at the last second with data as uncertain (`Timeout`), with the energy measured so far.
+
+A rebuild (a regrouping, a merge, a start) replays the stored readings, deletes what stands from there on and writes the same runs
+again; nothing older than the plug's first data goes, since nothing could rebuild it, so old runs from events stay there. Live, every
+10 s the seconds that arrived are fed to the same timeline, 30 s behind now because the stream's rows are written every 10 s.
+Those signatures stay measured by the plug, so these runs never enter the detected energy, „Acum pornite”,
+`kasa_appliance_*` or the „Consumatori” section of `/history`. Their row on `/consumatori` shows, from these runs and over the same window,
+the switch-ons, the mean level, the duration and the repetition, calculated when the page asks; `Count` stays the number of
+events the signature holds, the confirmed ones. Its sheet shows the runs; its list of events, what was confirmed.
+
 ## 6. Duration: telling apart what ΔP and ΔQ cannot
 
 An espresso machine (pulses of ≈ 1.43 kW for 10–20 s, repeated after tens of seconds) and a kettle (≈ 1.45 kW continuous
@@ -172,7 +203,8 @@ for 1–7 minutes) have the same step, so they fall into one signature. What dif
   (section 2) qualifies only when its plug confirmed both events of the run. Two
   candidates, or none, leave it where it is. The run and both events move, and with the run its energy, day by day. An
   event labelled by the user holds the whole run in place: moving only the other event would break the pair at the next
-  rebuild. The rule also runs when the runs are rebuilt, because the anchors may give S a run that does not fit it.
+  rebuild. The rule also runs when the runs are rebuilt, because the anchors may give S a run that does not fit it. A run from a
+  plug (section 5) has no events to move, so a band does not act on it.
 - **The source `DurationRule`.** The moved events take this source and T's name as their label. The re-clustering treats
   them as labelled: it never moves them, and the centres include them.
 - **Splitting.** „Împarte după durată” (`POST …/split-by-duration`, a dry run unless told otherwise) sends the paired runs
@@ -180,9 +212,10 @@ for 1–7 minutes) have the same step, so they fall into one signature. What dif
   compatible one (a band of its own must start at zero and end at the limit or below it: a band of 50–100 s is another
   component), otherwise to a new one named by the user. T ends at the limit, S starts there unless it has a band of
   its own. Signatures and moves are written in one transaction. If S is measured by a plug so is T, even if the plug cannot label its pulses (section 7): a split moves
-  energy between two names and must not take it out of the plug's side of the balance. In a split by hand of an exclusive
-  signature the events the plug confirmed keep its label and stay at the re-clustering; those it did not confirm leave at
-  the next one, on either side. New pulses the plug cannot label go to neither side.
+  energy between two names and must not take it out of the plug's side of the balance. A signature of a plug with a single appliance
+  has no run on events since 0.13.2, so its split finds nothing to move. Where two sides of one exist from before, the events the
+  plug confirmed keep its label and stay at the re-clustering, those it did not confirm leave at the next one, and all the runs
+  of the plug live on one of them. New pulses the plug cannot label go to neither side.
 - **Waiting in one place.** Two sides of a split can have the same centre, so „the nearest” would give a switch-on to one
   and its switch-off to the other, and the run would never pair. Every new event near such a pair therefore goes to S; the
   run's duration sends it across when it closes. So a pulse still running counts under S („Acum pornite”,
@@ -205,7 +238,12 @@ for 1–7 minutes) have the same step, so they fall into one signature. What dif
 - **Short pulses.** The plug matcher compares *stabilised levels* (medians before and after). A pulse shorter than
   about 15 s returns to the baseline, so the difference of medians is near zero and the plug does not label it,
   although the plug saw the peak. On a plug with a single appliance such a pulse stays out of the plug's signature
-  (section 2) and is counted with the unknown ones.
+  (section 2) and is counted with the unknown ones; its transitions still count if it holds 5 s.
+- **A false shadow.** A shadow is decided by time and size alone. A small foreign step that happens to be the only candidate of a
+  transition leaves „detected” with it, so its energy stays in the rest of the house. Estimated from false moments on the real data:
+  about 15 % of the shadows. The plug's own energy and runs are not affected.
+- **A plug's level is not a meter's step.** The row of a single-appliance plug shows the median level of its runs (≈ 66 W on the
+  measured fridge), which is larger than the median step the plug's windows see (+44 W / −57 W: ramps and the compressor's settling).
 - **Small loads, 15–50 W.** A UPS, lamps, chargers and a PC have nearly the same ΔP, ΔQ and transient. Their
   signatures stay mixed; lowering the threshold to 15 W gave 76 events in 16 minutes, mostly from a UPS. The meter itself
   moves by a median of 17 W per second.
@@ -220,7 +258,8 @@ for 1–7 minutes) have the same step, so they fall into one signature. What dif
   raises it in a house with Q ≈ 0, so its sign depends on what else is running; this is why the eps for ΔQ is wide.
 - **Multi-stage appliances** appear as several signatures (one per component); the pairing assumes one switch-off per
   switch-on.
-- **Plug offline** means no label for that period.
+- **Plug offline** means no label for that period, and for a plug with a single appliance no transition: a run in progress ends as
+  uncertain, and the state starts again from the first reading, without a run until the next switch-on.
 
 ## 8. Open ideas
 

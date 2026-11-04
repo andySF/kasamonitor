@@ -64,6 +64,16 @@ public static class ExclusiveSignatures
     }
 
     /// <summary>
+    /// The one signature all the runs of the plug live on (<see cref="PlugTimeline"/>): of its signatures, the one with the most
+    /// confirmed events, then the lowest id. Null: the plug has none yet.
+    /// </summary>
+    public static long? RunTarget(IReadOnlyCollection<ApplianceSignature> own, Guid plug, IEnumerable<MeterEvent> events)
+    {
+        var confirmed = events.Where(e => e.SignatureId is not null && ConfirmedBy(e, plug)).GroupBy(e => e.SignatureId!.Value).ToDictionary(g => g.Key, g => g.Count());
+        return own.OrderByDescending(s => confirmed.GetValueOrDefault(s.Id)).ThenBy(s => s.Id).Select(s => (long?)s.Id).FirstOrDefault();
+    }
+
+    /// <summary>
     /// The signature of a confirmed event that matched no stored centre of its plug: a stored centre may have been fed by
     /// other events, so a new signature must not come from that alone. First the nearest one whose confirmed events
     /// (<see cref="ConfirmedCentre"/>) lie within the anchor radius; otherwise one with no confirmed event at all, which takes

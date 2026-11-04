@@ -299,11 +299,28 @@ public class LiveChartGridTests
     }
 
     [Fact]
-    public void Colours_FollowThePosition_AndCycle_TheMeterKeepsItsOwn()
+    public void Colours_AreAllDifferent_AndNotTheMeters()
     {
         LiveChartColors.Main.Should().Be("#0072B2");
-        Enumerable.Range(0, 7).Select(LiveChartColors.Overlay).Should()
-            .Equal("#E69F00", "#009E73", "#D55E00", "#CC79A7", "#56B4E9", "#F0E442", "#E69F00");
+        LiveChartColors.Overlays.Should().HaveCount(9).And.OnlyHaveUniqueItems().And.NotContain(LiveChartColors.Main);
+    }
+
+    [Fact]
+    public void NextFree_NeverGivesAColourInUse_WhileThereIsAFreeOne()
+    {
+        var used = new List<string>();
+        for (var i = 0; i < LiveChartColors.Overlays.Count; i++) used.Add(LiveChartColors.NextFree(used));
+        used.Should().Equal(LiveChartColors.Overlays);
+
+        used.Remove(LiveChartColors.Overlays[2]);
+        LiveChartColors.NextFree(used).Should().Be(LiveChartColors.Overlays[2], "a freed colour is taken again");
+    }
+
+    [Fact]
+    public void NextFree_RepeatsEvenly_WithMoreLinesThanColours()
+    {
+        LiveChartColors.NextFree(LiveChartColors.Overlays.ToList()).Should().Be(LiveChartColors.Overlays[0]);
+        LiveChartColors.NextFree(LiveChartColors.Overlays.Append(LiveChartColors.Overlays[0]).ToList()).Should().Be(LiveChartColors.Overlays[1]);
     }
 
     [Fact]

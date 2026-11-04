@@ -14,9 +14,18 @@ public static class LiveChartColors
 {
     public const string Main = "#0072B2";
 
-    private static readonly string[] Overlays = { "#E69F00", "#009E73", "#D55E00", "#CC79A7", "#56B4E9", "#F0E442" };
+    /// <summary>
+    /// Optimized with category-colors together with <see cref="Main"/> (CIEDE2000, normal and colour-blind vision), then
+    /// ordered so that the first ones are the furthest apart: the colours of a few lines differ the most.
+    /// </summary>
+    public static readonly IReadOnlyList<string> Overlays = new[]
+    {
+        "#DF0001", "#86BA00", "#A4AAED", "#FC789C", "#71790B", "#00A988", "#B5485D", "#C9AD73", "#9A69FF",
+    };
 
-    public static string Overlay(int position) => Overlays[position % Overlays.Length];
+    /// <summary>The first colour no active line uses; with more lines than colours they repeat, evenly.</summary>
+    public static string NextFree(IReadOnlyCollection<string> used) =>
+        Overlays.FirstOrDefault(c => !used.Contains(c)) ?? Overlays[used.Count % Overlays.Count];
 }
 
 /// <summary>

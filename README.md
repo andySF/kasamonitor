@@ -600,8 +600,8 @@ and every plug, off for sub-meters such as an unused clamp; changing the role re
 
 **Contor page** (`/contor`, menu „Contor”): alias of the main meter, power now (1 s; falls back to the 10 s poll when
 the stream is older than 5 s), rest of the house (see below), voltage (red outside 207–253 V), current, power
-factor, frequency, relay; live chart of the last 10 minutes (main meter, plus any number of plugs toggled in „Suprapune
-prize”, from the same stream, each with a fixed colour). All the lines share a grid of whole UTC seconds, so the tooltip
+factor, frequency, relay; live chart of the last 10 minutes (the main meter and any number of plugs, toggled in „Linii
+afișate” and read from the same stream, each with a fixed colour; the meter can be switched off to compare plugs on their own scale). All the lines share a grid of whole UTC seconds, so the tooltip
 shows them together: a sample only updates its line's latest value, which is held until the next reading (a plug read
 every few seconds draws in steps) and for at most 30 s, then the line has a gap. Once a second the new points of all the
 lines are pushed to ApexCharts, the whole 10-minute window once a minute; today per minute

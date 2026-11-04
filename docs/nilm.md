@@ -151,14 +151,19 @@ for 1–7 minutes) have the same step, so they fall into one signature. What dif
   them as labelled: it never moves them, and the centres include them.
 - **Splitting.** „Împarte după durată” (`POST …/split-by-duration`, a dry run unless told otherwise) sends the paired runs
   of S up to a limit, of every stored day, and their events to the signature with the given name if there is a
-  compatible one, otherwise to a new one named by the user. T ends at the limit, S starts there unless it has a band of
-  its own. If S is measured by a plug so is T, even if the plug cannot label its pulses (section 7): a split moves
+  compatible one (a band of its own must start at zero and end at the limit or below it: a band of 50–100 s is another
+  component), otherwise to a new one named by the user. T ends at the limit, S starts there unless it has a band of
+  its own. Signatures and moves are written in one transaction. If S is measured by a plug so is T, even if the plug cannot label its pulses (section 7): a split moves
   energy between two names and must not take it out of the plug's side of the balance.
 - **Waiting in one place.** Two sides of a split can have the same centre, so „the nearest” would give a switch-on to one
   and its switch-off to the other, and the run would never pair. Every new event near such a pair therefore goes to S; the
-  run's duration sends it across when it closes.
+  run's duration sends it across when it closes. So a pulse still running counts under S („Acum pornite”,
+  `kasa_appliance_power_w`) until it closes and moves. This holds only for a split: two bands set by hand on signatures
+  with the same centre have no such place, a switch-on and its switch-off can land apart and the run then never closes
+  as paired, so for two appliances with the same centre use the split.
 - **Merging.** Two signatures with disjoint bands are never merged, whatever the rule; two bands that only touch (the
-  two sides of a split) count as disjoint. A survivor without a band takes the absorbed one's.
+  two sides of a split) count as disjoint. A survivor without a band takes the absorbed one's. Uniting the two sides by
+  hand („Unește cu…”) undoes the split: the result holds both kinds of runs, so it has no band and no link between them.
 - **Classifier.** Its features do not change, and the moved events are not among its examples: ML.NET does not see the
   duration, so two classes with the same features would only lower its accuracy.
 

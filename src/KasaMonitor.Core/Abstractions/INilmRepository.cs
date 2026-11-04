@@ -22,6 +22,13 @@ public interface INilmRepository
     /// </summary>
     Task MoveRunsAsync(IReadOnlyList<RunMove> moves, CancellationToken ct);
 
+    /// <summary>
+    /// Stores a split by duration in one transaction: both signatures as given (<paramref name="target"/> with id 0 is
+    /// created) and the move of <paramref name="runs"/> and their events to the target, as in <see cref="MoveRunsAsync"/>.
+    /// All of it or nothing. Returns the target as stored.
+    /// </summary>
+    Task<ApplianceSignature> ApplyDurationSplitAsync(ApplianceSignature source, ApplianceSignature target, IReadOnlyList<ApplianceRun> runs, CancellationToken ct);
+
     /// <summary>Updates the signature and the label of an event.</summary>
     Task UpdateEventAsync(MeterEvent e, CancellationToken ct);
 

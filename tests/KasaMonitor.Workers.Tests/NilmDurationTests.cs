@@ -332,6 +332,47 @@ public class NilmDurationTests
     }
 
     [Fact]
+    public async Task Split_AnExistingSignatureWithABandOfItsOwn_KeepsIt_AndANewOneTakesTheRuns()
+    {
+        using var rig = await RigAsync();
+        var (svc, s) = await MixedAsync(rig);
+        var other = await rig.AddSignatureAsync("Espressor", p: 1430, min: 50, max: 100);
+
+        var dry = await svc.SplitByDurationAsync(s.Id, 40, "Espressor", null, dryRun: true, CancellationToken.None);
+        dry!.TargetId.Should().BeNull("a band of 50–100 s is another component");
+
+        var r = await svc.SplitByDurationAsync(s.Id, 40, "Espressor", null, dryRun: false, CancellationToken.None);
+
+        r!.TargetId.Should().NotBe(other.Id);
+        (await rig.SigAsync(other.Id)).Should().Match<ApplianceSignature>(x => x.MinRunSeconds == 50 && x.MaxRunSeconds == 100);
+        (await rig.RunsAsync()).Should().NotContain(x => x.SignatureId == other.Id);
+        (await rig.RunsAsync()).Count(x => x.SignatureId == r.TargetId).Should().Be(3);
+    }
+
+    [Fact]
+    public async Task UnitingTheTwoSidesByHand_UndoesTheSplit_InEitherDirection()
+    {
+        using var rig = await RigAsync();
+        var (svc, s) = await MixedAsync(rig);
+        var t = (await svc.SplitByDurationAsync(s.Id, 40, "Espressor", null, dryRun: false, CancellationToken.None))!.TargetId!.Value;
+
+        var survivor = await svc.MergeWithAsync(s.Id, t, CancellationToken.None);
+
+        survivor.Should().NotBeNull();
+        (await rig.SigAsync(survivor!.Value)).Should().Match<ApplianceSignature>(x => x.MinRunSeconds == null && x.MaxRunSeconds == null && x.SplitFromId == null);
+        (await rig.RunsAsync()).Should().HaveCount(5).And.OnlyContain(x => x.SignatureId == survivor.Value && x.EndReason == RunEndReason.Paired);
+
+        await svc.RegroupNowAsync(CancellationToken.None);
+        (await rig.RunsAsync()).Should().HaveCount(5).And.OnlyContain(x => x.SignatureId == survivor.Value);
+
+        using var other = await RigAsync();
+        var (svc2, s2) = await MixedAsync(other);
+        var t2 = (await svc2.SplitByDurationAsync(s2.Id, 40, "Espressor", null, dryRun: false, CancellationToken.None))!.TargetId!.Value;
+        (await svc2.MergeAsync(t2, s2.Id, CancellationToken.None)).Should().BeTrue();
+        (await other.SigAsync(s2.Id)).Should().Match<ApplianceSignature>(x => x.MinRunSeconds == null && x.MaxRunSeconds == null && x.SplitFromId == null);
+    }
+
+    [Fact]
     public async Task Split_WithNothingToMove_ChangesNothing()
     {
         using var rig = await RigAsync();

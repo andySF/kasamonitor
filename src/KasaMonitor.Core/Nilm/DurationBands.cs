@@ -104,9 +104,14 @@ public static class DurationBands
         return Within(e.DeltaP, e.DeltaQ, parent) ? parentId : signatureId;
     }
 
-    /// <summary>The survivor of a merge: it keeps its band and its origin, and takes those of the absorbed one when it has none.</summary>
+    /// <summary>
+    /// The survivor of a merge: it keeps its band and its origin, and takes those of the absorbed one when it has none.
+    /// A signature merged with the side split off it (only by hand: the automatic merge leaves disjoint bands apart) undoes
+    /// the split: the result holds both kinds of runs, so it has no band and no origin.
+    /// </summary>
     public static ApplianceSignature Inherit(ApplianceSignature keep, ApplianceSignature gone)
     {
+        if (Related(keep, gone)) return keep with { MinRunSeconds = null, MaxRunSeconds = null, SplitFromId = null };
         var band = HasBand(keep) ? keep : gone;
         var origin = keep.SplitFromId == gone.Id ? gone.SplitFromId : keep.SplitFromId ?? gone.SplitFromId;
         return keep with
@@ -150,13 +155,22 @@ public static class DurationBands
 
     /// <summary>
     /// The signature „împarte după durată” joins: the one with that name (any case) within the anchor radius of the moved
-    /// power, the closest when several, never hidden and not linked to another plug; null = a new one.
+    /// power, the closest when several, never hidden, not linked to another plug, and with a band the split can keep
+    /// (<see cref="KeepsBand"/>); null = a new one.
     /// </summary>
-    public static ApplianceSignature? ExistingTarget(string name, double powerW, ApplianceSignature source, IEnumerable<ApplianceSignature> all) =>
+    public static ApplianceSignature? ExistingTarget(string name, double powerW, int maxSeconds, ApplianceSignature source, IEnumerable<ApplianceSignature> all) =>
         all.Where(t => t.Id != source.Id && !t.Hidden && string.Equals(t.Name, name, StringComparison.OrdinalIgnoreCase)
-                       && (t.PlugId is null || t.PlugId == source.PlugId)
+                       && (t.PlugId is null || t.PlugId == source.PlugId) && KeepsBand(t, maxSeconds)
                        && Math.Abs(t.MeanDeltaP - powerW) <= SignatureClusterer.Eps(t.MeanDeltaP, powerW, SignatureClusterer.AnchorScale))
             .OrderBy(t => Math.Abs(t.MeanDeltaP - powerW)).FirstOrDefault();
+
+    /// <summary>
+    /// Whether a signature can take the runs up to <paramref name="maxSeconds"/> and end its band there without losing what
+    /// it says: no band, or one that starts at zero and ends at the limit or below it (it only widens). A band of 50–100 s
+    /// is another component with the same name, whatever its power.
+    /// </summary>
+    private static bool KeepsBand(ApplianceSignature t, int maxSeconds) =>
+        !HasBand(t) || ((t.MinRunSeconds ?? 0) == 0 && t.MaxRunSeconds is { } max && max <= maxSeconds);
 
     /// <summary>
     /// The two sides after a split at <paramref name="maxSeconds"/>: <paramref name="t"/> ends there and remembers where it

@@ -89,6 +89,34 @@ public class NilmRepositoryTests
     }
 
     [Fact]
+    public async Task ApplyDurationSplit_StoresBothSignatures_CreatesTheNewOne_AndMovesRunsAndEvents()
+    {
+        using var db = new TestDbFactory();
+        var repo = new NilmRepository(db.CreateContext());
+        var kettle = await repo.AddSignatureAsync(new ApplianceSignature(0, "Fierbător", "i", "cooking", 1430, 90, 1, 0, null, SignatureLabelSource.User, null, false), CancellationToken.None);
+        var stored = await repo.AddEventsAsync(new[] { E(0, 1430, kettle.Id), E(15, -1430, kettle.Id) }, CancellationToken.None);
+        var runs = await repo.SaveRunsAsync(new[] { new ApplianceRun(0, kettle.Id, stored[0].TsUtc, stored[1].TsUtc, 1430, 6, stored[0].Id, stored[1].Id) }, CancellationToken.None);
+
+        var t = await repo.ApplyDurationSplitAsync(kettle with { MinRunSeconds = 40 },
+            new ApplianceSignature(0, "Espressor", "i", "cooking", 1430, 90, 1, 0, null, SignatureLabelSource.User, null, false, MaxRunSeconds: 40, SplitFromId: kettle.Id),
+            runs, CancellationToken.None);
+
+        t.Id.Should().BeGreaterThan(0);
+        var fresh = new NilmRepository(db.CreateContext());
+        (await fresh.GetSignatureAsync(kettle.Id, CancellationToken.None))!.MinRunSeconds.Should().Be(40);
+        (await fresh.GetSignatureAsync(t.Id, CancellationToken.None)).Should().BeEquivalentTo(t);
+        (await fresh.ListRunsBySignatureAsync(t.Id, T, CancellationToken.None)).Select(r => r.Id).Should().Equal(runs[0].Id);
+        (await fresh.ListEventsBySignaturesAsync(new[] { t.Id }, T, CancellationToken.None)).Should().HaveCount(2)
+            .And.OnlyContain(e => e.Source == EventLabelSource.DurationRule && e.Label == "Espressor");
+
+        // An existing target is updated, not added.
+        var again = await repo.ApplyDurationSplitAsync(kettle with { MinRunSeconds = 50 }, t with { MaxRunSeconds = 50 }, Array.Empty<ApplianceRun>(), CancellationToken.None);
+        again.Id.Should().Be(t.Id);
+        (await fresh.ListSignaturesAsync(CancellationToken.None)).Should().HaveCount(2);
+        (await fresh.GetSignatureAsync(t.Id, CancellationToken.None))!.MaxRunSeconds.Should().Be(50);
+    }
+
+    [Fact]
     public async Task SplitOrigin_FollowsAMerge_AndEndsWithADeletion()
     {
         using var db = new TestDbFactory();

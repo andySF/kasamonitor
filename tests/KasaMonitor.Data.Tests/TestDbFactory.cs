@@ -1,6 +1,7 @@
 using KasaMonitor.Data;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 
 namespace KasaMonitor.Data.Tests;
 
@@ -23,6 +24,10 @@ internal sealed class TestDbFactory : IDisposable
             .Options;
         return new KasaDbContext(opts);
     }
+
+    /// <summary>A context on the same database with an interceptor (a failure simulated in the middle of a transaction).</summary>
+    public KasaDbContext CreateContext(IInterceptor interceptor) =>
+        new(new DbContextOptionsBuilder<KasaDbContext>().UseSqlite(_conn).AddInterceptors(interceptor).Options);
 
     public void Dispose() => _conn.Dispose();
 }

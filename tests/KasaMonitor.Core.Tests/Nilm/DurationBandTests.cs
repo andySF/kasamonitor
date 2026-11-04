@@ -229,6 +229,20 @@ public class DurationBandTests
     }
 
     [Fact]
+    public void Inherit_MergingASignatureWithTheSideSplitOffIt_UndoesTheSplit()
+    {
+        var kettle = Sig(1, min: 40);
+        var espresso = Sig(2, max: 40, splitFrom: 1);
+        foreach (var merged in new[] { DurationBands.Inherit(kettle, espresso), DurationBands.Inherit(espresso, kettle) })
+        {
+            merged.MinRunSeconds.Should().BeNull();
+            merged.MaxRunSeconds.Should().BeNull();
+            merged.SplitFromId.Should().BeNull();
+        }
+        DurationBands.Inherit(Sig(1, min: 40), Sig(3, max: 40)).MinRunSeconds.Should().Be(40, "two signatures never split keep the rule of the survivor");
+    }
+
+    [Fact]
     public void Canonical_ANewEventNearASplitPair_GoesToTheSignatureItWasSplitFrom_SoSwitchOnAndOffPair()
     {
         var kettle = Sig(1, min: 40);
@@ -330,9 +344,27 @@ public class DurationBandTests
         var far = Sig(4, p: 287, name: "Espressor");
         var hidden = Sig(5, p: 1430, name: "Espressor", hidden: true);
         var other = Sig(6, p: 1430, name: "Espressor", plug: OtherPlug);
-        DurationBands.ExistingTarget("Espressor", 1430, s, new[] { s, near, nearer, far, hidden, other }).Should().Be(nearer);
-        DurationBands.ExistingTarget("Espressor", 1430, s, new[] { s, far }).Should().BeNull("287 W is a pump");
-        DurationBands.ExistingTarget("Fierbător", 1430, s, new[] { s }).Should().BeNull();
+        DurationBands.ExistingTarget("Espressor", 1430, 40, s, new[] { s, near, nearer, far, hidden, other }).Should().Be(nearer);
+        DurationBands.ExistingTarget("Espressor", 1430, 40, s, new[] { s, far }).Should().BeNull("287 W is a pump");
+        DurationBands.ExistingTarget("Fierbător", 1430, 40, s, new[] { s }).Should().BeNull();
+    }
+
+    [Theory]
+    [InlineData(null, null, true)]
+    [InlineData(null, 40, true)]
+    [InlineData(null, 30, true)]
+    [InlineData(0, 30, true)]
+    [InlineData(null, 41, false)]
+    [InlineData(null, 100, false)]
+    [InlineData(50, 100, false)]
+    [InlineData(5, 40, false)]
+    [InlineData(50, null, false)]
+    [InlineData(0, null, false)]
+    public void ExistingTarget_OnlyOneWhoseBandTheSplitKeepsOrWidens(int? min, int? max, bool joins)
+    {
+        var s = Sig(1, name: "Fierbător");
+        var t = Sig(2, name: "Espressor", min: min, max: max);
+        DurationBands.ExistingTarget("Espressor", 1430, 40, s, new[] { s, t }).Should().Be(joins ? t : null);
     }
 
     [Fact]

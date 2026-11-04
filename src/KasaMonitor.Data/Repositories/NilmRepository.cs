@@ -273,29 +273,56 @@ public sealed class NilmRepository : INilmRepository
     public async Task MoveRunsAsync(IReadOnlyList<RunMove> moves, CancellationToken ct)
     {
         if (moves.Count == 0) return;
-        var user = (int)EventLabelSource.User;
-        var rule = (int)EventLabelSource.DurationRule;
         await _db.Database.CreateExecutionStrategy().ExecuteAsync(async () =>
         {
             await using var tx = await _db.Database.BeginTransactionAsync(ct);
-            foreach (var group in moves.GroupBy(m => (m.TargetId, m.Label)))
-            {
-                var (target, label) = group.Key;
-                foreach (var chunk in group.Chunk(500))
-                {
-                    var events = chunk.SelectMany(m => new[] { m.StartEventId, m.EndEventId }).ToList();
-                    await _db.MeterEvents.Where(e => events.Contains(e.Id) && e.Source != user).ExecuteUpdateAsync(u => u
-                        .SetProperty(e => e.SignatureId, (long?)target)
-                        .SetProperty(e => e.Source, rule)
-                        .SetProperty(e => e.Label, label), ct);
-                    var runs = chunk.Where(m => m.RunId != 0).Select(m => m.RunId).ToList();
-                    if (runs.Count > 0)
-                        await _db.ApplianceRuns.Where(r => runs.Contains(r.Id)).ExecuteUpdateAsync(u => u.SetProperty(r => r.SignatureId, target), ct);
-                }
-            }
+            await MoveRunsCoreAsync(moves, ct);
             await tx.CommitAsync(ct);
         });
     }
+
+    private async Task MoveRunsCoreAsync(IReadOnlyList<RunMove> moves, CancellationToken ct)
+    {
+        var user = (int)EventLabelSource.User;
+        var rule = (int)EventLabelSource.DurationRule;
+        foreach (var group in moves.GroupBy(m => (m.TargetId, m.Label)))
+        {
+            var (target, label) = group.Key;
+            foreach (var chunk in group.Chunk(500))
+            {
+                var events = chunk.SelectMany(m => new[] { m.StartEventId, m.EndEventId }).ToList();
+                await _db.MeterEvents.Where(e => events.Contains(e.Id) && e.Source != user).ExecuteUpdateAsync(u => u
+                    .SetProperty(e => e.SignatureId, (long?)target)
+                    .SetProperty(e => e.Source, rule)
+                    .SetProperty(e => e.Label, label), ct);
+                var runs = chunk.Where(m => m.RunId != 0).Select(m => m.RunId).ToList();
+                if (runs.Count > 0)
+                    await _db.ApplianceRuns.Where(r => runs.Contains(r.Id)).ExecuteUpdateAsync(u => u.SetProperty(r => r.SignatureId, target), ct);
+            }
+        }
+    }
+
+    public async Task<ApplianceSignature> ApplyDurationSplitAsync(ApplianceSignature source, ApplianceSignature target, IReadOnlyList<ApplianceRun> runs, CancellationToken ct) =>
+        await _db.Database.CreateExecutionStrategy().ExecuteAsync(async () =>
+        {
+            _db.ChangeTracker.Clear();
+            await using var tx = await _db.Database.BeginTransactionAsync(ct);
+            var s = await _db.ApplianceSignatures.FindAsync(new object?[] { source.Id }, ct) ?? throw new InvalidOperationException($"Signature {source.Id} does not exist.");
+            Copy(source, s);
+            var t = target.Id == 0 ? null : await _db.ApplianceSignatures.FindAsync(new object?[] { target.Id }, ct);
+            if (t is null)
+            {
+                t = new ApplianceSignatureEntity();
+                _db.ApplianceSignatures.Add(t);
+            }
+            Copy(target, t);
+            await _db.SaveChangesAsync(ct);
+            await MoveRunsCoreAsync(runs.Select(r => new RunMove(r.Id, r.StartEventId, r.EndEventId!.Value, source.Id, t.Id, t.Name)).ToList(), ct);
+            await tx.CommitAsync(ct);
+            var stored = ToModel(t);
+            _db.ChangeTracker.Clear();
+            return stored;
+        });
 
     public async Task<IReadOnlyList<ApplianceSignature>> RecomputeSignaturesAsync(IReadOnlyCollection<long> ids, DateTimeOffset windowFromUtc, CancellationToken ct)
     {

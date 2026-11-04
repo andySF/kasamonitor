@@ -1779,8 +1779,9 @@ public sealed class NilmService : BackgroundService
     /// signature named <paramref name="name"/> (<see cref="DurationBands.ExistingTarget"/>, otherwise a new one, labelled by
     /// the user), with the source <see cref="EventLabelSource.DurationRule"/>; the bands of both are set
     /// (<see cref="DurationBands.AfterSplit"/>); the centres are recalculated, the energy per day follows the runs. An event
-    /// labelled by the user holds its run where it is. With <paramref name="dryRun"/> nothing is written and the processing
-    /// is not locked. Runs of every stored day move, not only those of the window. Null when the signature does not exist.
+    /// labelled by the user holds its run where it is. Signatures and moves are written in one transaction. With
+    /// <paramref name="dryRun"/> nothing is written and the processing is not locked. Runs of every stored day move, not
+    /// only those of the window. Null when the signature does not exist.
     /// </summary>
     public async Task<DurationSplitResult?> SplitByDurationAsync(long id, int maxSeconds, string name, string? category, bool dryRun, CancellationToken ct)
     {
@@ -1803,18 +1804,16 @@ public sealed class NilmService : BackgroundService
             {
                 var cat = ApplianceCategories.Get(category ?? p.Source.Category);
                 // Its centre starts where its runs are: an old run alone never reaches the recalculation of the window.
-                target = await repo.AddSignatureAsync(new ApplianceSignature(0, name, cat.Icon, cat.Key, p.Plan.Moved.Average(r => r.PowerW), p.Source.MeanDeltaQ,
-                    p.Source.MeanTransient, 0, null, SignatureLabelSource.User, null, false), ct);
+                target = new ApplianceSignature(0, name, cat.Icon, cat.Key, p.Plan.Moved.Average(r => r.PowerW), p.Source.MeanDeltaQ,
+                    p.Source.MeanTransient, 0, null, SignatureLabelSource.User, null, false);
             }
             else if (category is not null)
             {
                 var cat = ApplianceCategories.Get(category);
                 target = target with { Category = cat.Key, Icon = cat.Icon };
             }
-            var (s, t) = DurationBands.AfterSplit(p.Source, target, maxSeconds);
-            await repo.UpdateSignatureAsync(s, ct);
-            await repo.UpdateSignatureAsync(t, ct);
-            await repo.MoveRunsAsync(p.Plan.Moved.Select(r => new RunMove(r.Id, r.StartEventId, r.EndEventId!.Value, id, t.Id, t.Name)).ToList(), ct);
+            var (s, after) = DurationBands.AfterSplit(p.Source, target, maxSeconds);
+            var t = await repo.ApplyDurationSplitAsync(s, after, p.Plan.Moved, ct);
             await RefreshSignaturesAsync(repo, new[] { id, t.Id }, ct);
             _log.LogInformation("NILM: signature #{From} split at {Seconds} s: {Runs} runs moved to #{To} ({Name})", id, maxSeconds, p.Plan.Moved.Count, t.Id, t.Name);
             return Describe(id, t.Name, p.Plan, t, dryRun: false, applied: true);
@@ -1829,7 +1828,7 @@ public sealed class NilmService : BackgroundService
         var events = (await repo.ListEventsBySignaturesAsync(new[] { id }, DateTimeOffset.UnixEpoch, ct)).ToDictionary(e => e.Id);
         var plan = DurationBands.PlanSplit(runs, events, maxSeconds);
         var power = plan.Moved.Count > 0 ? plan.Moved.Average(r => r.PowerW) : source.MeanDeltaP;
-        return (source, DurationBands.ExistingTarget(name, power, source, await repo.ListSignaturesAsync(ct)), plan);
+        return (source, DurationBands.ExistingTarget(name, power, maxSeconds, source, await repo.ListSignaturesAsync(ct)), plan);
     }
 
     private static DurationSplitResult Describe(long id, string name, DurationSplitPlan plan, ApplianceSignature? target, bool dryRun, bool applied) =>

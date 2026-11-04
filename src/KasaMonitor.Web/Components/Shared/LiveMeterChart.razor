@@ -2,23 +2,19 @@
 @inject ILiveStreamBroadcaster Stream
 @implements IDisposable
 
-@* Live power of the main meter (and optionally one plug overlaid), last 10 minutes. Rendered once; each new sample is
-   appended to its series (AppendDataBySeriesNameAsync); every TrimEvery appends the whole window is pushed once
-   (UpdateSeriesAsync) so the chart drops the points older than 10 minutes. *@
-<ApexChart @ref="_chart" TItem="LivePoint" Options="_options" Height="260" XAxisType="XAxisType.Datetime">
-    <ApexPointSeries TItem="LivePoint"
-                     Items="_main.Points"
-                     Name="@MainName"
-                     Color="#0072B2"
-                     SeriesType="SeriesType.Line"
-                     XValue="@(p => p.TimeUtc)"
-                     YValue="@(p => p.PowerW)" />
-    @if (OverlayPlugId is not null)
+@* Live power of the main meter and of any overlaid plugs, last 10 minutes. Rendered once. Samples only update the latest
+   value of their series; once a second LiveChartGrid adds one point with the same x to every series, and those points
+   are appended to the chart together: ApexCharts pairs appended data with its series by position, so the dictionary
+   always names all of them. Every LiveChartGrid.TrimEvery ticks the whole window is pushed once (UpdateSeriesAsync) so
+   the chart drops the points older than 10 minutes. *@
+<ApexChart @ref="_chart" TItem="LivePoint" Options="_options" Height="260" XAxisType="XAxisType.Datetime" OnRendered="OnChartRendered">
+    @foreach (var s in _series)
     {
-        <ApexPointSeries TItem="LivePoint"
-                         Items="_overlay.Points"
-                         Name="@OverlayName"
-                         Color="#E69F00"
+        <ApexPointSeries @key="s.Id"
+                         TItem="LivePoint"
+                         Items="_grid.Points(s.Id)"
+                         Name="@s.Name"
+                         Color="@s.Color"
                          SeriesType="SeriesType.Line"
                          XValue="@(p => p.TimeUtc)"
                          YValue="@(p => p.PowerW)" />
@@ -26,22 +22,19 @@
 </ApexChart>
 
 @code {
-    /// <summary>Appends between two full pushes of the window (trims the chart to 10 minutes).</summary>
-    public const int TrimEvery = 60;
-
     [Parameter, EditorRequired] public Guid PlugId { get; set; }
     [Parameter] public string MainName { get; set; } = "Casă (W)";
 
-    /// <summary>A plug drawn over the main meter (same live stream); null = none.</summary>
-    [Parameter] public Guid? OverlayPlugId { get; set; }
-    [Parameter] public string OverlayName { get; set; } = "Priză (W)";
+    /// <summary>The plugs drawn over the main meter (same live stream).</summary>
+    [Parameter] public IReadOnlyList<LiveChartSeries> Overlays { get; set; } = Array.Empty<LiveChartSeries>();
 
-    private readonly LiveChartWindow _main = new();
-    private readonly LiveChartWindow _overlay = new();
+    private List<LiveChartSeries> _series = new();
+    private LiveChartGrid _grid = null!;
     private ApexChart<LivePoint>? _chart;
     private bool _rendered;
-    private int _appends;
-    private readonly SemaphoreSlim _push = new(1, 1);
+    private bool _chartReady;
+    private bool _sending;
+    private readonly PeriodicTimer _timer = new(TimeSpan.FromSeconds(1));
 
     private readonly ApexChartOptions<LivePoint> _options = new()
     {
@@ -61,8 +54,12 @@
 
     protected override void OnInitialized()
     {
-        _main.Seed(Stream.Recent(PlugId));
-        if (OverlayPlugId is { } o) _overlay.Seed(Stream.Recent(o));
+        var lines = Overlays.Prepend(new LiveChartSeries(PlugId, MainName, LiveChartColors.Main)).ToList();
+        var names = LiveChartGrid.UniqueNames(lines.Select(l => l.Name));
+        _series = lines.Select((l, i) => l with { Name = names[i] }).ToList();
+        _grid = new LiveChartGrid(_series.Select(s => s.Id));
+        _grid.Seed(Stream.Recent, DateTimeOffset.UtcNow);
+        _options.Legend = new Legend { Show = Overlays.Count > 0 };
         Stream.SampleReceived += OnSample;
     }
 
@@ -70,34 +67,64 @@
 
     protected override void OnAfterRender(bool firstRender)
     {
-        if (firstRender) _rendered = true;
+        if (!firstRender) return;
+        _rendered = true;
+        _ = RunTicksAsync();
     }
 
-    private void OnSample(LiveSample s)
+    private void OnSample(LiveSample s) => _grid.Observe(s);
+
+    private async Task RunTicksAsync()
     {
-        var window = s.PlugId == PlugId ? _main : s.PlugId == OverlayPlugId ? _overlay : null;
-        if (window is null) return;
-        var series = window == _main ? MainName : OverlayName;
-        _ = InvokeAsync(async () =>
+        try
         {
-            if (!window.Add(s) || _chart is null) return;
-            // One push at a time; a sample that arrives meanwhile is already in the window and goes with the next trim.
-            if (!await _push.WaitAsync(0)) return;
-            try
-            {
-                if (++_appends % TrimEvery == 0)
-                    await _chart.UpdateSeriesAsync(false);
-                else
-                    await _chart.AppendDataBySeriesNameAsync(new Dictionary<string, IEnumerable<LivePoint>> { [series] = new[] { window.Points[^1] } });
-            }
-            catch (Exception) { /* circuit gone or chart not ready yet */ }
-            finally { _push.Release(); }
-        });
+            // The send is not awaited: a slow one must not swallow ticks, their points wait in the windows.
+            while (await _timer.WaitForNextTickAsync())
+                await InvokeAsync(() => { if (_grid.Tick(DateTimeOffset.UtcNow)) _ = SendAsync(); });
+        }
+        catch (ObjectDisposedException) { /* circuit gone */ }
     }
+
+    /// <summary>The first render took the points added until then.</summary>
+    private void OnChartRendered()
+    {
+        _grid.MarkSent(LastPointInChart());
+        _chartReady = true;
+    }
+
+    private async Task SendAsync()
+    {
+        // One send at a time; the points of a tick that arrives meanwhile are in the windows and go with the next send.
+        if (!_chartReady || _sending || _chart is null) return;
+        _sending = true;
+        try
+        {
+            var fullPush = _grid.FullPushDue;
+            if (fullPush)
+            {
+                await _chart.UpdateSeriesAsync(false);
+            }
+            else
+            {
+                var pending = _grid.Pending();
+                if (pending.Values.All(p => p.Count == 0)) return;
+                await _chart.AppendDataBySeriesNameAsync(_series.ToDictionary(s => s.Name, s => (IEnumerable<LivePoint>)pending[s.Id]));
+            }
+            _grid.MarkSent(LastPointInChart(), fullPush);
+        }
+        catch (Exception) { /* circuit gone or chart not ready yet; what was not marked goes with the next send */ }
+        finally { _sending = false; }
+    }
+
+    /// <summary>
+    /// The newest x the chart was given. Read from the chart's own series, not from the windows: UpdateSeriesAsync reads
+    /// the windows only after a yield, so a tick that slips in before that is already in the chart.
+    /// </summary>
+    private DateTime? LastPointInChart() => _options.Series?.FirstOrDefault()?.Data?.LastOrDefault()?.X as DateTime?;
 
     public void Dispose()
     {
         Stream.SampleReceived -= OnSample;
-        _push.Dispose();
+        _timer.Dispose();   // ends the loop of RunTicksAsync
     }
 }

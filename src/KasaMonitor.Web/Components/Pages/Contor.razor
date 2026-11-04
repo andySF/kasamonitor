@@ -40,25 +40,30 @@ else
 
     <div class="card mt-3">
         <div class="card-body">
-            <div class="d-flex flex-wrap align-items-center justify-content-between gap-2">
-                <h2 class="h6 text-secondary mb-0" title="Contorul general: o valoare pe secundă (fluxul live), fereastră glisantă de 10 minute">Ultimele 10 minute (1 s)</h2>
-                <label class="d-flex align-items-center gap-2 small text-secondary">Suprapune o priză
-                    <select class="form-select form-select-sm w-auto" value="@(_overlayId?.ToString() ?? "")" @onchange="OnOverlayChanged">
-                        <option value="">(niciuna)</option>
-                        @foreach (var p in _overlayCandidates)
-                        {
-                            <option value="@p.Id">@p.Alias</option>
-                        }
-                    </select>
-                </label>
-            </div>
+            <h2 class="h6 text-secondary mb-0" title="Contorul general: o valoare pe secundă (fluxul live), fereastră glisantă de 10 minute">Ultimele 10 minute (1 s)</h2>
+            @if (_overlayCandidates.Count > 0)
+            {
+                <div class="d-flex flex-wrap align-items-center gap-2 mt-2" role="group" aria-label="Suprapune prize">
+                    <span class="small text-secondary">Suprapune prize</span>
+                    @foreach (var (p, i) in _overlayCandidates.Select((p, i) => (p, i)))
+                    {
+                        var on = _overlayIds.Contains(p.Id);
+                        var color = LiveChartColors.Overlay(i);
+                        <button type="button" class="integration-chip" aria-pressed="@(on ? "true" : "false")"
+                                style="@(on ? $"border-color:{color};box-shadow:inset 0 0 0 1px {color}" : null)"
+                                @onclick="() => ToggleOverlay(p.Id)">
+                            <span class="d-inline-block rounded-circle" style="width:.7rem;height:.7rem;@(on ? $"background:{color}" : "border:1px solid var(--border)")" aria-hidden="true"></span>
+                            <span class="@(on ? null : "text-secondary")">@p.Alias</span>
+                        </button>
+                    }
+                </div>
+            }
             @if (!_streamEnabled)
             {
                 <div class="small text-warning-emphasis"><i class="bi bi-info-circle me-1"></i>Fluxul la 1 s e oprit în Setări; graficul nu primește date.</div>
             }
-            <LiveMeterChart @key="(_overlayId ?? Guid.Empty)" PlugId="_main.Id" MainName="@($"{_main.Alias} (W)")"
-                            OverlayPlugId="_overlayId" OverlayName="@($"{_overlayCandidates.FirstOrDefault(p => p.Id == _overlayId)?.Alias} (W)")" />
-            <div class="small text-secondary">Prizele sunt citite adaptiv (1 s cât timp puterea se schimbă, până la 10 s când stau liniștite), deci linia prizei are pași mai rari.</div>
+            <LiveMeterChart @key="OverlayKey" PlugId="_main.Id" MainName="@($"{_main.Alias} (W)")" Overlays="ActiveOverlays" />
+            <div class="small text-secondary">Prizele sunt citite adaptiv (1 s cât timp puterea se schimbă, până la 10 s când stau liniștite). Valoarea se păstrează până la următoarea citire, deci linia prizei apare în trepte; fără nicio citire timp de 30 s, linia se întrerupe.</div>
         </div>
     </div>
 
@@ -148,7 +153,7 @@ else
     private Plug? _main;
     private List<Plug> _subMeters = new();
     private List<Plug> _overlayCandidates = new();
-    private Guid? _overlayId;
+    private readonly HashSet<Guid> _overlayIds = new();
     private Dictionary<Guid, string> _aliases = new();
     private List<MinutePoint> _today = new();
     private double _todayWh;
@@ -204,7 +209,7 @@ else
         _subMeters = plugs.Where(p => p.Role == PlugRole.SubMeter && p.IsPolled).OrderBy(p => p.Alias).ToList();
         // Overlay: any other channel of the same live stream.
         _overlayCandidates = plugs.Where(p => p.IsPolled && p.StreamEnabled && p.Role != PlugRole.MainMeter).OrderBy(p => p.Alias).ToList();
-        if (_overlayId is { } o && _overlayCandidates.All(p => p.Id != o)) _overlayId = null;
+        _overlayIds.IntersectWith(_overlayCandidates.Select(p => p.Id));
         if (_main is null) return;
 
         var meters = scope.ServiceProvider.GetRequiredService<ILiveRepository>();
@@ -231,8 +236,18 @@ else
         StateHasChanged();
     }
 
-    private void OnOverlayChanged(ChangeEventArgs e) =>
-        _overlayId = Guid.TryParse(e.Value?.ToString(), out var id) ? id : null;
+    private string OverlayKey => string.Join(",", _overlayIds.OrderBy(id => id));
+
+    private List<LiveChartSeries> ActiveOverlays => _overlayCandidates
+        .Select((p, i) => (p, i))
+        .Where(x => _overlayIds.Contains(x.p.Id))
+        .Select(x => new LiveChartSeries(x.p.Id, $"{x.p.Alias} (W)", LiveChartColors.Overlay(x.i)))
+        .ToList();
+
+    private void ToggleOverlay(Guid id)
+    {
+        if (!_overlayIds.Remove(id)) _overlayIds.Add(id);
+    }
 
     public void Dispose() => _timer?.Dispose();
 }

@@ -7,7 +7,7 @@ plugs and energy meters (e.g. Shelly EM Gen3, local JSON-RPC; the only write is 
 with SQL Server, a web UI on port 8910 and a Prometheus `/metrics` endpoint. An optional Prometheus + Grafana stack
 with a ready-made dashboard and alert rules is included.
 
-Version: **0.12.2** (`Directory.Build.props`). Docker image: `duobit/kasamonitor`.
+Version: **0.12.3** (`Directory.Build.props`). Docker image: `duobit/kasamonitor`.
 
 **Requirements:** SQL Server 2019+ (any edition reachable from the Docker host; Express is limited to 10 GB per
 database), a Docker host on the same LAN as the devices (host networking). Up to 0.11 the data were in a SQLite file;
@@ -90,7 +90,7 @@ TP-Link (Tapo app) account in `/settings/tplink` and press **Adaugă** → TP-Li
   in the address) for electricity, gas and boiler, Miele, detected consumers, climate (with heating degree days and the
   energy signature), costs and events; Δ at the same share of the previous period, drill-down, CSV per section; and
   „Rapoarte” on `/centrala` (gas, boiler electricity, heat produced). See [History](#history-history-istoric).
-- **Version in the menu**: „v0.12.2” at the right of the navigation bar; the tooltip shows the commit and the build time.
+- **Version in the menu**: „v0.12.3” at the right of the navigation bar; the tooltip shows the commit and the build time.
 - **Browser errors in the server log**: JavaScript errors and the Blazor error banner are reported to
   `POST /api/client-error` and logged at Warning (category `KasaMonitor.ClientErrors`), so `docker logs` shows them.
 - **HTTP API for the appliance detection** (`/api/nilm/*`, LAN only): list, sheet, label, merge, add to, hide, regroup,
@@ -600,9 +600,12 @@ and every plug, off for sub-meters such as an unused clamp; changing the role re
 
 **Contor page** (`/contor`, menu „Contor”): alias of the main meter, power now (1 s; falls back to the 10 s poll when
 the stream is older than 5 s), rest of the house (see below), voltage (red outside 207–253 V), current, power
-factor, frequency, relay; live chart of the last 10 minutes (main meter, plus an optional plug chosen in „Suprapune o
-priză”, from the same stream; only the new point is pushed to ApexCharts each time, the whole 10-minute window once a
-minute); today per minute (min/avg/max from the aggregates); energy per day for 30 days (from `DailyEnergy`) with
+factor, frequency, relay; live chart of the last 10 minutes (main meter, plus any number of plugs toggled in „Suprapune
+prize”, from the same stream, each with a fixed colour). All the lines share a grid of whole UTC seconds, so the tooltip
+shows them together: a sample only updates its line's latest value, which is held until the next reading (a plug read
+every few seconds draws in steps) and for at most 30 s, then the line has a gap. Once a second the new points of all the
+lines are pushed to ApexCharts, the whole 10-minute window once a minute; today per minute
+(min/avg/max from the aggregates); energy per day for 30 days (from `DailyEnergy`) with
 cost; the sub-meters; the last 20 relay commands. Without a main meter it links to `/dispozitive`. The „Prize” page shows a
 „Casă” card (house power, rest of the house, relay) above the plugs.
 

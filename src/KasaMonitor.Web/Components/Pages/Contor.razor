@@ -40,11 +40,15 @@ else
 
     <div class="card mt-3">
         <div class="card-body">
-            <h2 class="h6 text-secondary mb-0" title="Contorul general: o valoare pe secundă (fluxul live), fereastră glisantă de 10 minute">Ultimele 10 minute (1 s)</h2>
-            @if (_overlayCandidates.Count > 0)
-            {
-                <div class="d-flex flex-wrap align-items-center gap-2 mt-2" role="group" aria-label="Suprapune prize">
-                    <span class="small text-secondary">Suprapune prize</span>
+            <h2 class="h6 text-secondary mb-0" title="O valoare pe secundă (fluxul live), fereastră glisantă de 10 minute">Ultimele 10 minute (1 s)</h2>
+            <div class="d-flex flex-wrap align-items-center gap-2 mt-2" role="group" aria-label="Linii afișate">
+                <span class="small text-secondary">Linii afișate</span>
+                <button type="button" class="integration-chip" aria-pressed="@(_showMeter ? "true" : "false")"
+                        style="@(_showMeter ? $"border-color:{LiveChartColors.Main};box-shadow:inset 0 0 0 1px {LiveChartColors.Main}" : null)"
+                        @onclick="() => _showMeter = !_showMeter">
+                    <span class="d-inline-block rounded-circle" style="width:.7rem;height:.7rem;@(_showMeter ? $"background:{LiveChartColors.Main}" : "border:1px solid var(--border)")" aria-hidden="true"></span>
+                    <span class="@(_showMeter ? null : "text-secondary")">@_main.Alias</span>
+                </button>
                     @foreach (var (p, i) in _overlayCandidates.Select((p, i) => (p, i)))
                     {
                         var on = _overlayIds.Contains(p.Id);
@@ -56,13 +60,19 @@ else
                             <span class="@(on ? null : "text-secondary")">@p.Alias</span>
                         </button>
                     }
-                </div>
-            }
+            </div>
             @if (!_streamEnabled)
             {
                 <div class="small text-warning-emphasis"><i class="bi bi-info-circle me-1"></i>Fluxul la 1 s e oprit în Setări; graficul nu primește date.</div>
             }
-            <LiveMeterChart @key="OverlayKey" PlugId="_main.Id" MainName="@($"{_main.Alias} (W)")" Overlays="ActiveOverlays" />
+            @if (_showMeter || _overlayIds.Count > 0)
+            {
+                <LiveMeterChart @key="OverlayKey" PlugId="_main.Id" ShowMain="_showMeter" MainName="@($"{_main.Alias} (W)")" Overlays="ActiveOverlays" />
+            }
+            else
+            {
+                <div class="small text-secondary py-4 text-center">Alege cel puțin o linie.</div>
+            }
             <div class="small text-secondary">Prizele sunt citite adaptiv (1 s cât timp puterea se schimbă, până la 10 s când stau liniștite). Valoarea se păstrează până la următoarea citire, deci linia prizei apare în trepte; fără nicio citire timp de 30 s, linia se întrerupe.</div>
         </div>
     </div>
@@ -154,6 +164,7 @@ else
     private List<Plug> _subMeters = new();
     private List<Plug> _overlayCandidates = new();
     private readonly HashSet<Guid> _overlayIds = new();
+    private bool _showMeter = true;
     private Dictionary<Guid, string> _aliases = new();
     private List<MinutePoint> _today = new();
     private double _todayWh;
@@ -236,7 +247,7 @@ else
         StateHasChanged();
     }
 
-    private string OverlayKey => string.Join(",", _overlayIds.OrderBy(id => id));
+    private string OverlayKey => (_showMeter ? "m:" : "") + string.Join(",", _overlayIds.OrderBy(id => id));
 
     private List<LiveChartSeries> ActiveOverlays => _overlayCandidates
         .Select((p, i) => (p, i))

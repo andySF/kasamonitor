@@ -2,7 +2,7 @@
 @inject ILiveStreamBroadcaster Stream
 @implements IDisposable
 
-@* Live power of the main meter and of any overlaid plugs, last 10 minutes. Rendered once. Samples only update the latest
+@* Live power of the main meter (optional) and of any overlaid plugs, last 10 minutes. Rendered once. Samples only update the latest
    value of their series; once a second LiveChartGrid adds one point with the same x to every series, and those points
    are appended to the chart together: ApexCharts pairs appended data with its series by position, so the dictionary
    always names all of them. Every LiveChartGrid.TrimEvery ticks the whole window is pushed once (UpdateSeriesAsync) so
@@ -24,6 +24,9 @@
 @code {
     [Parameter, EditorRequired] public Guid PlugId { get; set; }
     [Parameter] public string MainName { get; set; } = "Casă (W)";
+
+    /// <summary>False leaves the main meter out, to compare the plugs on their own scale.</summary>
+    [Parameter] public bool ShowMain { get; set; } = true;
 
     /// <summary>The plugs drawn over the main meter (same live stream).</summary>
     [Parameter] public IReadOnlyList<LiveChartSeries> Overlays { get; set; } = Array.Empty<LiveChartSeries>();
@@ -54,12 +57,12 @@
 
     protected override void OnInitialized()
     {
-        var lines = Overlays.Prepend(new LiveChartSeries(PlugId, MainName, LiveChartColors.Main)).ToList();
+        var lines = (ShowMain ? Overlays.Prepend(new LiveChartSeries(PlugId, MainName, LiveChartColors.Main)) : Overlays).ToList();
         var names = LiveChartGrid.UniqueNames(lines.Select(l => l.Name));
         _series = lines.Select((l, i) => l with { Name = names[i] }).ToList();
         _grid = new LiveChartGrid(_series.Select(s => s.Id));
         _grid.Seed(Stream.Recent, DateTimeOffset.UtcNow);
-        _options.Legend = new Legend { Show = Overlays.Count > 0 };
+        _options.Legend = new Legend { Show = lines.Count > 1 };
         Stream.SampleReceived += OnSample;
     }
 

@@ -4,7 +4,7 @@ How KasaMonitor recognises appliances in the power of the whole house, for a tec
 conceptual explanation; thresholds, settings, metrics and every UI detail are in the README, section
 [Appliance detection (NILM)](../README.md#appliance-detection-nilm), and the HTTP routes in
 [HTTP API (LAN)](../README.md#http-api-lan). Why some rules look the way they do is in [decisions.md](decisions.md)
-(0.8.2, 0.9.1, 0.9.4, 0.13.0).
+(0.8.2, 0.9.1, 0.9.4, 0.13.0, 0.13.1).
 
 NILM (non-intrusive load monitoring) tries to say *which appliance* is on from one measurement at the mains entry. The
 approach here is deliberately simple, deterministic and explainable: every grouping and every merge can be
@@ -77,6 +77,11 @@ its consumption is measured by the plug itself, so it is listed separately, kept
 detected energy, and never subtracted twice from the rest of the house. A plug carrying a single appliance
 skips the thresholds (see decisions, 0.9.1).
 
+**The signature of a plug with a single appliance is exclusive** (decisions, 0.13.1): it holds only events that plug
+confirmed and events the user put there by hand. Nothing else enters it, on any path. A step the plug could not confirm
+(a pulse under ≈ 15 s, section 7) therefore leaves it, even though the plug did measure it; the plug's own energy is
+unaffected, and the number of events in „Necunoscut” goes up. That is correct: they were never the appliance's.
+
 ## 3. Signatures: grouping events
 
 A **signature** is a group of similar events, i.e. an appliance *component*: a washing machine is a heater (≈ 2 kW), a
@@ -90,12 +95,21 @@ drum motor (≈ 250–300 W pulses) and a pump; a kettle is one heater.
 - **Anchors.** A signature named by the user or linked to a plug is an anchor. A new event goes first to the nearest
   anchor within 1.5 × eps (an event labelled by a plug first to the anchor linked to that plug, never to one linked
   to another), otherwise to the nearest other signature within eps, otherwise to a new „Necunoscut #n”. The wider
-  tolerance lets a kettle running at −6 % (lower voltage while a washer heats) still land on its name.
+  tolerance lets a kettle running at −6 % (lower voltage while a washer heats) still land on its name. An exclusive
+  anchor (section 2) takes only the events labelled by its own plug; for the others it does not exist. A prediction of the
+  classifier cannot give an event to one either: a name that points only at exclusive signatures counts as no label, a name
+  with no signature keeps its label and goes through the anchors like any event.
 - **Nightly re-clustering** (03:30, at start when the last run is older than 24 h, or on demand): the newest 20,000
   events of the last 30 days are clustered again on a low-priority thread. Events labelled by the user or by the
   plug of their signature never move. Every other event passes the anchors again (it stays in a labelled signature only
   while within 1.5 × eps, so a signature cannot ratchet away by keeping everything it once caught); DBSCAN groups the
-  rest; empty automatic signatures are deleted.
+  rest; empty automatic signatures are deleted. In an exclusive signature only what the plug confirmed, what the user
+  labelled and what a duration split put there stays; the rest goes through the anchors and DBSCAN again. Events the job
+  does not read (older than the window or than the newest 20,000) leave too, without a signature, or they would keep
+  feeding the centre. Runs, centre and count are rebuilt from what stays. An emptied exclusive signature is not deleted: it
+  is the plug's, and the next confirmation sets its centre. A confirmation never makes a new signature only because a
+  stored centre drifted: it first looks at the confirmed events behind each centre of its plug, then at a signature with
+  none, and only then starts a new one (a new component).
 - **Automatic merge.** Several signatures that are the same component are merged, never across two different plugs,
   never across two different user-given names, never hidden ones. Rules: (c) the same user name and centres within
   1.5 × eps; (a) centres within eps (transient compared only if both know it); (b) both linked to the same plug, or
@@ -104,7 +118,9 @@ drum motor (≈ 250–300 W pulses) and a pump; a kettle is one heater.
   and at least 60 % of the smaller one's events have an event of the other within ±10 minutes, twice as often as with
   the times shifted by ±1 hour (a dense small load is „together” with everything by chance). The survivor is the
   user-named one, else the plug-linked one, else the one with more events; the absorbed signature's events and all its
-  runs move to it.
+  runs move to it. An exclusive signature takes part only with another signature of the same plug, both with events the plug
+  confirmed. A merge by hand stays possible: the events the user brings in take the user's label, so the next
+  re-clustering does not undo it; what the signature caught before is not confirmed by that merge.
 - **The „sheet”** of a signature (ΔP mean ± deviation, ΔQ, power factor, transient or „unknown n of m”, typical run
   length with percentiles, a 24-bar histogram of hours, plug share, energy over 7 days) is computed on demand from the
   events and runs, by the same function that feeds the automatic merge, so what the user sees is what the rule used.
@@ -143,7 +159,8 @@ for 1–7 minutes) have the same step, so they fall into one signature. What dif
 - **Moving a run.** When a run closes with its own switch-off (never one closed by the house level or by the 6-hour
   limit) and its duration is out of the band of its signature S, it moves when exactly one other signature T qualifies:
   not hidden, a band that holds the duration, no plug or the plug of S, and |ΔP| and ΔQ of the switch-on within the anchor
-  radius (1.5 × eps) of T, or of S when one was split from the other (their centres can then be the same). Two
+  radius (1.5 × eps) of T, or of S when one was split from the other (their centres can then be the same). An exclusive T
+  (section 2) qualifies only when its plug confirmed both events of the run. Two
   candidates, or none, leave it where it is. The run and both events move, and with the run its energy, day by day. An
   event labelled by the user holds the whole run in place: moving only the other event would break the pair at the next
   rebuild. The rule also runs when the runs are rebuilt, because the anchors may give S a run that does not fit it.
@@ -154,11 +171,14 @@ for 1–7 minutes) have the same step, so they fall into one signature. What dif
   compatible one (a band of its own must start at zero and end at the limit or below it: a band of 50–100 s is another
   component), otherwise to a new one named by the user. T ends at the limit, S starts there unless it has a band of
   its own. Signatures and moves are written in one transaction. If S is measured by a plug so is T, even if the plug cannot label its pulses (section 7): a split moves
-  energy between two names and must not take it out of the plug's side of the balance.
+  energy between two names and must not take it out of the plug's side of the balance. A split by hand of an exclusive
+  signature is the user's decision and stands: its events keep the plug's label and stay at the re-clustering. New pulses the
+  plug cannot label go to neither side.
 - **Waiting in one place.** Two sides of a split can have the same centre, so „the nearest” would give a switch-on to one
   and its switch-off to the other, and the run would never pair. Every new event near such a pair therefore goes to S; the
   run's duration sends it across when it closes. So a pulse still running counts under S („Acum pornite”,
-  `kasa_appliance_power_w`) until it closes and moves. This holds only for a split: two bands set by hand on signatures
+  `kasa_appliance_power_w`) until it closes and moves. An event the plug did not confirm does not wait in an exclusive S.
+  This holds only for a split: two bands set by hand on signatures
   with the same centre have no such place, a switch-on and its switch-off can land apart and the run then never closes
   as paired, so for two appliances with the same centre use the split.
 - **Merging.** Two signatures with disjoint bands are never merged, whatever the rule; two bands that only touch (the
@@ -175,7 +195,8 @@ for 1–7 minutes) have the same step, so they fall into one signature. What dif
   as a step.
 - **Short pulses.** The plug matcher compares *stabilised levels* (medians before and after). A pulse shorter than
   about 15 s returns to the baseline, so the difference of medians is near zero and the plug does not label it,
-  although the plug saw the peak.
+  although the plug saw the peak. On a plug with a single appliance such a pulse stays out of the plug's signature
+  (section 2) and is counted with the unknown ones.
 - **Small loads, 15–50 W.** A UPS, lamps, chargers and a PC have nearly the same ΔP, ΔQ and transient. Their
   signatures stay mixed; lowering the threshold to 15 W gave 76 events in 16 minutes, mostly from a UPS. The meter itself
   moves by a median of 17 W per second.

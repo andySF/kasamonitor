@@ -28,10 +28,14 @@ public readonly record struct SignatureCentre(long Id, double MeanDeltaP, double
     public static SignatureCentre Of(ApplianceSignature s) => new(s.Id, s.MeanDeltaP, s.MeanDeltaQ, s.MeanTransient, s.MeanTransient > 0);
 }
 
-/// <summary>An anchor's centre and the plug it is linked to (an event labelled by another plug never goes to it).</summary>
-public readonly record struct AnchorCentre(SignatureCentre Centre, Guid? PlugId)
+/// <summary>
+/// An anchor's centre and the plug it is linked to (an event labelled by another plug never goes to it).
+/// <see cref="Exclusive"/>: only an event labelled by that plug goes to it (<see cref="ExclusiveSignatures"/>).
+/// </summary>
+public readonly record struct AnchorCentre(SignatureCentre Centre, Guid? PlugId, bool Exclusive = false)
 {
-    public static AnchorCentre Of(ApplianceSignature s) => new(SignatureCentre.Of(s), s.PlugId);
+    public static AnchorCentre Of(ApplianceSignature s, IReadOnlySet<Guid> exclusivePlugs) =>
+        new(SignatureCentre.Of(s), s.PlugId, ExclusiveSignatures.IsExclusive(s, exclusivePlugs));
 }
 
 /// <summary>
@@ -198,13 +202,14 @@ public static class SignatureClusterer
     /// <summary>
     /// The anchor of an event within <see cref="AnchorScale"/> × eps, or null. An event labelled by a plug
     /// (<paramref name="labelPlug"/>) goes first to an anchor linked to that plug, and never to an anchor linked to
-    /// another plug.
+    /// another plug. An exclusive anchor takes only the events labelled by its own plug.
     /// </summary>
     public static long? NearestAnchor(EventFeatures e, Guid? labelPlug, IEnumerable<AnchorCentre> anchors)
     {
         var list = anchors as IReadOnlyCollection<AnchorCentre> ?? anchors.ToList();
         if (labelPlug is { } plug && Nearest(e, list.Where(a => a.PlugId == plug).Select(a => a.Centre), AnchorScale) is { } own) return own;
-        return Nearest(e, list.Where(a => a.PlugId is null || labelPlug is null || a.PlugId == labelPlug).Select(a => a.Centre), AnchorScale);
+        return Nearest(e, list.Where(a => (a.PlugId is null || labelPlug is null || a.PlugId == labelPlug) && (!a.Exclusive || a.PlugId == labelPlug))
+            .Select(a => a.Centre), AnchorScale);
     }
 
     /// <summary>

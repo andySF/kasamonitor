@@ -15,6 +15,24 @@ public class NilmRepositoryTests
     private static async Task<MeterEvent> AddOne(NilmRepository repo, MeterEvent e) => (await repo.AddEventsAsync(new[] { e }, CancellationToken.None)).Single();
 
     [Fact]
+    public async Task LabelEvents_GivesTheUsersLabel_KeepsTheSignature_AndLeavesTheOthersAlone()
+    {
+        using var db = new TestDbFactory();
+        var repo = new NilmRepository(db.CreateContext());
+        var sig = await repo.AddSignatureAsync(new ApplianceSignature(0, "Frigider", "i", "other", 60, 0, 0, 0, null, SignatureLabelSource.Plug, null, false), CancellationToken.None);
+        var plug = Guid.NewGuid();
+        var labelled = await AddOne(repo, E(0, 60, sig.Id) with { Label = "Model", Source = EventLabelSource.Model, LabelPlugId = plug });
+        var other = await AddOne(repo, E(60, -60, sig.Id) with { Label = "Priza", Source = EventLabelSource.AutoPlug, LabelPlugId = plug });
+
+        await repo.LabelEventsAsync(new[] { labelled.Id }, "Frigider", CancellationToken.None);
+        await repo.LabelEventsAsync(Array.Empty<long>(), "Nimic", CancellationToken.None);
+
+        var fresh = new NilmRepository(db.CreateContext());
+        (await fresh.GetEventAsync(labelled.Id, CancellationToken.None)).Should().BeEquivalentTo(labelled with { Label = "Frigider", Source = EventLabelSource.User, LabelPlugId = null });
+        (await fresh.GetEventAsync(other.Id, CancellationToken.None)).Should().BeEquivalentTo(other);
+    }
+
+    [Fact]
     public async Task Events_DuplicatesWithinTwoSecondsSkipped_LabelsRoundTrip()
     {
         using var db = new TestDbFactory();

@@ -29,7 +29,8 @@ public sealed record MergeStep(long SurvivorId, long AbsorbedId, MergeReason Rea
 /// The automatic merge of signatures that are the same component (nightly job, startup after a missed night, „Regrupează
 /// acum”). Never merged: two signatures linked to different plugs, two signatures the user named differently, hidden
 /// ones, two signatures with disjoint duration bands (<see cref="DurationBands.Disjoint"/>: their runs say they are
-/// different appliances, however alike their steps). Otherwise two signatures are merged when
+/// different appliances, however alike their steps), an exclusive signature (<see cref="ExclusiveSignatures"/>) with
+/// anything but another signature of the same plug, both with events the plug confirmed. Otherwise two signatures are merged when
 /// <list type="bullet">
 /// <item>(c) the user gave them the same name <b>and</b> their centres are within the anchor radius
 /// (<see cref="SignatureClusterer.AnchorScale"/>; the same name on distant components stays two rows);</item>
@@ -124,12 +125,23 @@ public static class SignatureMerger
     }
 
     /// <summary>Why <paramref name="a"/> and <paramref name="b"/> are the same component, or null.</summary>
-    public static MergeReason? Reason(MergeCandidate a, MergeCandidate b) => Reason(ToGroup(a), ToGroup(b)).Reason;
+    public static MergeReason? Reason(MergeCandidate a, MergeCandidate b, IReadOnlySet<Guid>? exclusivePlugs = null) =>
+        Reason(ToGroup(a), ToGroup(b), exclusivePlugs ?? NoPlugs).Reason;
 
-    private static (MergeReason? Reason, double Score) Reason(Group a, Group b)
+    private static readonly IReadOnlySet<Guid> NoPlugs = new HashSet<Guid>();
+
+    /// <summary>Neither is exclusive, or both belong to the same plug and hold something it confirmed.</summary>
+    private static bool ExclusiveAllows(Group a, Group b, IReadOnlySet<Guid> exclusivePlugs)
+    {
+        if (!ExclusiveSignatures.IsExclusive(a.Signature, exclusivePlugs) && !ExclusiveSignatures.IsExclusive(b.Signature, exclusivePlugs)) return true;
+        return a.Signature.PlugId is { } plug && plug == b.Signature.PlugId && a.PlugEvents.GetValueOrDefault(plug) > 0 && b.PlugEvents.GetValueOrDefault(plug) > 0;
+    }
+
+    private static (MergeReason? Reason, double Score) Reason(Group a, Group b, IReadOnlySet<Guid> exclusivePlugs)
     {
         if (a.Signature.PlugId is { } pa && b.Signature.PlugId is { } pb && pa != pb) return (null, 0);
         if (DurationBands.Disjoint(a.Signature, b.Signature)) return (null, 0);
+        if (!ExclusiveAllows(a, b, exclusivePlugs)) return (null, 0);
         var d = SignatureClusterer.Distance(a.Centre, b.Centre);
         (MergeReason? Reason, double Score) result;
         var nameA = UserName(a.Signature);
@@ -231,8 +243,9 @@ public static class SignatureMerger
     }
 
     /// <summary>The merges to apply, in order (a later step can name the survivor of an earlier one).</summary>
-    public static IReadOnlyList<MergeStep> Plan(IReadOnlyList<MergeCandidate> candidates)
+    public static IReadOnlyList<MergeStep> Plan(IReadOnlyList<MergeCandidate> candidates, IReadOnlySet<Guid>? exclusivePlugs = null)
     {
+        var exclusive = exclusivePlugs ?? NoPlugs;
         var groups = candidates.Where(c => !c.Signature.Hidden).Select(ToGroup).ToList();
         var steps = new List<MergeStep>();
         while (true)
@@ -241,7 +254,7 @@ public static class SignatureMerger
             for (var i = 0; i < groups.Count; i++)
                 for (var j = i + 1; j < groups.Count; j++)
                 {
-                    var (reason, score) = Reason(groups[i], groups[j]);
+                    var (reason, score) = Reason(groups[i], groups[j], exclusive);
                     if (reason is { } r && (best is null || score < best.Value.Score)) best = (i, j, r, score);
                 }
             if (best is not { } b) return steps;

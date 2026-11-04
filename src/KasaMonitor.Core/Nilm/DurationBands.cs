@@ -64,15 +64,19 @@ public static class DurationBands
     /// Where a closed run goes: the only other signature, not hidden, with a band that holds the duration, not linked to
     /// another plug than <paramref name="source"/>, whose centre is compatible with the switch-on. Null when the run
     /// stays: not paired, inside the band (or none), an event labelled by the user (the run keeps both events
-    /// together, otherwise it would fall apart at the next rebuild), no candidate, or more than one.
+    /// together, otherwise it would fall apart at the next rebuild), no candidate, or more than one. An exclusive signature
+    /// (<see cref="ExclusiveSignatures"/>) is a candidate only for a run whose two events its plug confirmed.
     /// </summary>
-    public static ApplianceSignature? Target(ApplianceRun run, MeterEvent? on, MeterEvent? off, ApplianceSignature source, IEnumerable<ApplianceSignature> all)
+    public static ApplianceSignature? Target(ApplianceRun run, MeterEvent? on, MeterEvent? off, ApplianceSignature source, IEnumerable<ApplianceSignature> all,
+        IReadOnlySet<Guid>? exclusivePlugs = null)
     {
         if (!IsOutOfBand(run, source) || on is null || off is null) return null;
         if (on.Source == EventLabelSource.User || off.Source == EventLabelSource.User) return null;
         var seconds = Seconds(run);
         var candidates = all.Where(t => t.Id != source.Id && !t.Hidden && HasBand(t) && Contains(t, seconds)
                                         && (t.PlugId is null || t.PlugId == source.PlugId)
+                                        && (t.PlugId is not { } plug || exclusivePlugs?.Contains(plug) != true
+                                            || (ExclusiveSignatures.ConfirmedBy(on, plug) && ExclusiveSignatures.ConfirmedBy(off, plug)))
                                         && Compatible(on, t, source)).Take(2).ToList();
         return candidates.Count == 1 ? candidates[0] : null;
     }

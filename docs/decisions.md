@@ -409,3 +409,40 @@ at the next rebuild of the runs); what already stands in a signature moves with 
 plug-measured one stays linked to that plug, though the plug cannot label pulses under ≈ 15 s, or its energy would be
 subtracted twice from the rest of the house. The Prometheus counter of a signature keeps what it counted before a split, like
 after a rebuild of the runs.
+
+## 0.13.1 – The signature of a single-appliance plug holds only what the plug confirmed
+
+**Context.** Measured on 2026-11-04 on a fridge on a plug with a single appliance (a compressor of ≈ 60 W): 86 real
+transitions on the plug in 24 hours, but 1,969 events in its signature, with a mean ΔP of 39 W. None of them had the source
+`auto-plug`, 171 had the source `model` and the label of another plug, and only 121 lay within ±20 s of a real
+transition. An anchor accepted any event without a plug label, including the anchor of a plug that explains its
+appliance completely, and a prediction of a name without a signature fell through to the anchors as well. The centre was
+then computed from what it caught, and followed it: 0.9.1 made the plug the ground truth and left a door open.
+
+**Decision: an invariant, not a threshold.** A signature linked to a plug with `SingleAppliance` holds only events
+confirmed by that plug (`AutoPlug` with its `LabelPlugId`) and events the user put there by hand. It has one owner,
+`ExclusiveSignatures`, and every path goes through it: the assignment (`AnchorCentre` is marked exclusive, `NearestAnchor` skips
+it for an event not labelled by its plug), the model, the waiting side of a split (`Canonical`), the duration rule (`Target`),
+the automatic merge (only with another signature of the same plug, both with confirmed events), and the re-clustering. A
+tighter radius was not enough: a UPS and a compressor can have the same step, and only the plug tells them apart.
+
+**Decision: the cleaning happens at the regrouping, on what is already there.** No migration and no separate job. What does
+not belong leaves through the anchors and DBSCAN like any free event. What the job does not read (older than the window or
+than the newest 20,000) leaves without a signature: left in place it would keep feeding the centre, which is computed over the
+whole window, and DBSCAN and the rebuild of the runs stop at those same limits. An emptied signature stays, since it is the
+plug's.
+
+**Decision: a drifted centre never makes a duplicate.** Until the first regrouping the stored centre is still wrong, so
+a confirmation that misses every stored centre of its plug looks at the confirmed events behind them, then at a signature
+with none (which takes it as its first), and only then starts a new signature: a real new component.
+
+**Decision: a hand-made decision stands.** A merge by hand stays possible; the events the user brings in take the user's
+label, since otherwise the next regrouping would undo it. What the signature caught before the merge is not confirmed by it. A
+split by hand also stands: `DurationRule` events stay, and the duration rule itself refuses an unconfirmed run, so what
+remains of that source is the user's decision (or a plug's label moved with its run).
+
+**Consequences.** The number of events in „Necunoscut” goes up; that is correct, and they were never the appliance's. Pulses
+under ≈ 15 s, which the plug cannot label (`docs/nilm.md`, section 7), leave the plug's signature; the plug's own measurement
+stays the reference for its energy. The detector, `PlugEventMatcher` and the duration bands themselves are unchanged. Plugs with
+several consumers keep the old rule. The first regrouping after
+the upgrade does the cleaning (at 03:30, at a start when the last one is older than 24 h, or on „Regrupează acum”).

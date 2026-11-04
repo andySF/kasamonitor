@@ -32,6 +32,12 @@ public interface INilmRepository
     /// <summary>Updates the signature and the label of an event.</summary>
     Task UpdateEventAsync(MeterEvent e, CancellationToken ct);
 
+    /// <summary>
+    /// Gives many events the user's label at once, like a label on /consumatori without the move: source
+    /// <see cref="EventLabelSource.User"/>, no plug label, the signature unchanged. All of them or none.
+    /// </summary>
+    Task LabelEventsAsync(IReadOnlyCollection<long> eventIds, string label, CancellationToken ct);
+
     /// <summary>Sets the signature of many events at once (re-clustering).</summary>
     Task SetSignaturesAsync(IReadOnlyDictionary<long, long?> signatureByEvent, CancellationToken ct);
 

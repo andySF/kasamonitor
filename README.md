@@ -7,7 +7,7 @@ plugs and energy meters (e.g. Shelly EM Gen3, local JSON-RPC; the only write is 
 with SQL Server, a web UI on port 8910 and a Prometheus `/metrics` endpoint. An optional Prometheus + Grafana stack
 with a ready-made dashboard and alert rules is included.
 
-Version: **0.13.0** (`Directory.Build.props`). Docker image: `duobit/kasamonitor`.
+Version: **0.13.1** (`Directory.Build.props`). Docker image: `duobit/kasamonitor`.
 
 **Requirements:** SQL Server 2019+ (any edition reachable from the Docker host; Express is limited to 10 GB per
 database), a Docker host on the same LAN as the devices (host networking). Up to 0.11 the data were in a SQLite file;
@@ -90,7 +90,7 @@ TP-Link (Tapo app) account in `/settings/tplink` and press **Adaugă** → TP-Li
   in the address) for electricity, gas and boiler, Miele, detected consumers, climate (with heating degree days and the
   energy signature), costs and events; Δ at the same share of the previous period, drill-down, CSV per section; and
   „Rapoarte” on `/centrala` (gas, boiler electricity, heat produced). See [History](#history-history-istoric).
-- **Version in the menu**: „v0.13.0” at the right of the navigation bar; the tooltip shows the commit and the build time.
+- **Version in the menu**: „v0.13.1” at the right of the navigation bar; the tooltip shows the commit and the build time.
 - **Browser errors in the server log**: JavaScript errors and the Blazor error banner are reported to
   `POST /api/client-error` and logged at Warning (category `KasaMonitor.ClientErrors`), so `docker logs` shows them.
 - **HTTP API for the appliance detection** (`/api/nilm/*`, LAN only): list, sheet, label, merge, add to, hide, regroup,
@@ -1295,7 +1295,7 @@ meter** (`/dispozitive`) with the live stream on (1 s). Page `/consumatori`, men
    a plug or that you labelled**, not on the whole house. A new event without a plug label gets the prediction only
    when the probability is ≥ 0.7 **and** the event is within 2 × eps of that class's centre (an open-set check: an
    appliance no plug has seen is otherwise forced into the nearest known class); it then joins the signature with that
-   name, otherwise it stays in its DBSCAN signature. Saved as `<data dir>/nilm-model.zip`. ML.NET adds ≈ 5.5 MB to the
+   name (never one of a single-appliance plug), otherwise it stays in its DBSCAN signature. Saved as `<data dir>/nilm-model.zip`. ML.NET adds ≈ 5.5 MB to the
    published application (measured `dotnet publish -r linux-x64`: 31 MB in total); the trainer is managed code.
 8. **Runs and energy** (`ApplianceRuns`): a switch-on opens a run; it closes with the next switch-off of the same
    signature whose magnitude is within eps (first in, first out; `EndReason` 0), or with any switch-off that brings the
@@ -1392,6 +1392,13 @@ automatically on upgrade (columns `Plugs.SingleAppliance`, `ApplianceName`, `App
   din priză*): no 60 % / 3 events threshold. A signature linked to it stays linked while any of its events in the window
   comes from the plug; the signatures already linked take the name and category as soon as the flag is set (and the
   alias again when it is cleared). Its events are pinned at the nightly re-clustering like every plug-confirmed one.
+- **Only what the plug confirmed** (since 0.13.1). Such a signature holds only events that plug confirmed and events you put
+  there by hand. An event near its centre that the plug did not confirm goes to another signature or to „Necunoscut”, and so
+  does a prediction of the model; the automatic merge joins it only with another signature of the same plug. The next
+  regrouping removes what got in before: runs, centre and count are rebuilt from what stays, and an emptied signature stays as
+  the plug's until its next confirmation. A merge by hand is still possible (the events you bring in take your label), and so is
+  a split by duration. Pulses under ≈ 15 s, which a plug cannot label, leave the signature, and the number of events in
+  „Necunoscut” goes up: both are expected. The plug's own energy does not change.
 - **Out of the ML model.** Its events are explained completely by the plug, so they are neither examples nor a class
   of the classifier (the training set leaves out the labels of the excluded plugs and of the single-appliance ones).
   The plug is **not** excluded from learning (`NilmIgnored` is untouched): it still labels and links its events, so they
@@ -1556,6 +1563,10 @@ To publish under your own Docker Hub account, change the image name (`-Repo` par
 2. `docker compose -f deploy/docker-compose.yml --env-file kasamonitor.env pull && docker compose -f deploy/docker-compose.yml --env-file kasamonitor.env up -d`
    (Portainer: *Update the stack* with *Re-pull image and redeploy*). New migrations are applied at start-up.
 3. Check `http://<host>:8910/health`, `/dispozitive` (Adaugă → Scanează acum) and `curl -s http://<host>:8910/metrics | grep kasa_online`.
+
+0.13.1 has no migration. The signature of a single-appliance plug is cleaned at the first regrouping after the upgrade (03:30, at
+a start when the last one is older than 24 h, or „Regrupează acum” on `/consumatori`); until then its count stays as it was, and
+new events already keep out.
 
 0.13.0 adds one migration (`DurationBands`: three nullable columns on `ApplianceSignatures`), applied at start-up over the existing
 data; nothing moves until a band is set. `tools/KasaMonitor.NilmReplay` (`dotnet run --project tools/KasaMonitor.NilmReplay -- <meter.csv>`) replays

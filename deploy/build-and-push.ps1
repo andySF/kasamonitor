@@ -4,7 +4,7 @@
 # Run from repo root. Assumes Docker is running and you've done `docker login` once.
 
 param(
-    [string]$Version = "0.13.0",
+    [string]$Version = "0.13.1",
     [string]$Repo = "duobit/kasamonitor",
     [switch]$NoPush
 )

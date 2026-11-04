@@ -112,6 +112,22 @@ public sealed class NilmRepository : INilmRepository
         _db.ChangeTracker.Clear();
     }
 
+    public async Task LabelEventsAsync(IReadOnlyCollection<long> eventIds, string label, CancellationToken ct)
+    {
+        if (eventIds.Count == 0) return;
+        var user = (int)EventLabelSource.User;
+        await _db.Database.CreateExecutionStrategy().ExecuteAsync(async () =>
+        {
+            await using var tx = await _db.Database.BeginTransactionAsync(ct);
+            foreach (var chunk in eventIds.Chunk(500))
+                await _db.MeterEvents.Where(e => chunk.Contains(e.Id)).ExecuteUpdateAsync(u => u
+                    .SetProperty(e => e.Source, user)
+                    .SetProperty(e => e.Label, label)
+                    .SetProperty(e => e.LabelPlugId, (Guid?)null), ct);
+            await tx.CommitAsync(ct);
+        });
+    }
+
     public async Task SetSignaturesAsync(IReadOnlyDictionary<long, long?> signatureByEvent, CancellationToken ct)
     {
         if (signatureByEvent.Count == 0) return;

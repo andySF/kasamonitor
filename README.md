@@ -7,7 +7,7 @@ plugs and energy meters (e.g. Shelly EM Gen3, local JSON-RPC; the only write is 
 with SQL Server, a web UI on port 8910 and a Prometheus `/metrics` endpoint. An optional Prometheus + Grafana stack
 with a ready-made dashboard and alert rules is included.
 
-Version: **0.13.2** (`Directory.Build.props`). Docker image: `duobit/kasamonitor`.
+Version: **0.14.0** (`Directory.Build.props`). Docker image: `duobit/kasamonitor`.
 
 **Requirements:** SQL Server 2019+ (any edition reachable from the Docker host; Express is limited to 10 GB per
 database), a Docker host on the same LAN as the devices (host networking). Up to 0.11 the data were in a SQLite file;
@@ -87,10 +87,12 @@ TP-Link (Tapo app) account in `/settings/tplink` and press **Adaugă** → TP-Li
   by you, or by a nightly ML.NET classifier; runs, energy per day, „unidentified” energy; cards „Acum pornite” and
   „Azi” on the „Prize” page and `/contor`. See [Appliance detection (NILM)](#appliance-detection-nilm).
 - **History** (`/history` „Istoric”, 0.9.2): one page and one period (day, week, month, year or a free interval, kept
-  in the address) for electricity, gas and boiler, Miele, detected consumers, climate (with heating degree days and the
-  energy signature), costs and events; Δ at the same share of the previous period, drill-down, CSV per section; and
+  in the address) for electricity, the power over time (main meter and plugs, per minute / hour / day from the
+  aggregates, against the previous period or the same interval last year; 0.14.0), gas and boiler, Miele, detected
+  consumers, climate (with heating degree days and the energy signature), costs and events; Δ at the same share of the
+  previous period, drill-down, CSV per section; and
   „Rapoarte” on `/centrala` (gas, boiler electricity, heat produced). See [History](#history-history-istoric).
-- **Version in the menu**: „v0.13.2” at the right of the navigation bar; the tooltip shows the commit and the build time.
+- **Version in the menu**: „v0.14.0” at the right of the navigation bar; the tooltip shows the commit and the build time.
 - **Browser errors in the server log**: JavaScript errors and the Blazor error banner are reported to
   `POST /api/client-error` and logged at Warning (category `KasaMonitor.ClientErrors`), so `docker logs` shows them.
 - **HTTP API for the appliance detection** (`/api/nilm/*`, LAN only): list, sheet, label, merge, add to, hide, regroup,
@@ -256,7 +258,7 @@ values only**: they are used while the key has not been saved from `/settings`.
 | Event threshold (W) | Aplicație | `KasaMonitor__MinEventDeltaW` | `30` | 5–10000; smallest steady-state step of the house power recorded as an event |
 | Re-clustering window (days) | Aplicație | `KasaMonitor__ClusterWindowDays` | `30` | 1–365; events grouped again every night at 03:30 |
 | ML model | Aplicație | `KasaMonitor__MlEnabled` | `true` | nightly ML.NET classifier over the labelled events; saved as `<data dir>/nilm-model.zip` |
-| Keep raw readings (months) | Aplicație | `KasaMonitor__ReadingsRetentionMonths` | `0` = unlimited | raw 10-second readings only; daily history and minute aggregates are never deleted. Saving a value that would delete existing readings asks for confirmation with the exact row count |
+| Keep raw readings (months) | Aplicație | `KasaMonitor__ReadingsRetentionMonths` | `0` = unlimited | raw 10-second readings only; daily history and the minute and hour aggregates are never deleted (the „Putere” chart of /history needs only these: 3 months is a sensible value since 0.14.0). Saving a value that would delete existing readings asks for confirmation with the exact row count |
 | Gas boiler | Viessmann | `KasaMonitor__HeatingEnabled` | `true` | reads the Viessmann boiler once the ViCare account is connected (`/centrala`) |
 | Viessmann Client ID | Viessmann | `KasaMonitor__ViessmannClientId` | — | client of the Viessmann developer portal; the OAuth tokens are never configured, they come from „Conectează ViCare” and are stored encrypted |
 | Boiler poll interval (s) | Viessmann | `KasaMonitor__ViessmannPollIntervalSeconds` | `120` | minimum 60; one API call per poll (120 s = 720 of the 1450 daily calls) |
@@ -1081,15 +1083,19 @@ One long page for the past of everything KasaMonitor monitors, on the home page'
 
 **One period for the whole page**: **Zi** (bars per hour), **Săptămână** (Monday–Sunday, per day), **Lună** (per day),
 **An** (per month) or **Interval** (de la – până la, whole local days, per day, at most 732 days); ◀ ▶ move by one period
-(an interval by its own length), never past today. The period, the comparison switch and a plug filter live in the
+(an interval by its own length), never past today. The period, the comparison and a plug filter live in the
 address, so every link opens exactly that view: `/history?p=luna&d=2026-11`, `?p=an&d=2026`, `?p=saptamana&d=2026-10-26`,
-`?p=zi&d=2026-11-02`, `?p=interval&de=2026-10-01&pana=2026-10-20`, plus `&cmp=0` (no comparison), `&plug=<id>` and a
-section anchor (`#curent`, `#gaz`, `#aparate`, `#consumatori`, `#clima`, `#costuri`, `#evenimente`). Without `p` the page
+`?p=zi&d=2026-11-02`, `?p=interval&de=2026-10-01&pana=2026-10-20`, plus `&cmp=0` (no comparison) or `&cmp=an` (the same
+interval last year, 0.14.0), `&plug=<id>`, `&pw=<id>,<id>` (the series of „Putere”; `pw=-` none; absent: the main meter)
+and a section anchor (`#curent`, `#putere`, `#gaz`, `#aparate`, `#consumatori`, `#clima`, `#costuri`, `#evenimente`). Without `p` the page
 opens on the current month; the old `?plugId=` still works. The home page's „→” links, the plug links of /prize,
 /dispozitive, the sub-meters card and the Sankey, and /centrala's „Istoric →” carry their period. Days are local days
 (`TZ`) everywhere; gas follows the **boiler's day** (`BoilerTimeZone`, as on /centrala since 0.8.1).
 
-**Comparison** (as on the home page): a period in progress is compared with the **same share** of the previous one
+**Comparison**: one control for the page (since 0.14.0 a list instead of the switch): „Fără comparație”, the previous
+period („Compară cu luna precedentă”, today: „Compară cu ieri (la aceeași oră)”) or „Același interval anul trecut”. The
+last one is drawn only by „Putere”; the other sections keep comparing with the previous period. As on the home page, a
+period in progress is compared with the **same share** of the previous one
 (`SameFraction`: whole bars plus the elapsed part of the current one; today = yesterday up to the same time, from the
 live stream); a past period with the whole previous one. Since 0.9.2 the same rule is in `HouseReportBuilder` and
 `HeatingReportBuilder`, so /centrala „Rapoarte” shows „față de aceeași parte din …” too (before: about −90 % on the 2nd
@@ -1104,6 +1110,20 @@ drill-down (a bar or a table row of a week / month / interval opens that day, of
   and „Restul casei”, the previous period pale behind; a plug filter keeps one plug next to the meter line; top
   appliances (plugs, detected without a plug, „Nedetectat”, as on the home page; „Nedetectat” only on the days the meter
   covers). Data: `HomeService` (shared with the home page, cached).
+- **Putere** (0.14.0): the power over time of the main meter and of any plugs or sub-meters, toggled like the lines of
+  `/contor` (same palette; main meter on and plugs off by default; kept in the address as `pw=`). One point per
+  **minute** for periods up to 2 days, per **hour** up to 45 days, per **local day** beyond (`PowerHistory.ResolutionFor`);
+  each point is the average (the line) and the maximum (a light band up to it); a bucket without data is a gap, never a
+  zero. Read only from the aggregates — `OneMinuteAggregates` for minute points, `OneHourAggregates` for the others
+  (days are computed from the hours) — never from `Samples` or `LiveSamples`, so the chart of a past period stays when
+  the raw readings are trimmed. The comparison is one dashed line, of the main meter (or of the first series shown when
+  the meter is off), aligned on the period's offset (hour of the day, day of the period, by wall clock: on the 23 h and
+  25 h DST days 04:00 meets 04:00; a day without a counterpart, the 31st against a 30-day month, stays empty). „Același
+  interval anul trecut”: a day → the same date (29 February → 28 February), a week → the week 52 weeks earlier (the same
+  weekdays: 2–8 November 2026 → 3–9 November 2025), a month → the same month, a year → the year before, an interval →
+  the same dates. Key figures for that series: average W and maximum W (with its minute, or its hour from the hour
+  rows), the comparison's maximum, and the Δ of both (a period in progress against the same part of the comparison).
+  The aggregates of today are completed every 15 minutes.
 - **Gaz și centrală**: heating vs hot water m³ per bar, ≈ kWh, lei, apparent efficiency (heat / gas kWh), burner hours
   and starts per bar (the cumulative counters of `HeatingReadings`, grouped per hour in SQL), the mean gas per hour of
   the day and the **burner timeline per day** (runs on a 24 h track coloured by purpose, `BurnerTimeline`) for periods
@@ -1137,8 +1157,9 @@ drill-down (a bar or a table row of a week / month / interval opens that day, of
   appliances disconnected (status 255 or signal failure), newest first, filtered per source (at most 500 per source).
   Application restarts are not stored (container log only); alerts stay in Grafana.
 
-**CSV**: `GET /history/export.csv?section=<s>&p=…&d=…` with `s` = `curent`, `gaz`, `aparate`, `aparate-programe`,
-`consumatori`, `consumatori-detectati`, `clima`, `clima-grade-zile`, `costuri`, `evenimente`: `;` between fields,
+**CSV**: `GET /history/export.csv?section=<s>&p=…&d=…` with `s` = `curent`, `putere` (with `cmp=` and `pw=`: one row per
+bucket and series — average, maximum and its time, minutes with data, and the compared series' aligned values), `gaz`,
+`aparate`, `aparate-programe`, `consumatori`, `consumatori-detectati`, `clima`, `clima-grade-zile`, `costuri`, `evenimente`: `;` between fields,
 decimal comma, UTF-8 with BOM (Excel / LibreOffice in Romanian), the same rows as the page's table. The time column is
 ISO (`yyyy-MM-dd HH:00`, `yyyy-MM-dd`, `yyyy-MM`), so a spreadsheet sorts it as a date; markers (rest within the margin,
 partial data, the bar in progress) are in a separate „Notă” column, so every number stays a number.
@@ -1155,8 +1176,14 @@ are computed from the raw readings (`ClimateDailyStore` behind `IClimateDailySta
 signature use these days. Measured on a PC: a year of raw readings (3 sensors, one every 10 min, 136 000 rows) took
 ≈ 290 ms; from `ClimateDaily` a few milliseconds.
 
+„Putere” reads one series of one period on the key (PlugId, BucketStartUtc) of its aggregate table and caches it
+(`PowerHistoryService`, its own `PeriodCache`); toggling a series reads only that series. A year of hour rows for three
+plugs (26,280 rows) is read in 36 ms on SQLite and 80 ms on SQL Server 2022 in Docker (the repository test, on a PC).
+
 **Retention** (0.9.2): `ClimateReadings`, `MeterEvents` and `ApplianceRuns` are kept without limit; `LiveSamples` keep
-`LiveRawRetentionDays` (default 30).
+`LiveRawRetentionDays` (default 30). The minute and hour power aggregates are kept without limit and never rebuilt from
+less data (0.14.0): with `ReadingsRetentionMonths = 3` the raw readings go after three months, the chart of every past
+period stays.
 
 ### Report sources (house and boiler)
 
@@ -1500,12 +1527,18 @@ curl -s -X POST "$K/api/nilm/plugs/<plug id>/appliance" -H "Content-Type: applic
 | Miele appliances, state snapshots, cycles | `MieleDevices`, `MieleStateSnapshots`, `MieleCycles` | a snapshot on every change of the state (≈ one per minute while a program runs, as the remaining time changes) and at most every 5 minutes otherwise; one row per program cycle | never |
 | Climate sensors and readings | `ClimateSensors`, `ClimateReadings` | a reading on a change of ≥ 0.1 °C / ≥ 1 % RH and at least every 30 minutes per sensor (≈ 40 bytes; ≤ 48 rows per quiet sensor per day) | never (since 0.9.2; before: 365 days) |
 | Climate per day | `ClimateDaily` | one row per sensor and day (≈ 100 bytes) | never |
-| Minute aggregates | `OneMinuteAggregates` | ≈ 120 bytes per plug-minute ≈ 65 MB per plug per year | never |
+| Minute aggregates | `OneMinuteAggregates` | ≈ 120 bytes per plug-minute ≈ 65 MB per plug per year (every 15 minutes since 0.14.0; daily before) | never |
+| Hour aggregates (0.14.0) | `OneHourAggregates` | one row per plug and hour (≈ 9,000 per plug per year), from the minute rows | never |
 | Daily / monthly energy | `DailyEnergy`, `MonthlyEnergy` | one row per plug per day / month | never |
 | Per-entity preferences (0.11) | `EntityPrefs` | one row per entity whose display the user changed | never (a row back to every default is deleted) |
 | Generic devices and entities (0.11) | `GenericDevices`, `GenericEntities` | one row per added device / entity (with its discovery payload) | never (a removed entity is marked) |
 | Generic raw readings (0.11) | `GenericReadings` | ≈ 20 bytes per row (integer key; clustered on (EntityId, Ts) on SQL Server, WITHOUT ROWID on SQLite before 0.12.0): on a change above the threshold, at least every 30 min, at most one per entity in 10 s | after 90 days (MQTT tab; `0` = never), daily |
 | Generic hourly rollups (0.11) | `GenericHourly` | one row per entity and hour | never |
+
+Aggregates are never deleted and never replaced by ones built from fewer readings (minutes) or fewer minutes (hours):
+rolling a day again after the retention deleted its raw readings leaves its minutes and hours as they were. So
+`ReadingsRetentionMonths = 3` with `LiveRawRetentionDays = 30` keeps every chart of `/history` („Putere” reads only the
+aggregates) and the daily energy, while the raw data stay bounded.
 
 The sizes above were measured on SQLite (0.11 and earlier); on SQL Server a row takes about as much (fixed-width
 `bigint`/`float` columns, page overhead), plus the indexes. Up to and including 0.2.1, raw readings older than 30 days
@@ -1577,6 +1610,14 @@ To publish under your own Docker Hub account, change the image name (`-Repo` par
 2. `docker compose -f deploy/docker-compose.yml --env-file kasamonitor.env pull && docker compose -f deploy/docker-compose.yml --env-file kasamonitor.env up -d`
    (Portainer: *Update the stack* with *Re-pull image and redeploy*). New migrations are applied at start-up.
 3. Check `http://<host>:8910/health`, `/dispozitive` (Adaugă → Scanează acum) and `curl -s http://<host>:8910/metrics | grep kasa_online`.
+
+0.14.0 has no migration (`OneHourAggregates` existed, unwritten; its `SampleCount` now holds the minutes of the hour).
+`RollupWorker` runs every 15 minutes instead of once a day (the readings since its previous cycle; once a day also the
+whole of yesterday, then the retention, as before); the first cycle after the start rolls the last 7 days again and fills
+the hour rows of every past day that has minutes but no hours — once, plug by plug and day by day, logged as
+`Hourly power aggregates backfilled: N hours on M plug-days in T ms`. It is idempotent: a restart finds nothing left to do. After this
+release `ReadingsRetentionMonths` can be lowered (e.g. to 3): the „Putere” chart and its comparisons need only the
+aggregates. The comparison of `/history` is now a list; old addresses (`cmp=0`, no `cmp`) open as before.
 
 0.13.2 has no migration. The runs of a single-appliance plug are taken over at the first pass after the start: the runs of every signature of the plug are replaced
 from the later of the plug's first stored reading and the start of the clustering window (older ones stay), and new ones come from the plug. Shadows of the last 6 hours are marked at once, the

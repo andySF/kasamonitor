@@ -24,8 +24,10 @@ public static class HistorySections
     public const string Events = "evenimente";
     /// <summary>0.11: the generic devices („Alte dispozitive”).</summary>
     public const string Generic = "alte-dispozitive";
+    /// <summary>0.14.0: the power over time („Putere”).</summary>
+    public const string Power = "putere";
 
-    public static readonly IReadOnlyList<string> All = new[] { Electricity, Gas, MieleCycles, MielePrograms, Consumers, Detected, Climate, DegreeDays, Costs, Events, Generic };
+    public static readonly IReadOnlyList<string> All = new[] { Electricity, Power, Gas, MieleCycles, MielePrograms, Consumers, Detected, Climate, DegreeDays, Costs, Events, Generic };
 }
 
 /// <summary>
@@ -326,6 +328,44 @@ public static class HistoryTables
         {
             Local(e.TsUtc, tz), e.EndUtc is { } end ? Local(end, tz) : "", SourceName(e.Source), e.Subject, e.Text,
         }).ToList());
+
+    /// <summary>
+    /// „Putere” (0.14.0): one row per bucket and selected series that has data — the average and the maximum (W), when the
+    /// maximum was, the minutes with data; with a comparison also the compared series' aligned values on its rows. The bucket
+    /// as <c>yyyy-MM-dd HH:mm</c> (minute), <c>yyyy-MM-dd HH:00</c> (hour; the repeated hour of the autumn DST day with „ (2)”)
+    /// or <c>yyyy-MM-dd</c> (day), local time.
+    /// </summary>
+    public static HistoryTable Power(HistoryPower p, TimeZoneInfo tz)
+    {
+        var compare = p.ComparisonAligned is not null;
+        var headers = new List<string>
+        {
+            p.Resolution switch { PowerResolution.Minute => "Minutul", PowerResolution.Hour => "Ora", _ => "Ziua" },
+            "Serie", "Medie W", "Max W", "Maxim la", "Minute cu date",
+        };
+        if (compare) headers.AddRange(new[] { "Comparație medie W", "Comparație max W" });
+        var format = p.Resolution switch { PowerResolution.Minute => "yyyy-MM-dd HH:mm", PowerResolution.Hour => "yyyy-MM-dd HH:00", _ => "yyyy-MM-dd" };
+        var seen = new HashSet<string>();
+        var rows = new List<IReadOnlyList<string>>();
+        for (var i = 0; i < p.Grid.Count; i++)
+        {
+            var key = TimeZoneInfo.ConvertTime(p.Grid[i], tz).ToString(format, System.Globalization.CultureInfo.InvariantCulture);
+            if (!seen.Add(key)) key += " (2)";
+            foreach (var s in p.Series)
+            {
+                if (s.Points[i] is not { } pt) continue;
+                var row = new List<string> { key, PowerChart.Name(p, s.PlugId), Num(pt.AvgW, 0), Num(pt.MaxW, 0), Local(pt.MaxAtUtc, tz), pt.Minutes.ToString(System.Globalization.CultureInfo.InvariantCulture) };
+                if (compare)
+                {
+                    var c = s.PlugId == p.ComparedPlugId ? p.ComparisonAligned![i] : null;
+                    row.Add(Num(c?.AvgW, 0));
+                    row.Add(Num(c?.MaxW, 0));
+                }
+                rows.Add(row);
+            }
+        }
+        return new HistoryTable(headers, rows);
+    }
 
     /// <summary>"2026-11-02 14:05" in the application's zone.</summary>
     public static string Local(DateTimeOffset utc, TimeZoneInfo tz) =>

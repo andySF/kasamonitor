@@ -45,10 +45,48 @@ public static class PeriodQuery
 
     /// <summary>The address of /history for a period, with the comparison flag, a plug filter and a section anchor.</summary>
     public static string History(ReportPeriod period, bool compare = true, Guid? plug = null, string? anchor = null) =>
-        "/history?" + Format(period) + (compare ? "" : "&cmp=0") + (plug is { } id ? "&plug=" + id : "") + (anchor is null ? "" : "#" + anchor);
+        History(period, compare ? CompareMode.Previous : CompareMode.None, plug, null, anchor);
 
-    /// <summary>The comparison flag: on unless <c>cmp=0</c> (or false / nu).</summary>
-    public static bool Compare(string? cmp) => cmp?.Trim().ToLowerInvariant() is not ("0" or "false" or "nu");
+    /// <summary>The comparison flag: on unless <c>cmp=0</c> (or false / nu); <c>cmp=an</c> keeps it on (the previous period for every section but „Putere”).</summary>
+    public static bool Compare(string? cmp) => CompareModeOf(cmp) != CompareMode.None;
+
+    /// <summary>The comparison of the address (0.14.0): <c>cmp=0</c> (false / nu) none, <c>cmp=an</c> the same interval last year, else the previous period.</summary>
+    public static CompareMode CompareModeOf(string? cmp) => cmp?.Trim().ToLowerInvariant() switch
+    {
+        "0" or "false" or "nu" => CompareMode.None,
+        "an" => CompareMode.LastYear,
+        _ => CompareMode.Previous,
+    };
+
+    /// <summary>The comparison as written in an address (with its „&amp;”): nothing for the previous period (the default), <c>&amp;cmp=0</c>, <c>&amp;cmp=an</c>.</summary>
+    public static string CompareParam(CompareMode mode) => mode switch
+    {
+        CompareMode.None => "&cmp=0",
+        CompareMode.LastYear => "&cmp=an",
+        _ => "",
+    };
+
+    /// <summary>
+    /// The series of the „Putere” chart (<c>pw=</c>, 0.14.0): plug ids separated by commas, <c>pw=-</c> none; null when
+    /// absent or when nothing in it is an id (the default: the main meter). Repeated ids count once.
+    /// </summary>
+    public static IReadOnlyList<Guid>? PowerSeries(string? pw)
+    {
+        var s = pw?.Trim();
+        if (string.IsNullOrEmpty(s)) return null;
+        if (s == "-") return Array.Empty<Guid>();
+        var ids = s.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(x => Guid.TryParse(x, out var id) ? id : (Guid?)null).Where(x => x is not null).Select(x => x!.Value).Distinct().ToList();
+        return ids.Count == 0 ? null : ids;
+    }
+
+    /// <summary>The series as written in an address (with its „&amp;”): nothing for the default, <c>&amp;pw=-</c> for none.</summary>
+    public static string PowerParam(IReadOnlyList<Guid>? ids) =>
+        ids is null ? "" : "&pw=" + (ids.Count == 0 ? "-" : string.Join(",", ids));
+
+    /// <summary>The address of /history with the page's whole state: period, comparison, plug filter, series of „Putere”, anchor.</summary>
+    public static string History(ReportPeriod period, CompareMode compare, Guid? plug = null, IReadOnlyList<Guid>? power = null, string? anchor = null) =>
+        "/history?" + Format(period) + CompareParam(compare) + (plug is { } id ? "&plug=" + id : "") + PowerParam(power) + (anchor is null ? "" : "#" + anchor);
 
     /// <summary>The earliest day an address may name (older dates are invalid: nothing was measured, and DateOnly.MinValue has no previous day).</summary>
     public static readonly DateOnly MinDay = new(2000, 1, 1);

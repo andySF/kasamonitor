@@ -14,9 +14,12 @@ public static class HistoryExport
     /// <summary>The table of a section, or null for an unknown section.</summary>
     public static async Task<HistoryTable?> TableAsync(string section, ReportPeriod period, bool compare, Guid? plug, HomeService home,
         HistoryService history, IKasaSettingsService kasa, IHeatingSettingsService heating, DateTimeOffset nowUtc, CancellationToken ct,
-        KasaMonitor.Workers.Mqtt.GenericHistoryService? generic = null)
+        KasaMonitor.Workers.Mqtt.GenericHistoryService? generic = null, PowerHistoryService? power = null, CompareMode compareMode = CompareMode.Previous,
+        IReadOnlyList<Guid>? powerSeries = null)
     {
         var tz = history.TimeZone;
+        if (section == HistorySections.Power)
+            return power is null ? HistoryTable.Empty : HistoryTables.Power(await power.GetAsync(period, compareMode, powerSeries, ct), tz);
         var gas = section is HistorySections.Gas or HistorySections.Costs or HistorySections.DegreeDays || section == HistorySections.Electricity
             ? await history.GetGasAsync(period, ct) : null;
         var prices = await HistoryPrices.LoadAsync(kasa, heating, gas is not null, ct);

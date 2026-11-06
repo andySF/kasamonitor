@@ -280,6 +280,11 @@ builder.Services.AddSingleton(sp => new HistoryService(
     sp.GetRequiredService<KasaMonitor.Workers.Nilm.NilmService>().GetDetectedRunsAsync,
     sp.GetRequiredService<IKasaSettingsService>(),
     sp.GetRequiredService<ILogger<HistoryService>>()));
+// „Putere” of /history (0.14.0): the power over time from the minute and hour aggregates only.
+builder.Services.AddSingleton(sp => new PowerHistoryService(
+    sp.GetRequiredService<IServiceScopeFactory>(),
+    sp.GetRequiredService<EnergyReportService>(),
+    sp.GetRequiredService<ILogger<PowerHistoryService>>()));
 
 // Home page „Acasă” (/): period aggregates cached per minute, standby floor and bill estimate (also on /metrics).
 builder.Services.AddSingleton(sp => new HomeService(
@@ -481,7 +486,7 @@ app.MapGet(KasaMonitor.Core.Miele.MieleApi.CallbackPath, async (HttpContext ctx,
 
 // CSV of one /history section for the period of the address (the page's „CSV” buttons): the same data and table as the page.
 app.MapGet("/history/export.csv", async (HttpContext ctx, HomeService home, HistoryService history, IKasaSettingsService kasa,
-    IHeatingSettingsService heating, KasaMonitor.Workers.Mqtt.GenericHistoryService generic) =>
+    IHeatingSettingsService heating, KasaMonitor.Workers.Mqtt.GenericHistoryService generic, PowerHistoryService power) =>
 {
     var q = ctx.Request.Query;
     var section = q["section"].FirstOrDefault() ?? "";
@@ -489,7 +494,8 @@ app.MapGet("/history/export.csv", async (HttpContext ctx, HomeService home, Hist
         q["pana"].FirstOrDefault(), history.Today(), KasaMonitor.Core.Reports.ReportGranularity.Month);
     var plug = KasaMonitor.Core.Reports.PeriodQuery.Plug(q["plug"].FirstOrDefault());
     var table = await KasaMonitor.Web.Ui.HistoryExport.TableAsync(section, period, KasaMonitor.Core.Reports.PeriodQuery.Compare(q["cmp"].FirstOrDefault()),
-        plug, home, history, kasa, heating, DateTimeOffset.UtcNow, ctx.RequestAborted, generic);
+        plug, home, history, kasa, heating, DateTimeOffset.UtcNow, ctx.RequestAborted, generic,
+        power, KasaMonitor.Core.Reports.PeriodQuery.CompareModeOf(q["cmp"].FirstOrDefault()), KasaMonitor.Core.Reports.PeriodQuery.PowerSeries(q["pw"].FirstOrDefault()));
     return table is null
         ? Results.Text("Secțiune necunoscută. Valori: " + string.Join(", ", KasaMonitor.Web.Ui.HistorySections.All), "text/plain; charset=utf-8", statusCode: 400)
         : Results.File(KasaMonitor.Core.History.HistoryCsv.Bytes(table), "text/csv; charset=utf-8", KasaMonitor.Web.Ui.HistoryExport.FileName(section, period));

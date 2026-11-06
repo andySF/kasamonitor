@@ -1,0 +1,121 @@
+@using KasaMonitor.Core.Reports
+@using KasaMonitor.Workers
+@using KasaMonitor.Web.Ui
+
+@* /history „Putere” (0.14.0): the power over time of the main meter and of any plugs (toggled like the lines of /contor,
+   kept in the address as pw=), from the minute and hour aggregates only (they are kept forever; the raw readings may be
+   trimmed): a point per minute up to 2 days, per hour up to 45 days, per day beyond. The average is the line, the band
+   goes up to the maximum; the comparison of the page (previous period or the same interval last year) is one dashed line
+   of the main meter (or of the first series shown). Key figures: average and maximum (when) with their Δ, and the CSV. *@
+<section class="hcard hist-sec" id="putere" aria-labelledby="h-putere">
+    <div class="card-h">
+        <h2 id="h-putere"><i class="sw line"></i> Putere</h2>
+        <div class="hist-tools">
+            <CsvLink Href="@CsvHref" />
+        </div>
+    </div>
+    @if (Data is null)
+    {
+        <div class="empty">Se încarcă…</div>
+    }
+    else if (Data.Channels.Count == 0)
+    {
+        <div class="empty">Nicio priză și niciun contor: puterea nu are ce arăta.</div>
+    }
+    else
+    {
+        var p = Data;
+        var colors = PowerChart.Colors(p);
+        var referenceId = PowerHistory.Reference(p.Selected, p.Main?.PlugId);
+        var reference = p.Series.FirstOrDefault(s => s.PlugId == referenceId);
+        var now = reference?.Summary;
+        var words = PowerChart.ComparisonWords(p);
+        var cmp = p.ComparisonSummary;
+        var refName = reference is null ? "" : PowerChart.Name(p, reference.PlugId);
+        <div class="d-flex flex-wrap align-items-center gap-2 mb-2" role="group" aria-label="Serii afișate">
+            <span class="small text-secondary">Serii afișate</span>
+            @foreach (var ch in p.Channels)
+            {
+                var on = p.Selected.Contains(ch.PlugId);
+                var color = colors.GetValueOrDefault(ch.PlugId);
+                <button type="button" class="integration-chip" aria-pressed="@(on ? "true" : "false")"
+                        style="@(on ? $"border-color:{color};box-shadow:inset 0 0 0 1px {color}" : null)"
+                        @onclick="() => Toggle(ch.PlugId)">
+                    <span class="d-inline-block rounded-circle" style="width:.7rem;height:.7rem;@(on ? $"background:{color}" : "border:1px solid var(--border)")" aria-hidden="true"></span>
+                    <span class="@(on ? null : "text-secondary")">@ch.Alias@(ch.IsMain ? " (contor)" : "")</span>
+                </button>
+            }
+        </div>
+        @if (p.Selected.Count == 0)
+        {
+            <div class="empty">Alege cel puțin o serie.</div>
+        }
+        else
+        {
+            <div class="tiles hist-tiles">
+                <div class="tile">
+                    <div class="lbl">Putere medie · @refName</div>
+                    <div class="val num">@HomeFormat.W(now?.AvgW) <small>W</small></div>
+                    <div class="meta">@(cmp is null ? PowerChart.ResolutionText(p.Resolution) + ", din agregate" : $"{words.Name}: {HomeFormat.W(cmp.AvgW)} W")</div>
+                    @if (p.ComparisonPeriod is not null && now is not null)
+                    {
+                        <HistoryDelta Delta="@(HomeFormat.Delta(now.AvgW, cmp?.AvgW, v => HomeFormat.W(v), "W"))" Versus="@words.Versus" PreviousName="@words.Name" />
+                    }
+                </div>
+                <div class="tile">
+                    <div class="lbl">Putere maximă · @refName</div>
+                    <div class="val num">@HomeFormat.W(now?.MaxW) <small>W</small></div>
+                    <div class="meta">@(now is null ? "—" : PowerChart.When(now.MaxAtUtc, p.Resolution, Tz))</div>
+                    @if (p.ComparisonPeriod is not null && now is not null)
+                    {
+                        <HistoryDelta Delta="@(HomeFormat.Delta(now.MaxW, cmp?.MaxW, v => HomeFormat.W(v), "W"))" Versus="@words.Versus" PreviousName="@words.Name"
+                                      Title="@(cmp is null ? null : $"{words.Name}: max {HomeFormat.W(cmp.MaxW)} W, {PowerChart.When(cmp.MaxAtUtc, p.Resolution, Tz)}")" />
+                    }
+                </div>
+                @if (cmp is not null)
+                {
+                    <div class="tile">
+                        <div class="lbl">Maxim · @words.Name</div>
+                        <div class="val num">@HomeFormat.W(cmp.MaxW) <small>W</small></div>
+                        <div class="meta">@PowerChart.When(cmp.MaxAtUtc, p.Resolution, Tz)</div>
+                    </div>
+                }
+            </div>
+            <HistoryPowerChart Grid="p.Grid" EndUtc="p.Period.EndUtc(Tz)" Resolution="p.Resolution" Tz="Tz" Series="Lines(p, colors)" Comparison="ComparisonLine(p, words.Name)"
+                               AriaLabel="@("Putere " + PowerChart.ResolutionText(p.Resolution))" />
+            <div class="legend">
+                @foreach (var s in p.Series)
+                {
+                    <span><i class="sw line" style="background:@colors.GetValueOrDefault(s.PlugId)"></i>@PowerChart.Name(p, s.PlugId)</span>
+                }
+                <span class="muted">linia: medie · banda: până la maxim</span>
+                @if (p.ComparisonAligned is not null)
+                {
+                    <span><i class="sw line pw-cmp-sw"></i>@refName · @words.Name</span>
+                }
+            </div>
+            <div class="foot-note">Un punct @PowerChart.ResolutionText(p.Resolution), din agregatele @(p.Resolution == PowerResolution.Minute ? "pe minut" : "pe oră") (păstrate oricât, nu depind de citirile brute)@(p.NowIndex is not null ? "; perioada e în curs: agregatele se completează la fiecare 15 minute" : "").</div>
+        }
+    }
+</section>
+
+@code {
+    [Parameter] public HistoryPower? Data { get; set; }
+    [Parameter, EditorRequired] public TimeZoneInfo Tz { get; set; } = TimeZoneInfo.Utc;
+    /// <summary>The new selection (in the order of the address); the page writes it into the address.</summary>
+    [Parameter] public EventCallback<IReadOnlyList<Guid>> SelectionChanged { get; set; }
+    [Parameter, EditorRequired] public string CsvHref { get; set; } = "";
+
+    private Task Toggle(Guid id)
+    {
+        if (Data is null) return Task.CompletedTask;
+        var next = Data.Selected.Contains(id) ? Data.Selected.Where(x => x != id).ToList() : Data.Selected.Append(id).ToList();
+        return SelectionChanged.InvokeAsync(next);
+    }
+
+    private static IReadOnlyList<HistoryPowerChart.Line> Lines(HistoryPower p, IReadOnlyDictionary<Guid, string> colors) =>
+        p.Series.Select(s => new HistoryPowerChart.Line(PowerChart.Name(p, s.PlugId), colors.GetValueOrDefault(s.PlugId) ?? LiveChartColors.Main, s.Points)).ToList();
+
+    private static HistoryPowerChart.Line? ComparisonLine(HistoryPower p, string name) =>
+        p.ComparisonAligned is { } a && p.ComparedPlugId is { } id ? new HistoryPowerChart.Line(PowerChart.Name(p, id) + " · " + name, "", a) : null;
+}

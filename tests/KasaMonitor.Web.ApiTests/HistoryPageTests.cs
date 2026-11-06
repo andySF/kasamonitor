@@ -11,7 +11,7 @@ public class HistoryPageTests : IClassFixture<HomeFactory>
     private readonly HomeFactory _f;
     public HistoryPageTests(HomeFactory f) => _f = f;
 
-    private static readonly string[] Sections = { "id=\"curent\"", "id=\"gaz\"", "id=\"aparate\"", "id=\"consumatori\"", "id=\"clima\"", "id=\"costuri\"", "id=\"evenimente\"" };
+    private static readonly string[] Sections = { "id=\"curent\"", "id=\"putere\"", "id=\"gaz\"", "id=\"aparate\"", "id=\"consumatori\"", "id=\"clima\"", "id=\"costuri\"", "id=\"evenimente\"" };
 
     [Fact]
     public async Task History_OnePage_OnePeriod_AllSectionsInOrder_InRomanian()
@@ -25,7 +25,8 @@ public class HistoryPageTests : IClassFixture<HomeFactory>
         html.Should().Contain("href=\"#clima\"", "the chips lead to the sections");
         html.Should().Contain("/history/export.csv?section=curent&p=luna&d=2026-10");
         html.Should().Contain("Fără contor general").And.Contain("Fără centrală conectată").And.Contain("Niciun aparat Miele conectat")
-            .And.Contain("Niciun senzor de climă");
+            .And.Contain("Niciun senzor de climă").And.Contain("Nicio priză și niciun contor");
+        html.Should().Contain("Același interval anul trecut", "one comparison control for the page (0.14.0)").And.NotContain("role=\"switch\" aria-checked");
         html.Should().NotContain("Last 7 days").And.NotContain("Loading data").And.NotContain("No plugs available");
     }
 
@@ -53,7 +54,7 @@ public class HistoryPageTests : IClassFixture<HomeFactory>
         text.Should().StartWith("Ziua;Curent kWh;Curent lei;Gaz m³;Gaz lei;Total lei;Notă\r\n2026-10-01;");
         text.Split("\r\n", StringSplitOptions.RemoveEmptyEntries).Should().HaveCount(32, "the header and the 31 days of October");
 
-        foreach (var s in new[] { "curent", "gaz", "aparate", "aparate-programe", "consumatori", "consumatori-detectati", "clima", "clima-grade-zile", "evenimente" })
+        foreach (var s in new[] { "curent", "putere", "gaz", "aparate", "aparate-programe", "consumatori", "consumatori-detectati", "clima", "clima-grade-zile", "evenimente" })
             (await c.GetAsync($"/history/export.csv?section={s}&p=an&d=2026")).StatusCode.Should().Be(HttpStatusCode.OK, s);
         (await c.GetAsync("/history/export.csv?section=nimic")).StatusCode.Should().Be(HttpStatusCode.BadRequest);
     }

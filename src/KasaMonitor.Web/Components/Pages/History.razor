@@ -8,6 +8,7 @@
 @inject HomeService Home
 @inject HistoryService HistorySvc
 @inject KasaMonitor.Workers.Mqtt.GenericHistoryService GenericHistory
+@inject PowerHistoryService PowerHistory
 @inject EnergyReportService Reports
 @inject IKasaSettingsService KasaSettings
 @inject IHeatingSettingsService HeatingSettings
@@ -18,20 +19,24 @@
 <PageTitle>KasaMonitor — Istoric</PageTitle>
 
 @* /history (0.9.2): one long page for the past of everything monitored, one period for all of it (Zi / Săptămână / Lună /
-   An / Interval, ◀ ▶, kept in the address: ?p=luna&d=2026-11&cmp=1&plug=…), a summary row with anchors, then the sections
-   Curent · Gaz și centrală · Aparate · Consumatori · Climă · Costuri · Evenimente; each loads on its own (cached
+   An / Interval, ◀ ▶, kept in the address: ?p=luna&d=2026-11&cmp=0|an&plug=…&pw=…), a summary row with anchors, then the sections
+   Curent · Putere (0.14.0) · Gaz și centrală · Aparate · Consumatori · Climă · Costuri · Evenimente; each loads on its own (cached
    aggregates: HomeService for electricity, HistoryService for the rest), each has a chart, key figures, a table and its
    CSV; a click on a bar opens that day (that month). *@
 <div class="home hist">
     <div class="topbar hist-top">
         <h1>Istoric</h1>
         <ReportPeriodPicker Period="_period" PeriodChanged="OnPeriodChangedAsync" Today="_today" AllowRange="true" />
-        <label class="switch" title="Δ față de perioada precedentă (o perioadă în curs: față de aceeași parte din ea, ca în Acasă) și barele ei palide">
-            <input type="checkbox" role="switch" aria-checked="@(_compare ? "true" : "false")" checked="@_compare" @onchange="OnCompareChanged" />
-            <span>@(IsToday ? "Compară cu ieri (la aceeași oră)" : PeriodNames.For(_period.Kind).Compare)</span>
-        </label>
+        @* One comparison for the page (0.14.0): none, the previous period (Δ and pale bars of every section), or the same
+           interval last year, which only „Putere” draws (the other sections keep the previous period). *@
+        <select class="form-select form-select-sm w-auto hist-compare" aria-label="Comparație" value="@CompareValue(_compareMode)" @onchange="OnCompareChanged"
+                title="Δ față de perioada precedentă (o perioadă în curs: față de aceeași parte din ea, ca în Acasă) și barele ei palide; „@PowerChart.LastYearOption” se aplică graficului Putere, celelalte secțiuni compară în continuare cu perioada precedentă">
+            <option value="0">Fără comparație</option>
+            <option value="1">@(IsToday ? "Compară cu ieri (la aceeași oră)" : PeriodNames.For(_period.Kind).Compare)</option>
+            <option value="an">@PowerChart.LastYearOption</option>
+        </select>
         <nav class="hist-chips" aria-label="Secțiuni">
-            <a href="#curent">Curent</a><a href="#gaz">Gaz</a><a href="#aparate">Aparate</a><a href="#consumatori">Consumatori</a><a href="#clima">Climă</a>@if (_generic is { Entities.Count: > 0 }) {<a href="#alte">Alte dispozitive</a>}<a href="#costuri">Costuri</a><a href="#evenimente">Evenimente</a>
+            <a href="#curent">Curent</a><a href="#putere">Putere</a><a href="#gaz">Gaz</a><a href="#aparate">Aparate</a><a href="#consumatori">Consumatori</a><a href="#clima">Climă</a>@if (_generic is { Entities.Count: > 0 }) {<a href="#alte">Alte dispozitive</a>}<a href="#costuri">Costuri</a><a href="#evenimente">Evenimente</a>
         </nav>
     </div>
     @if (_errors.Count > 0)
@@ -95,6 +100,8 @@
 
     <HistoryCurrentSection Data="_home" Prices="_prices" Comparison="c" Compare="_compare" Plug="_plug" PlugChanged="OnPlugChangedAsync" Now="_now"
                            CsvHref="@Csv(HistorySections.Electricity, _plug)" />
+    <HistoryPowerSection Data="_power" Tz="PowerHistory.TimeZone" SelectionChanged="OnPowerSelectionChanged"
+                         CsvHref="@("/history/export.csv?section=" + HistorySections.Power + "&" + PeriodQuery.Format(_period) + PeriodQuery.CompareParam(_compareMode) + PeriodQuery.PowerParam(_powerSelection))" />
     <HistoryGasSection Data="_gas" Loaded="_gasLoaded" Prices="_prices" Compare="_compare" Now="_now" BoilerTz="Reports.BoilerTimeZone" LocalTz="Reports.TimeZone"
                        CsvHref="@Csv(HistorySections.Gas)" />
     <HistoryMieleSection Data="_miele" Prices="_prices" Tz="Reports.TimeZone" CsvHref="@Csv(HistorySections.MieleCycles)" ProgramsCsvHref="@Csv(HistorySections.MielePrograms)" />
@@ -119,17 +126,23 @@
     [SupplyParameterFromQuery(Name = "plug")] public string? QueryPlug { get; set; }
     /// <summary>The address of 0.9.0 and before (/history?plugId=…): the same plug filter.</summary>
     [SupplyParameterFromQuery(Name = "plugId")] public string? QueryPlugId { get; set; }
+    /// <summary>The series of „Putere” (0.14.0): plug ids separated by commas, „-” for none; absent = the main meter.</summary>
+    [SupplyParameterFromQuery(Name = "pw")] public string? QueryPower { get; set; }
 
     private ReportPeriod _period;
     private DateOnly _today;
     private DateTimeOffset _now;
     private bool _compare = true;
+    private CompareMode _compareMode = CompareMode.Previous;
+    private IReadOnlyList<Guid>? _powerSelection;
+    private int _powerVersion;
     private Guid? _plug;
     private bool _initialized;
     private int _version;
     private EnergyPrices _prices = new(1.30m, KasaMonitor.Core.Heating.ViessmannApi.DefaultKwhPerM3, 0, false);
 
     private HomePeriod? _home;
+    private HistoryPower? _power;
     private HistoryGas? _gas;
     private bool _gasLoaded;
     private HistoryMiele? _miele;
@@ -156,15 +169,25 @@
     {
         if (!_initialized) return;
         var before = _period;
+        var powerBefore = PowerKey;
         ReadQuery();
         if (_period != before) await LoadAsync();
+        else if (PowerKey != powerBefore) await LoadPowerAsync();
     }
+
+    /// <summary>What „Putere” depends on besides the period: the comparison and the series.</summary>
+    private string PowerKey => PeriodQuery.CompareParam(_compareMode) + PeriodQuery.PowerParam(_powerSelection);
+
+    /// <summary>The value of the comparison's option (the cmp= of the address; „1” for the previous period).</summary>
+    private static string CompareValue(CompareMode mode) => mode switch { CompareMode.None => "0", CompareMode.LastYear => "an", _ => "1" };
 
     private void ReadQuery()
     {
         _period = PeriodQuery.Parse(QueryKind, QueryDay, QueryFrom, QueryTo, _today, ReportGranularity.Month);
-        _compare = PeriodQuery.Compare(QueryCompare);
+        _compareMode = PeriodQuery.CompareModeOf(QueryCompare);
+        _compare = _compareMode != CompareMode.None;
         _plug = PeriodQuery.Plug(QueryPlug) ?? PeriodQuery.Plug(QueryPlugId);
+        _powerSelection = PeriodQuery.PowerSeries(QueryPower);
     }
 
     private string Csv(string section, Guid? plug = null) =>
@@ -180,13 +203,16 @@
         _today = HistorySvc.Today();
         _now = DateTimeOffset.UtcNow;
         var period = _period;
-        (_home, _gas, _gasLoaded, _miele, _detected, _climate, _events, _generic) = (null, null, false, null, null, null, null, null);
+        (_home, _gas, _gasLoaded, _miele, _detected, _climate, _events, _generic, _power) = (null, null, false, null, null, null, null, null, null);
+        var powerVersion = ++_powerVersion;
+        var (mode, selection) = (_compareMode, _powerSelection);
         _errors.Clear();
         var ct = CancellationToken.None;
         var tasks = new List<Task>
         {
             Section("prețuri", () => Task.Run(() => HistoryPrices.LoadAsync(KasaSettings, HeatingSettings, false, ct)), p => _prices = p with { HasGas = _gas is not null || _prices.HasGas }, version),
             Section("curent", () => Home.GetAsync(period, ct), d => _home = d, version),
+            Section("putere", () => PowerHistory.GetAsync(period, mode, selection, ct), x => { if (powerVersion == _powerVersion) _power = x; }, version),
             Section("gaz", () => HistorySvc.GetGasAsync(period, ct), g => { _gas = g; _gasLoaded = true; _prices = _prices with { HasGas = g is not null }; }, version),
             Section("aparate", () => HistorySvc.GetMieleAsync(period, ct), m => _miele = m, version),
             Section("consumatori", () => HistorySvc.GetDetectedAsync(period, ct), d => _detected = d, version),
@@ -196,6 +222,17 @@
             Section("estimare", () => Home.Metrics.Bill is { } b ? Task.FromResult<BillEstimate?>(b) : Home.GetBillAsync(ct), b => _bill = b, version),
         };
         if (!RendererInfo.IsInteractive) await Task.WhenAll(tasks);
+    }
+
+    /// <summary>Only „Putere” again (its series or the comparison changed, the period did not); the old chart stays until the new one is there.</summary>
+    private async Task LoadPowerAsync()
+    {
+        var version = ++_powerVersion;
+        _errors.Remove("putere");
+        var (period, mode, selection) = (_period, _compareMode, _powerSelection);
+        var load = Section("putere", () => PowerHistory.GetAsync(period, mode, selection, CancellationToken.None),
+            x => { if (version == _powerVersion) _power = x; }, _version);
+        if (!RendererInfo.IsInteractive) await load;
     }
 
     private async Task Section<T>(string name, Func<Task<T>> load, Action<T> set, int version)
@@ -218,19 +255,28 @@
 
     private Task OnPeriodChangedAsync(ReportPeriod p)
     {
-        Nav.NavigateTo(PeriodQuery.History(p, _compare, _plug));
+        Nav.NavigateTo(PeriodQuery.History(p, _compareMode, _plug, _powerSelection));
         return Task.CompletedTask;
     }
 
     private void OnCompareChanged(ChangeEventArgs e)
     {
-        var on = e.Value is true || e.Value is string s && bool.TryParse(s, out var b) && b;
-        Nav.NavigateTo(PeriodQuery.History(_period, on, _plug), new NavigationOptions { ReplaceHistoryEntry = true });
+        var mode = PeriodQuery.CompareModeOf(e.Value?.ToString());
+        Nav.NavigateTo(PeriodQuery.History(_period, mode, _plug, _powerSelection), new NavigationOptions { ReplaceHistoryEntry = true });
     }
 
     private Task OnPlugChangedAsync(Guid? plug)
     {
-        Nav.NavigateTo(PeriodQuery.History(_period, _compare, plug, "curent"), new NavigationOptions { ReplaceHistoryEntry = true });
+        Nav.NavigateTo(PeriodQuery.History(_period, _compareMode, plug, _powerSelection, "curent"), new NavigationOptions { ReplaceHistoryEntry = true });
+        return Task.CompletedTask;
+    }
+
+    /// <summary>A series toggled in „Putere”: the main meter alone is the default (no pw= in the address).</summary>
+    private Task OnPowerSelectionChanged(IReadOnlyList<Guid> selection)
+    {
+        var main = _power?.Main?.PlugId;
+        IReadOnlyList<Guid>? pw = main is { } m && selection.Count == 1 && selection[0] == m ? null : selection;
+        Nav.NavigateTo(PeriodQuery.History(_period, _compareMode, _plug, pw, "putere"), new NavigationOptions { ReplaceHistoryEntry = true });
         return Task.CompletedTask;
     }
 }

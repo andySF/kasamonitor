@@ -1,0 +1,135 @@
+@using KasaMonitor.Core.Reports
+@using KasaMonitor.Web.Ui
+
+@* The power over time of /history „Putere” (hand-drawn SVG, 0.14.0): per series the average as a line and a light band up
+   to the maximum (a gap where a bucket has no data), the comparison as a dashed line (its average), the time labels of
+   PowerChart.Ticks; hovering shows the values of a zone (one bucket, or a few on a dense chart: at most MaxZones zones). *@
+@if (Grid.Count == 0 || !Series.Concat(Comparison is null ? Array.Empty<Line>() : new[] { Comparison }).Any(s => s.Points.Any(p => p is not null)))
+{
+    <div class="empty">@Empty</div>
+}
+else
+{
+    var n = Grid.Count;
+    var values = Series.SelectMany(s => s.Points.Where(p => p is not null).SelectMany(p => new[] { p!.AvgW, p.MaxW }))
+        .Concat(Comparison?.Points.Where(p => p is not null).Select(p => p!.AvgW) ?? Array.Empty<double>()).ToList();
+    var top = values.Max();
+    var bottom = Math.Min(0, values.Min());
+    var step = HomeSvg.NiceMax(Math.Max(top - bottom, 4) / 4);
+    var lo = Math.Floor(bottom / step) * step;
+    var hi = Math.Max(lo + step, Math.Ceiling(top / step) * step);
+    var plotW = W - L - R;
+    var plotH = H - T - B;
+    var slot = plotW / n;
+    double X(int i) => L + slot * i + slot / 2;
+    double Y(double v) => T + plotH - (v - lo) / (hi - lo) * plotH;
+    var decimals = HomeSvg.AxisDecimals(step);
+    var group = Math.Max(1, (int)Math.Ceiling(n / (double)MaxZones));
+    <svg class="chart hist-power" viewBox="0 0 @HomeSvg.N(W) @HomeSvg.N(H)" role="img" aria-label="@AriaLabel">
+        @for (var v = lo; v <= hi + 1e-9; v += step)
+        {
+            <g>
+                <line class="gridline" x1="@HomeSvg.N(L)" x2="@HomeSvg.N(W - R)" y1="@HomeSvg.N(Y(v))" y2="@HomeSvg.N(Y(v))" />
+                <text class="tick num" x="@HomeSvg.N(L - 6)" y="@HomeSvg.N(Y(v) + 4)" text-anchor="end">@HeatingFormat.Number(v, decimals)</text>
+            </g>
+        }
+        @foreach (var tick in PowerChart.Ticks(Grid, Resolution, Tz))
+        {
+            <g>
+                <line class="gridline pw-vtick" x1="@HomeSvg.N(X(tick.Index) - slot / 2)" x2="@HomeSvg.N(X(tick.Index) - slot / 2)" y1="@HomeSvg.N(T)" y2="@HomeSvg.N(T + plotH)" />
+                <text class="tick num" x="@HomeSvg.N(X(tick.Index) - slot / 2)" y="@HomeSvg.N(H - 6)" text-anchor="middle">@tick.Label</text>
+            </g>
+        }
+        @foreach (var s in Series)
+        {
+            @foreach (var run in Runs(s.Points))
+            {
+                var upper = string.Join(" ", run.Select(i => HomeSvg.N(X(i)) + "," + HomeSvg.N(Y(s.Points[i]!.MaxW))));
+                var lower = string.Join(" ", run.AsEnumerable().Reverse().Select(i => HomeSvg.N(X(i)) + "," + HomeSvg.N(Y(s.Points[i]!.AvgW))));
+                <polygon class="pw-band" style="fill:@s.Color" points="@(upper + " " + lower)" pointer-events="none" />
+            }
+        }
+        @if (Comparison is { } cmp)
+        {
+            @foreach (var run in Runs(cmp.Points))
+            {
+                <polyline class="pw-cmp" points="@PolyPoints(run, cmp.Points, X, Y)" pointer-events="none" />
+            }
+        }
+        @foreach (var s in Series)
+        {
+            @foreach (var run in Runs(s.Points))
+            {
+                <polyline class="pw-line" style="stroke:@s.Color" points="@PolyPoints(run, s.Points, X, Y)" pointer-events="none" />
+                @if (run.Count == 1)
+                {
+                    <circle style="fill:@s.Color" cx="@HomeSvg.N(X(run[0]))" cy="@HomeSvg.N(Y(s.Points[run[0]]!.AvgW))" r="2.5" />
+                }
+            }
+        }
+        @for (var start = 0; start < n; start += group)
+        {
+            var end = Math.Min(n, start + group);
+            <g class="hour">
+                <title>@Tooltip(start, end)</title>
+                <rect class="bar-bg" x="@HomeSvg.N(X(start) - slot / 2)" y="@HomeSvg.N(T)" width="@HomeSvg.N(slot * (end - start))" height="@HomeSvg.N(plotH)" />
+            </g>
+        }
+    </svg>
+}
+
+@code {
+    /// <summary>One series: its name, its colour (a hex of the /contor palette) and its points on the grid.</summary>
+    public sealed record Line(string Name, string Color, IReadOnlyList<PowerPoint?> Points);
+
+    /// <summary>At most this many hover zones (a day of minutes: one zone per 8 minutes).</summary>
+    public const int MaxZones = 180;
+
+    [Parameter] public double W { get; set; } = 1100;
+    [Parameter] public double H { get; set; } = 280;
+    private const double L = 52;
+    private const double R = 10;
+    private const double T = 10;
+    private const double B = 22;
+
+    [Parameter, EditorRequired] public IReadOnlyList<DateTimeOffset> Grid { get; set; } = Array.Empty<DateTimeOffset>();
+    /// <summary>The end of the last bucket (the period's end).</summary>
+    [Parameter] public DateTimeOffset EndUtc { get; set; }
+    [Parameter] public PowerResolution Resolution { get; set; }
+    [Parameter, EditorRequired] public TimeZoneInfo Tz { get; set; } = TimeZoneInfo.Utc;
+    [Parameter, EditorRequired] public IReadOnlyList<Line> Series { get; set; } = Array.Empty<Line>();
+    /// <summary>The comparison (one series, aligned on the grid), drawn dashed.</summary>
+    [Parameter] public Line? Comparison { get; set; }
+    [Parameter] public string AriaLabel { get; set; } = "Putere";
+    [Parameter] public string Empty { get; set; } = "Fără date de putere în perioada aleasă.";
+
+    private static string PolyPoints(List<int> run, IReadOnlyList<PowerPoint?> points, Func<int, double> x, Func<double, double> y) =>
+        string.Join(" ", run.Select(i => HomeSvg.N(x(i)) + "," + HomeSvg.N(y(points[i]!.AvgW))));
+
+    /// <summary>The runs of consecutive buckets that have a value (a line breaks at a gap).</summary>
+    private static List<List<int>> Runs(IReadOnlyList<PowerPoint?> points)
+    {
+        var runs = new List<List<int>>();
+        List<int>? cur = null;
+        for (var i = 0; i < points.Count; i++)
+        {
+            if (points[i] is null) { cur = null; continue; }
+            if (cur is null) runs.Add(cur = new List<int>());
+            cur.Add(i);
+        }
+        return runs;
+    }
+
+    private string Tooltip(int start, int end)
+    {
+        var lines = new List<string> { PowerChart.RangeTitle(Grid[start], end < Grid.Count ? Grid[end] : EndUtc, end - start, Resolution, Tz) };
+        foreach (var s in Series)
+        {
+            var sum = PowerHistory.Summary(s.Points.Skip(start).Take(end - start));
+            lines.Add(sum is null ? $"{s.Name}: fără date" : $"{s.Name}: medie {HomeFormat.W(sum.AvgW)} W · max {HomeFormat.W(sum.MaxW)} W");
+        }
+        if (Comparison is { } c && PowerHistory.Summary(c.Points.Skip(start).Take(end - start)) is { } cs)
+            lines.Add($"{c.Name}: medie {HomeFormat.W(cs.AvgW)} W · max {HomeFormat.W(cs.MaxW)} W");
+        return string.Join("\n", lines);
+    }
+}

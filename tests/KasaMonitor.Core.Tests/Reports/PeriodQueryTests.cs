@@ -73,4 +73,33 @@ public class PeriodQueryTests
         PeriodQuery.Compare("1").Should().BeTrue();
         PeriodQuery.Compare("0").Should().BeFalse();
     }
+
+    [Fact]
+    public void CompareMode_None_Previous_LastYear_AndLastYearKeepsTheOtherSectionsComparing()
+    {
+        PeriodQuery.CompareModeOf(null).Should().Be(CompareMode.Previous);
+        PeriodQuery.CompareModeOf("1").Should().Be(CompareMode.Previous);
+        PeriodQuery.CompareModeOf("nu").Should().Be(CompareMode.None);
+        PeriodQuery.CompareModeOf(" AN ").Should().Be(CompareMode.LastYear);
+        PeriodQuery.Compare("an").Should().BeTrue("the other sections keep their Δ against the previous period");
+        PeriodQuery.CompareParam(CompareMode.Previous).Should().BeEmpty();
+        PeriodQuery.CompareParam(CompareMode.LastYear).Should().Be("&cmp=an");
+    }
+
+    [Fact]
+    public void PowerSeries_InTheAddress_IdsDashForNone_GarbageIsTheDefault()
+    {
+        var a = Guid.Parse("11111111-2222-3333-4444-555555555555");
+        var b = Guid.Parse("aaaaaaaa-2222-3333-4444-555555555555");
+        PeriodQuery.PowerSeries(null).Should().BeNull();
+        PeriodQuery.PowerSeries("nimic").Should().BeNull();
+        PeriodQuery.PowerSeries("-").Should().BeEmpty();
+        PeriodQuery.PowerSeries($"{a},x,{b},{a}").Should().Equal(a, b);
+        PeriodQuery.PowerParam(null).Should().BeEmpty();
+        PeriodQuery.PowerParam(Array.Empty<Guid>()).Should().Be("&pw=-");
+
+        var month = ReportPeriod.Containing(ReportGranularity.Month, Today);
+        PeriodQuery.History(month, CompareMode.LastYear, null, new[] { a, b }, "putere")
+            .Should().Be($"/history?p=luna&d=2026-11&cmp=an&pw={a},{b}#putere");
+    }
 }

@@ -58,6 +58,15 @@
 .hist .hist-track { fill: var(--grid); opacity: .5; }
 .hist .hist-cell0 { fill: var(--grid); opacity: .45; }
 
+/* „Putere” (0.14.0): series in the /contor palette (inline colours), average line, light band up to the maximum, the
+   comparison dashed in ink; a thin day/hour mark at every axis label */
+.hist svg.hist-power { max-width: 1400px; }
+.hist .pw-line { fill: none; stroke-width: 1.5; stroke-linejoin: round; stroke-linecap: round; }
+.hist .pw-band { stroke: none; opacity: .16; }
+.hist .pw-cmp { fill: none; stroke: var(--ink-2); stroke-width: 1.5; stroke-dasharray: 5 3; opacity: .85; }
+.hist .sw.line.pw-cmp-sw { background: none; border-top: 2px dashed var(--ink-2); height: 0; }
+.hist .pw-vtick { opacity: .6; }
+
 /* lines of the climate charts: rooms in the categorical colours, outdoor dashed ink */
 .hist .ln-out { stroke: var(--ink-2); fill: var(--ink-2); stroke-dasharray: 5 3; }
 .hist .ln-p1 { stroke: var(--c-plug-1); fill: var(--c-plug-1); }

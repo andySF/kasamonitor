@@ -78,7 +78,8 @@ The path of one reading, end to end:
    A raw row is stored only when the value changes (or every 60 s); a minute aggregate is built from every reading.
    `LiveStreamBroadcaster` hands the values to the in-process consumers (home page bubbles, NILM, the Prometheus
    remote writer) without going through the database.
-4. **Aggregation.** `RollupWorker` (daily) rolls raw `Samples` into minute aggregates; `HistorySyncWorker` (every 6 h)
+4. **Aggregation.** `RollupWorker` (every 15 min) rolls raw `Samples` into minute aggregates and those into hour
+   aggregates (0.14.0; never replaced by less data, never deleted); `HistorySyncWorker` (every 6 h)
    pulls the plugs' own daily/monthly history; `ReadingsRetentionService` purges only if a retention is configured.
 5. **Reports.** `EnergyReportService` builds house and boiler reports per period; `HomeService` and `HistoryService`
    cache them in `PeriodCache` (deduplicated computation on the thread pool, stale-while-revalidate, TTL 1 min for
@@ -107,7 +108,7 @@ database. Settings are flat key/value rows, so grouping them on tabs needs no mi
 |---|---|
 | `Plugs` | One row per plug or meter channel: protocol, alias, role (plug / main meter / sub-meter), stream flag, NILM exclusion, single-appliance flag, archived flag |
 | `Samples` | Raw polled readings (power, voltage, current, counters) |
-| `OneMinuteAggregates`, `OneHourAggregates` | Rollups of `Samples` |
+| `OneMinuteAggregates`, `OneHourAggregates` | Rollups of `Samples` (minutes) and of the minutes (hours, 0.14.0), kept; the only source of the „Putere” chart of `/history` |
 | `DailyEnergies`, `MonthlyEnergies` | Energy per plug per day / month (from the plugs' own counters) |
 | `Settings` | All application settings and a few internal markers (NILM processing marker, last re-cluster) |
 | `LiveSamples` | Raw stream rows, written on change or every 60 s; purged after `LiveRawRetentionDays` |
@@ -132,7 +133,7 @@ database. Settings are flat key/value rows, so grouping them on tabs needs no mi
 | `GenericHourly` | 0.11: hourly min / time-weighted mean / max / last / count / counted delta per generic entity, kept |
 
 Retention (see README [Data retention](../README.md#data-retention)): events, signatures, runs, climate, Miele and
-minute aggregates are kept without limit; only `LiveSamples` is purged by default (30 days).
+minute and hour aggregates are kept without limit; only `LiveSamples` is purged by default (30 days).
 
 ## 4. Background workers and cadences
 
@@ -142,7 +143,7 @@ minute aggregates are kept without limit; only `LiveSamples` is purged by defaul
 | `PollingWorker` | Every plug on the base interval (default 10 s); legacy counters every 5 min; Shelly info hourly |
 | `LiveStreamWorker` | Main meter every 1 s; other channels 1–10 s adaptive; flush to the database every 10 s; reconnection backoff 1 → 30 s |
 | `HistorySyncWorker` | Plugs' own history every 6 h (retry every minute while no plug has history) |
-| `RollupWorker` | Daily: raw samples → minute aggregates; optional purge |
+| `RollupWorker` | Every 15 min: raw samples → minute → hour aggregates (the first cycle: the last 7 days and the one-time hourly backfill); daily: all of yesterday, then the optional purge |
 | `HeatingPollWorker` | Viessmann cloud, one bulk call per interval (default 120 s, minimum 60 s) within the daily API budget; backoff up to 30 min |
 | `MieleStreamWorker` | One SSE stream; after 3 failed attempts polls `GET /devices` every 60 s and retries SSE at each backoff |
 | `MieleHistorySync` | Program history after connection, every 6 h and 2 minutes after a cycle ends |

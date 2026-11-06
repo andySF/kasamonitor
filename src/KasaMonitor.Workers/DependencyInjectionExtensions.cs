@@ -19,6 +19,7 @@ public static class DependencyInjectionExtensions
         services.AddScoped<IClimateRepository, ClimateRepository>();
         services.AddScoped<IEntityPrefsRepository, EntityPrefsRepository>();
         services.AddScoped<IGenericRepository, GenericRepository>();
+        services.AddScoped<IPowerAggregateRepository, PowerAggregateRepository>();
 
         services.AddSingleton<IPlugStateBroadcaster, PlugStateBroadcaster>();
         services.AddSingleton<ILiveStreamBroadcaster>(sp => new LiveStreamBroadcaster(

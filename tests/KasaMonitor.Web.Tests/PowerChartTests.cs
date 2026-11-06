@@ -81,7 +81,7 @@ public class PowerChartTests
     }
 
     [Fact]
-    public void Colors_TheMainMeterItsOwn_PlugsTheNextFree_AsOnContor()
+    public void Colors_TheMainMeterItsOwn_PlugsByTheirPlace_StableAcrossToggles()
     {
         var main = Guid.NewGuid();
         var a = Guid.NewGuid();
@@ -90,6 +90,8 @@ public class PowerChartTests
         colors[main].Should().Be(LiveChartColors.Main);
         colors[a].Should().Be(LiveChartColors.Overlays[0]);
         colors[b].Should().Be(LiveChartColors.Overlays[1]);
+        var p = Power(Day(2026, 11, 12), CompareMode.None, null, main, a, main, b);
+        PowerChart.Colors(p with { Selected = new[] { main, b } })[b].Should().Be(LiveChartColors.Overlays[1], "a channel keeps its colour when another is hidden");
     }
 
     [Fact]

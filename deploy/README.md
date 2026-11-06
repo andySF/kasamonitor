@@ -144,10 +144,10 @@ All `KasaMonitor__*` variables are listed, with their defaults, in `docker-compo
 `../README.md`. The ones saved in `/settings` are only initial values (the database wins once saved); the database
 connection, the data directory, the poll interval and the secrets are read at start-up.
 
-Retention of the raw data: since 0.14.0 every chart of `/history` (the „Putere” power chart included) reads only the
-minute and hour aggregates, which are kept forever. `KasaMonitor__ReadingsRetentionMonths: "3"` (raw 10 s readings) with
-`KasaMonitor__LiveRawRetentionDays: "30"` (raw live samples) bounds the database without losing any chart; the first
-start of 0.14.0 fills the hour aggregates of the past once (logged as `Hourly power aggregates backfilled …`).
+Retention of the raw data: since 0.14.0 no chart of `/history` needs the raw 10 s readings (`Samples`): the „Putere”
+power chart reads the minute and hour aggregates, which are kept forever. `KasaMonitor__ReadingsRetentionMonths: "3"`
+(raw 10 s readings) with `KasaMonitor__LiveRawRetentionDays: "30"` (raw live samples) bounds the database without losing a
+chart; the first start of 0.14.0 fills the minutes and hours of the past once (logged as `Power aggregates backfilled …`).
 
 | Var | Default | Notes |
 |---|---|---|

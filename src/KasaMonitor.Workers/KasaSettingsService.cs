@@ -65,6 +65,11 @@ public static class SettingKeys
     public const string ShellyClimatePlugsArchived = "ShellyClimatePlugsArchived";
     /// <summary>Internal: unix second of the last re-clustering (nightly, at startup after a missed night, or „Regrupează acum”).</summary>
     public const string NilmLastReclusterTs = "NilmLastReclusterTs";
+    /// <summary>
+    /// Internal (0.14.0): UTC time (ISO) the one-time power backfill finished without an error (the minutes of every past day
+    /// that had readings but no minutes, the hours of every day that had minutes but no hours); present = skipped at start.
+    /// </summary>
+    public const string PowerBackfillDoneUtc = "PowerBackfillDoneUtc";
 }
 
 /// <summary>Basic-auth credentials of the remote write endpoint (decrypted, never shown).</summary>

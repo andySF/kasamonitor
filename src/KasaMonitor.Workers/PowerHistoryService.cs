@@ -36,7 +36,9 @@ public sealed record HistoryPower(ReportPeriod Period, PowerResolution Resolutio
 /// The power chart of /history from the aggregates only (minute rows for ≤ 2 days, hour rows otherwise; never Samples or
 /// LiveSamples, so it keeps working once the retention trimmed the raw readings). One series of one period is read on the
 /// key (PlugId, BucketStartUtc) and cached (<see cref="PeriodCache{TKey,TValue}"/>: shared by every circuit and the CSV,
-/// stale-while-revalidate); toggling a series reads only that series.
+/// stale-while-revalidate); toggling a series reads only that series. The cache key holds
+/// <see cref="PowerAggregatesVersion"/> (rows written later for a past period are seen at once), and a period that ended
+/// less than <see cref="RollupWorker.Settling"/> ago is not cached (its last minutes may still be rolled).
 /// </summary>
 public sealed class PowerHistoryService
 {
@@ -46,20 +48,24 @@ public sealed class PowerHistoryService
     private readonly Func<TimeZoneInfo> _tz;
     private readonly Func<DateTimeOffset> _clock;
     private readonly ILogger _log;
-    private readonly PeriodCache<(Guid Plug, ReportPeriod Period, PowerResolution Resolution), HistoryPowerSeries> _cache;
+    private readonly PowerAggregatesVersion _version;
+    private readonly PeriodCache<(Guid Plug, ReportPeriod Period, PowerResolution Resolution, int Version), HistoryPowerSeries> _cache;
 
-    public PowerHistoryService(IServiceScopeFactory scopes, EnergyReportService reports, ILogger<PowerHistoryService>? log = null, Func<DateTimeOffset>? clock = null)
-        : this(scopes, () => reports.TimeZone, log, clock)
+    public PowerHistoryService(IServiceScopeFactory scopes, EnergyReportService reports, ILogger<PowerHistoryService>? log = null, Func<DateTimeOffset>? clock = null,
+        PowerAggregatesVersion? version = null)
+        : this(scopes, () => reports.TimeZone, log, clock, version)
     {
     }
 
-    public PowerHistoryService(IServiceScopeFactory scopes, Func<TimeZoneInfo> timeZone, ILogger<PowerHistoryService>? log = null, Func<DateTimeOffset>? clock = null)
+    public PowerHistoryService(IServiceScopeFactory scopes, Func<TimeZoneInfo> timeZone, ILogger<PowerHistoryService>? log = null, Func<DateTimeOffset>? clock = null,
+        PowerAggregatesVersion? version = null)
     {
         _scopes = scopes;
         _tz = timeZone;
         _clock = clock ?? (() => DateTimeOffset.UtcNow);
         _log = log ?? (ILogger)NullLogger.Instance;
-        _cache = new PeriodCache<(Guid, ReportPeriod, PowerResolution), HistoryPowerSeries>(_clock, _tz, MaxCachedSeries, _log, "Power series");
+        _version = version ?? new PowerAggregatesVersion();
+        _cache = new PeriodCache<(Guid, ReportPeriod, PowerResolution, int), HistoryPowerSeries>(_clock, _tz, MaxCachedSeries, _log, "Power series");
     }
 
     public TimeZoneInfo TimeZone => _tz();
@@ -108,9 +114,17 @@ public sealed class PowerHistoryService
             .ToList();
     }
 
-    /// <summary>One plug over one period at one resolution (cached).</summary>
-    public Task<HistoryPowerSeries> SeriesAsync(Guid plugId, ReportPeriod period, PowerResolution resolution, CancellationToken ct) =>
-        _cache.GetAsync((plugId, period, resolution), period, _ => ComputeAsync(plugId, period, resolution, CancellationToken.None), ct);
+    /// <summary>
+    /// One plug over one period at one resolution: cached by the version of the aggregates; a period that ended less than
+    /// <see cref="RollupWorker.Settling"/> ago is read every time (the past-period cache would keep it until the day changes).
+    /// </summary>
+    public Task<HistoryPowerSeries> SeriesAsync(Guid plugId, ReportPeriod period, PowerResolution resolution, CancellationToken ct)
+    {
+        var now = _clock();
+        var end = period.EndUtc(TimeZone);
+        if (end <= now && end > now - RollupWorker.Settling) return ComputeAsync(plugId, period, resolution, ct);
+        return _cache.GetAsync((plugId, period, resolution, _version.Value), period, _ => ComputeAsync(plugId, period, resolution, CancellationToken.None), ct);
+    }
 
     private async Task<HistoryPowerSeries> ComputeAsync(Guid plugId, ReportPeriod period, PowerResolution resolution, CancellationToken ct)
     {

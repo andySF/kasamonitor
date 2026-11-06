@@ -158,15 +158,16 @@ public static class PowerChart
         return (names.Previous, inProgress ? "față de aceeași parte din " + names.Previous : names.Versus);
     }
 
-    /// <summary>The colour of each selected series, as on /contor: the main meter its own, the others the next free one in order.</summary>
+    /// <summary>
+    /// The colour of every channel, in the palette of /contor and stable whatever else is shown: the main meter its own, the
+    /// other channels the overlay colours by their place in the list (repeated beyond the palette).
+    /// </summary>
     public static IReadOnlyDictionary<Guid, string> Colors(HistoryPower p)
     {
         var colors = new Dictionary<Guid, string>();
-        var main = p.Main?.PlugId;
-        if (main is { } m && p.Selected.Contains(m)) colors[m] = LiveChartColors.Main;
-        foreach (var id in p.Selected)
-            if (!colors.ContainsKey(id))
-                colors[id] = LiveChartColors.NextFree(colors.Where(kv => kv.Key != main).Select(kv => kv.Value).ToList());
+        var i = 0;
+        foreach (var c in p.Channels)
+            colors[c.PlugId] = c.IsMain ? LiveChartColors.Main : LiveChartColors.Overlays[i++ % LiveChartColors.Overlays.Count];
         return colors;
     }
 

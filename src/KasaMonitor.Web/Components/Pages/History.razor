@@ -35,6 +35,10 @@
             <option value="1">@(IsToday ? "Compară cu ieri (la aceeași oră)" : PeriodNames.For(_period.Kind).Compare)</option>
             <option value="an">@PowerChart.LastYearOption</option>
         </select>
+        @if (_compareMode == CompareMode.LastYear)
+        {
+            <span class="small text-secondary hist-cmp-note">anul trecut doar în Putere; celelalte secțiuni: @(IsToday ? "față de ieri" : PeriodNames.For(_period.Kind).Versus)</span>
+        }
         <nav class="hist-chips" aria-label="Secțiuni">
             <a href="#curent">Curent</a><a href="#putere">Putere</a><a href="#gaz">Gaz</a><a href="#aparate">Aparate</a><a href="#consumatori">Consumatori</a><a href="#clima">Climă</a>@if (_generic is { Entities.Count: > 0 }) {<a href="#alte">Alte dispozitive</a>}<a href="#costuri">Costuri</a><a href="#evenimente">Evenimente</a>
         </nav>
@@ -98,9 +102,10 @@
         </a>
     </div>
 
+    <CascadingValue Value="LinkState">
     <HistoryCurrentSection Data="_home" Prices="_prices" Comparison="c" Compare="_compare" Plug="_plug" PlugChanged="OnPlugChangedAsync" Now="_now"
                            CsvHref="@Csv(HistorySections.Electricity, _plug)" />
-    <HistoryPowerSection Data="_power" Tz="PowerHistory.TimeZone" SelectionChanged="OnPowerSelectionChanged"
+    <HistoryPowerSection Data="_power" Tz="PowerHistory.TimeZone" SeriesToggled="OnPowerSeriesToggled"
                          CsvHref="@("/history/export.csv?section=" + HistorySections.Power + "&" + PeriodQuery.Format(_period) + PeriodQuery.CompareParam(_compareMode) + PeriodQuery.PowerParam(_powerSelection))" />
     <HistoryGasSection Data="_gas" Loaded="_gasLoaded" Prices="_prices" Compare="_compare" Now="_now" BoilerTz="Reports.BoilerTimeZone" LocalTz="Reports.TimeZone"
                        CsvHref="@Csv(HistorySections.Gas)" />
@@ -114,6 +119,7 @@
     <HistoryCostSection Electricity="_home" Gas="_gas" Bill="_bill" Prices="_prices" Comparison="cost" Period="_period" Today="_today" Compare="_compare" Now="_now"
                         Tz="Reports.TimeZone" CsvHref="@Csv(HistorySections.Costs)" />
     <HistoryEventsSection Data="_events" Tz="Reports.TimeZone" CsvHref="@Csv(HistorySections.Events)" />
+    </CascadingValue>
 </div>
 
 @code {
@@ -136,6 +142,8 @@
     private CompareMode _compareMode = CompareMode.Previous;
     private IReadOnlyList<Guid>? _powerSelection;
     private int _powerVersion;
+    /// <summary>The selection asked for by a click whose address has not been read yet (a second quick click builds on it).</summary>
+    private IReadOnlyList<Guid>? _requestedSelection;
     private Guid? _plug;
     private bool _initialized;
     private int _version;
@@ -175,6 +183,9 @@
         else if (PowerKey != powerBefore) await LoadPowerAsync();
     }
 
+    /// <summary>The state the drill-down links of the sections keep (the comparison, the series of „Putere”).</summary>
+    private HistoryLinkState LinkState => new(_compareMode, _powerSelection);
+
     /// <summary>What „Putere” depends on besides the period: the comparison and the series.</summary>
     private string PowerKey => PeriodQuery.CompareParam(_compareMode) + PeriodQuery.PowerParam(_powerSelection);
 
@@ -188,6 +199,7 @@
         _compare = _compareMode != CompareMode.None;
         _plug = PeriodQuery.Plug(QueryPlug) ?? PeriodQuery.Plug(QueryPlugId);
         _powerSelection = PeriodQuery.PowerSeries(QueryPower);
+        _requestedSelection = null;
     }
 
     private string Csv(string section, Guid? plug = null) =>
@@ -271,11 +283,17 @@
         return Task.CompletedTask;
     }
 
-    /// <summary>A series toggled in „Putere”: the main meter alone is the default (no pw= in the address).</summary>
-    private Task OnPowerSelectionChanged(IReadOnlyList<Guid> selection)
+    /// <summary>
+    /// A series toggled in „Putere”, applied to the selection of the address (not to the one last drawn, which may be older
+    /// while a load runs); the main meter alone is the default (no pw= in the address).
+    /// </summary>
+    private Task OnPowerSeriesToggled(Guid id)
     {
         var main = _power?.Main?.PlugId;
-        IReadOnlyList<Guid>? pw = main is { } m && selection.Count == 1 && selection[0] == m ? null : selection;
+        IReadOnlyList<Guid> current = _requestedSelection ?? _powerSelection ?? (main is { } d ? new[] { d } : Array.Empty<Guid>());
+        var next = current.Contains(id) ? current.Where(x => x != id).ToList() : current.Append(id).ToList();
+        IReadOnlyList<Guid>? pw = main is { } m && next.Count == 1 && next[0] == m ? null : next;
+        _requestedSelection = next;
         Nav.NavigateTo(PeriodQuery.History(_period, _compareMode, _plug, pw, "putere"), new NavigationOptions { ReplaceHistoryEntry = true });
         return Task.CompletedTask;
     }

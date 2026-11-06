@@ -258,7 +258,7 @@ values only**: they are used while the key has not been saved from `/settings`.
 | Event threshold (W) | Aplicație | `KasaMonitor__MinEventDeltaW` | `30` | 5–10000; smallest steady-state step of the house power recorded as an event |
 | Re-clustering window (days) | Aplicație | `KasaMonitor__ClusterWindowDays` | `30` | 1–365; events grouped again every night at 03:30 |
 | ML model | Aplicație | `KasaMonitor__MlEnabled` | `true` | nightly ML.NET classifier over the labelled events; saved as `<data dir>/nilm-model.zip` |
-| Keep raw readings (months) | Aplicație | `KasaMonitor__ReadingsRetentionMonths` | `0` = unlimited | raw 10-second readings only; daily history and the minute and hour aggregates are never deleted (the „Putere” chart of /history needs only these: 3 months is a sensible value since 0.14.0). Saving a value that would delete existing readings asks for confirmation with the exact row count |
+| Keep raw readings (months) | Aplicație | `KasaMonitor__ReadingsRetentionMonths` | `0` = unlimited | raw 10-second readings only; daily history and the minute and hour aggregates are never deleted (no chart of /history needs the raw 10 s readings since 0.14.0, the „Putere” chart reads the minute and hour aggregates: 3 months is a sensible value). Saving a value that would delete existing readings asks for confirmation with the exact row count |
 | Gas boiler | Viessmann | `KasaMonitor__HeatingEnabled` | `true` | reads the Viessmann boiler once the ViCare account is connected (`/centrala`) |
 | Viessmann Client ID | Viessmann | `KasaMonitor__ViessmannClientId` | — | client of the Viessmann developer portal; the OAuth tokens are never configured, they come from „Conectează ViCare” and are stored encrypted |
 | Boiler poll interval (s) | Viessmann | `KasaMonitor__ViessmannPollIntervalSeconds` | `120` | minimum 60; one API call per poll (120 s = 720 of the 1450 daily calls) |
@@ -1182,8 +1182,9 @@ plugs (26,280 rows) is read in 36 ms on SQLite and 80 ms on SQL Server 2022 in D
 
 **Retention** (0.9.2): `ClimateReadings`, `MeterEvents` and `ApplianceRuns` are kept without limit; `LiveSamples` keep
 `LiveRawRetentionDays` (default 30). The minute and hour power aggregates are kept without limit and never rebuilt from
-less data (0.14.0): with `ReadingsRetentionMonths = 3` the raw readings go after three months, the chart of every past
-period stays.
+less data (0.14.0), and every day with raw readings gets its minutes before the readings can go (the catch-up from each
+plug's last minute, the one-time backfill of the past): no chart of `/history` needs the raw 10 s readings (`Samples`),
+so `ReadingsRetentionMonths = 3` keeps the power chart of every past period.
 
 ### Report sources (house and boiler)
 
@@ -1536,9 +1537,9 @@ curl -s -X POST "$K/api/nilm/plugs/<plug id>/appliance" -H "Content-Type: applic
 | Generic hourly rollups (0.11) | `GenericHourly` | one row per entity and hour | never |
 
 Aggregates are never deleted and never replaced by ones built from fewer readings (minutes) or fewer minutes (hours):
-rolling a day again after the retention deleted its raw readings leaves its minutes and hours as they were. So
-`ReadingsRetentionMonths = 3` with `LiveRawRetentionDays = 30` keeps every chart of `/history` („Putere” reads only the
-aggregates) and the daily energy, while the raw data stay bounded.
+rolling a day again after the retention deleted its raw readings leaves its minutes and hours as they were. No chart of
+`/history` needs the raw 10 s readings (`Samples`): „Putere” reads the minute and hour aggregates, the others their own
+tables. So `ReadingsRetentionMonths = 3` with `LiveRawRetentionDays = 30` bounds the raw data without losing a chart.
 
 The sizes above were measured on SQLite (0.11 and earlier); on SQL Server a row takes about as much (fixed-width
 `bigint`/`float` columns, page overhead), plus the indexes. Up to and including 0.2.1, raw readings older than 30 days
@@ -1612,12 +1613,14 @@ To publish under your own Docker Hub account, change the image name (`-Repo` par
 3. Check `http://<host>:8910/health`, `/dispozitive` (Adaugă → Scanează acum) and `curl -s http://<host>:8910/metrics | grep kasa_online`.
 
 0.14.0 has no migration (`OneHourAggregates` existed, unwritten; its `SampleCount` now holds the minutes of the hour).
-`RollupWorker` runs every 15 minutes instead of once a day (the readings since its previous cycle; once a day also the
-whole of yesterday, then the retention, as before); the first cycle after the start rolls the last 7 days again and fills
-the hour rows of every past day that has minutes but no hours — once, plug by plug and day by day, logged as
-`Hourly power aggregates backfilled: N hours on M plug-days in T ms`. It is idempotent: a restart finds nothing left to do. After this
-release `ReadingsRetentionMonths` can be lowered (e.g. to 3): the „Putere” chart and its comparisons need only the
-aggregates. The comparison of `/history` is now a list; old addresses (`cmp=0`, no `cmp`) open as before.
+`RollupWorker` runs every 15 minutes instead of once a day: each plug from its own last stored minute (so a stop of any
+length is caught up; a plug without minutes from its first reading); once a UTC day also the whole of yesterday, then —
+after a roll without errors — the retention, as before. Once, the backfill fills the minutes of every past day that has
+readings but no minutes (then its hours) and the hours of every day that has minutes but no hours, plug by plug and day
+by day, logged as `Power aggregates backfilled: N minutes on M plug-days, H hours on D plug-days in T ms`; when it finished
+without an error it stores the internal setting `PowerBackfillDoneUtc` and later starts skip it. A plug that fails is logged
+once, the others go on, and it is tried again with a growing pause (up to 6 h). After this release `ReadingsRetentionMonths`
+can be lowered (e.g. to 3): no chart of `/history` needs the raw 10 s readings. The comparison of `/history` is now a list; old addresses (`cmp=0`, no `cmp`) open as before.
 
 0.13.2 has no migration. The runs of a single-appliance plug are taken over at the first pass after the start: the runs of every signature of the plug are replaced
 from the later of the plug's first stored reading and the start of the clustering window (older ones stay), and new ones come from the plug. Shadows of the last 6 hours are marked at once, the

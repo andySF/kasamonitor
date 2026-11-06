@@ -102,16 +102,11 @@
 @code {
     [Parameter] public HistoryPower? Data { get; set; }
     [Parameter, EditorRequired] public TimeZoneInfo Tz { get; set; } = TimeZoneInfo.Utc;
-    /// <summary>The new selection (in the order of the address); the page writes it into the address.</summary>
-    [Parameter] public EventCallback<IReadOnlyList<Guid>> SelectionChanged { get; set; }
+    /// <summary>The series whose chip was clicked; the page applies it to the selection of the address (two quick clicks both count).</summary>
+    [Parameter] public EventCallback<Guid> SeriesToggled { get; set; }
     [Parameter, EditorRequired] public string CsvHref { get; set; } = "";
 
-    private Task Toggle(Guid id)
-    {
-        if (Data is null) return Task.CompletedTask;
-        var next = Data.Selected.Contains(id) ? Data.Selected.Where(x => x != id).ToList() : Data.Selected.Append(id).ToList();
-        return SelectionChanged.InvokeAsync(next);
-    }
+    private Task Toggle(Guid id) => SeriesToggled.InvokeAsync(id);
 
     private static IReadOnlyList<HistoryPowerChart.Line> Lines(HistoryPower p, IReadOnlyDictionary<Guid, string> colors) =>
         p.Series.Select(s => new HistoryPowerChart.Line(PowerChart.Name(p, s.PlugId), colors.GetValueOrDefault(s.PlugId) ?? LiveChartColors.Main, s.Points)).ToList();

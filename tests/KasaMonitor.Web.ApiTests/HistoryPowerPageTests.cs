@@ -116,6 +116,7 @@ public class HistoryPowerPageTests : IClassFixture<PowerFactory>
         html.Should().MatchRegex("<option value=\"an\" selected[^>]*>Același interval anul trecut");
         html.Should().Contain("anul trecut (marți, 14 octombrie 2025)").And.Contain("față de marți, 14 octombrie 2025");
         html.Should().Contain("▲ 100 W", "600 W against 500 W");
+        html.Should().Contain("anul trecut doar în Putere; celelalte secțiuni: față de ziua precedentă", "the control says what the other sections compare with");
         html.Should().Contain("section=putere&p=zi&d=2026-10-14&cmp=an");
     }
 
@@ -144,5 +145,13 @@ public class HistoryPowerPageTests : IClassFixture<PowerFactory>
         lines[1].Should().Be("2026-10-14 00:00;Contor casă;600;700;2026-10-14 00:00;1;500;600");
         lines[2].Should().Be("2026-10-14 00:00;Frigider;80;90;2026-10-14 00:00;1;;");
         lines.Should().HaveCount(1 + 2 * 1440);
+    }
+
+    /// <summary>Fix round 1, R4: a bar of a month opens its day with the same comparison and the same series.</summary>
+    [Fact]
+    public async Task DrillDown_KeepsTheComparisonAndTheSeries()
+    {
+        var html = await PageAsync($"/history?p=luna&d=2026-10&cmp=an&pw={_f.PlugId},{_f.MainId}");
+        html.Should().Contain($"href=\"/history?p=zi&d=2026-10-12&cmp=an&pw={_f.PlugId},{_f.MainId}\"");
     }
 }

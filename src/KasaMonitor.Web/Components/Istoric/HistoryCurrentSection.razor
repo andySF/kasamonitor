@@ -109,7 +109,7 @@
                 }
             </div>
         </div>
-        <HistoryTableView Table="HistoryTables.Electricity(house, Prices, Now, Compare, Plug)" />
+        <HistoryTableView Table="HistoryTables.Electricity(house, Prices, Now, Drill, Plug)" />
     }
 </section>
 
@@ -121,6 +121,9 @@
     [Parameter, EditorRequired] public EnergyPrices Prices { get; set; } = null!;
     [Parameter, EditorRequired] public EnergyComparison Comparison { get; set; } = null!;
     [Parameter] public bool Compare { get; set; }
+    /// <summary>The page's state the drill-down links keep (cmp=, pw=; 0.14.0); without the page, the flag.</summary>
+    [CascadingParameter] public HistoryLinkState? Address { get; set; }
+    private HistoryLinkState Drill => Address ?? Compare;
     [Parameter] public Guid? Plug { get; set; }
     [Parameter] public EventCallback<Guid?> PlugChanged { get; set; }
     [Parameter] public DateTimeOffset Now { get; set; }
@@ -130,7 +133,7 @@
 
     private Task OnPlugChange(ChangeEventArgs e) => PlugChanged.InvokeAsync(Guid.TryParse(e.Value?.ToString(), out var id) ? id : null);
 
-    private IReadOnlyList<string?> Links(HouseReport h) => h.Buckets.Select(b => HistoryTables.DrillLink(b, h.Period.Kind, Compare, Plug)).ToList();
+    private IReadOnlyList<string?> Links(HouseReport h) => h.Buckets.Select(b => HistoryTables.DrillLink(b, h.Period.Kind, Drill, Plug)).ToList();
 
     private IReadOnlyList<double?>? PreviousBars(HouseReport h) =>
         Compare ? HomeSvg.AlignPrevious(h.Buckets, h.PreviousBuckets, h.PreviousHouseKwh, h.Period.Kind) : null;

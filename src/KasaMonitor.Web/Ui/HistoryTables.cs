@@ -45,12 +45,15 @@ public static class HistoryTables
         _ => "Ziua",
     };
 
-    /// <summary>The address a bar drills down to: a day of a week / month / range, a month of a year; none for the hours of a day.</summary>
-    public static string? DrillLink(ReportBucket b, ReportGranularity kind, bool compare, Guid? plug) => kind switch
+    /// <summary>
+    /// The address a bar drills down to: a day of a week / month / range, a month of a year; none for the hours of a day. It
+    /// keeps the page's state (<see cref="HistoryLinkState"/>: the comparison, also „anul trecut”, and the series of „Putere”).
+    /// </summary>
+    public static string? DrillLink(ReportBucket b, ReportGranularity kind, HistoryLinkState compare, Guid? plug) => kind switch
     {
         ReportGranularity.Day => null,
-        ReportGranularity.Year => PeriodQuery.History(ReportPeriod.Containing(ReportGranularity.Month, b.Day), compare, plug),
-        _ => PeriodQuery.History(ReportPeriod.Containing(ReportGranularity.Day, b.Day), compare, plug),
+        ReportGranularity.Year => PeriodQuery.History(ReportPeriod.Containing(ReportGranularity.Month, b.Day), compare.Compare, plug, compare.Power),
+        _ => PeriodQuery.History(ReportPeriod.Containing(ReportGranularity.Day, b.Day), compare.Compare, plug, compare.Power),
     };
 
     /// <summary>
@@ -90,7 +93,7 @@ public static class HistoryTables
     // ------------------------------------------------------------------ electricity
 
     /// <summary>Per bar: house (meter), plugs, rest, lei of the house; with a plug filter also that plug's kWh.</summary>
-    public static HistoryTable Electricity(HouseReport house, EnergyPrices prices, DateTimeOffset nowUtc, bool compare, Guid? plug)
+    public static HistoryTable Electricity(HouseReport house, EnergyPrices prices, DateTimeOffset nowUtc, HistoryLinkState compare, Guid? plug)
     {
         var kind = house.Period.Kind;
         var plugSeries = plug is { } id ? house.PlugBuckets?.FirstOrDefault(p => p.PlugId == id) : null;
@@ -119,7 +122,7 @@ public static class HistoryTables
 
     // ------------------------------------------------------------------ gas
 
-    public static HistoryTable Gas(HistoryGas g, EnergyPrices prices, DateTimeOffset nowUtc, bool compare)
+    public static HistoryTable Gas(HistoryGas g, EnergyPrices prices, DateTimeOffset nowUtc, HistoryLinkState compare)
     {
         var r = g.Report;
         var kind = r.Period.Kind;
@@ -213,7 +216,7 @@ public static class HistoryTables
     // ------------------------------------------------------------------ climate
 
     /// <summary>Long format: one row per bar and sensor (min / mean / max temperature and humidity).</summary>
-    public static HistoryTable Climate(HistoryClimate c, ReportGranularity kind, DateTimeOffset nowUtc, bool compare)
+    public static HistoryTable Climate(HistoryClimate c, ReportGranularity kind, DateTimeOffset nowUtc, HistoryLinkState compare)
     {
         var rows = new List<IReadOnlyList<string>>();
         var links = new List<string?>();
@@ -242,7 +245,7 @@ public static class HistoryTables
     /// „Alte dispozitive” (0.11): one row per bar and entity — min / mean / max of a measurement, Σ of a counter, the time on
     /// of an on/off — in the entity's unit and decimals.
     /// </summary>
-    public static HistoryTable Generic(KasaMonitor.Workers.Mqtt.HistoryGeneric g, ReportGranularity kind, DateTimeOffset nowUtc, bool compare)
+    public static HistoryTable Generic(KasaMonitor.Workers.Mqtt.HistoryGeneric g, ReportGranularity kind, DateTimeOffset nowUtc, HistoryLinkState compare)
     {
         var rows = new List<IReadOnlyList<string>>();
         var links = new List<string?>();
@@ -286,7 +289,7 @@ public static class HistoryTables
 
     /// <summary>Per bar: electricity kWh and lei, gas m³ and lei, total (only with both parts: <see cref="EnergyPrices.Total"/>).</summary>
     public static HistoryTable Costs(HouseReport? house, HistoryGas? gas, EnergyPrices prices, IReadOnlyList<ReportBucket> buckets, ReportGranularity kind,
-        DateTimeOffset nowUtc, bool compare)
+        DateTimeOffset nowUtc, HistoryLinkState compare)
     {
         var gasBars = gas is null ? null : GasPerBucket(gas, buckets);
         var rows = new List<IReadOnlyList<string>>();
@@ -370,6 +373,16 @@ public static class HistoryTables
     /// <summary>"2026-11-02 14:05" in the application's zone.</summary>
     public static string Local(DateTimeOffset utc, TimeZoneInfo tz) =>
         TimeZoneInfo.ConvertTime(utc, tz).ToString("yyyy-MM-dd HH:mm", System.Globalization.CultureInfo.InvariantCulture);
+}
+
+/// <summary>
+/// The state of /history a drill-down link carries (0.14.0): the comparison (<c>cmp=</c>, also <c>an</c>) and the series of
+/// „Putere” (<c>pw=</c>); the page cascades it to its sections. A plain flag (the CSV, the tables without a page) converts:
+/// true = the previous period.
+/// </summary>
+public sealed record HistoryLinkState(CompareMode Compare, IReadOnlyList<Guid>? Power = null)
+{
+    public static implicit operator HistoryLinkState(bool compare) => new(compare ? CompareMode.Previous : CompareMode.None);
 }
 
 /// <summary>The prices of the house read from the settings (single place for /history and its CSV export).</summary>

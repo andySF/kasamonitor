@@ -54,7 +54,7 @@
             </div>
             <div class="hist-grid">
                 <div>
-                    <HistoryBars Labels="labels" Titles="titles" Links="@(Data.Buckets.Select(x => HistoryTables.DrillLink(x, kind, Compare, null)).ToList())"
+                    <HistoryBars Labels="labels" Titles="titles" Links="@(Data.Buckets.Select(x => HistoryTables.DrillLink(x, kind, Drill, null)).ToList())"
                                  Series="@(b.Rows.Select((r, i) => new HistoryBars.BarSeries(r.Name, ConsumerBreakdownList.Css(r, i), r.Buckets)).ToList())"
                                  AriaLabel="Consumul pe consumatori, identificați și neidentificați"
                                  Extra="@(i => i < b.TotalBuckets.Count && b.TotalBuckets[i] is > 0 ? $"identificat: {HeatingFormat.Number(IdentifiedAt(b, i) / b.TotalBuckets[i]!.Value * 100, 0)} %" : null)" />
@@ -114,6 +114,9 @@
     [Parameter] public HistoryDetected? Data { get; set; }
     [Parameter] public ReportPeriod Period { get; set; }
     [Parameter] public bool Compare { get; set; }
+    /// <summary>The page's state the drill-down links keep (cmp=, pw=; 0.14.0); without the page, the flag.</summary>
+    [CascadingParameter] public HistoryLinkState? Address { get; set; }
+    private HistoryLinkState Drill => Address ?? Compare;
     [Parameter, EditorRequired] public EnergyPrices Prices { get; set; } = null!;
     [Parameter, EditorRequired] public string CsvHref { get; set; } = "";
     [Parameter, EditorRequired] public string DetectedCsvHref { get; set; } = "";

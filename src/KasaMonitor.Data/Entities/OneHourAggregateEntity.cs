@@ -12,6 +12,10 @@ public sealed class OneHourAggregateEntity
     public DateTimeOffset BucketStartUtc { get; set; }
     public long PAvgMw { get; set; }
     public long PMaxMw { get; set; }
+    /// <summary>
+    /// Average × minutes present, rounded to the Wh per hour (a 0.4 W plug gives 0): not for energy totals, which come from
+    /// DailyEnergy; kept for a rough look at one hour.
+    /// </summary>
     public long EnergyWh { get; set; }
     public int SampleCount { get; set; }
 }

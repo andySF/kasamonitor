@@ -104,4 +104,29 @@ public class PowerHistoryServiceTests
         p.ComparisonSummary!.MaxW.Should().Be(300, "yesterday's 20:00 is after the time of now");
         p.ComparisonSummary.Minutes.Should().Be(12 * 60 + 1);
     }
+
+    /// <summary>Fix round 1, R5: a past period is cached by the version of the aggregates; a period that just ended is not cached.</summary>
+    [Fact]
+    public async Task Cache_FollowsTheVersion_AndAPeriodThatJustEndedIsReadAgain()
+    {
+        using var f = new TestDbFactory();
+        var main = await RollupWorkerTests.AddPlugAsync(f, "aabbccddee00", "Casa", PlugRole.MainMeter);
+        var version = new PowerAggregatesVersion();
+        var now = Now;
+        var service = new PowerHistoryService(new TestScopeFactory(f.CreateContext), () => Ro, clock: () => now, version: version);
+        var series = () => service.GetAsync(November, CompareMode.None, null, Ct);
+
+        (await series()).Series.Single().Summary.Should().BeNull();
+        await SeedHoursAsync(f, main, November, _ => 700_000);
+        (await series()).Series.Single().Summary.Should().BeNull("a past period stays cached");
+        version.Bump();
+        (await series()).Series.Single().Summary!.AvgW.Should().Be(700, "rows written for a past period: a new version");
+
+        // 1 December 00:10 local: November ended 10 minutes ago, its last minutes may still be rolled.
+        now = new DateTimeOffset(2026, 11, 30, 22, 10, 0, TimeSpan.Zero);
+        var fresh = new PowerHistoryService(new TestScopeFactory(f.CreateContext), () => Ro, clock: () => now, version: version);
+        (await fresh.GetAsync(November, CompareMode.None, null, Ct)).Series.Single().Summary!.AvgW.Should().Be(700);
+        await SeedHoursAsync(f, main, November, _ => 900_000);
+        (await fresh.GetAsync(November, CompareMode.None, null, Ct)).Series.Single().Summary!.AvgW.Should().Be(900, "not cached while it settles");
+    }
 }

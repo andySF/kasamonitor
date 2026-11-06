@@ -34,7 +34,7 @@
         var names = PeriodNames.For(kind);
         var labels = r.Buckets.Select(b => ReportFormat.BucketLabel(b, kind)).ToList();
         var titles = r.Buckets.Select(b => ReportFormat.BucketRow(b, kind)).ToList();
-        var links = r.Buckets.Select(b => HistoryTables.DrillLink(b, kind, Compare, null)).ToList();
+        var links = r.Buckets.Select(b => HistoryTables.DrillLink(b, kind, Drill, null)).ToList();
         <div class="foot-note" style="margin-top:-4px">@ReportFormat.BoilerDayNote(BoilerTz, LocalTz, g.Period.Start) · @g.DeviceName@(FirstDayNote(r))</div>
         <div class="hist-grid">
             <div>
@@ -88,7 +88,7 @@
             <h3 class="mini-h" style="margin-top:10px">Cronologia arzătorului pe zile <span class="muted">(ora locală; încălzire / apă caldă / necunoscut)</span></h3>
             <HistoryTimeline Bands="bands" Tz="LocalTz" />
         }
-        <HistoryTableView Table="HistoryTables.Gas(g, Prices, Now, Compare)" />
+        <HistoryTableView Table="HistoryTables.Gas(g, Prices, Now, Drill)" />
     }
 </section>
 
@@ -97,6 +97,9 @@
     [Parameter] public bool Loaded { get; set; }
     [Parameter, EditorRequired] public EnergyPrices Prices { get; set; } = null!;
     [Parameter] public bool Compare { get; set; }
+    /// <summary>The page's state the drill-down links keep (cmp=, pw=; 0.14.0); without the page, the flag.</summary>
+    [CascadingParameter] public HistoryLinkState? Address { get; set; }
+    private HistoryLinkState Drill => Address ?? Compare;
     [Parameter] public DateTimeOffset Now { get; set; }
     [Parameter, EditorRequired] public TimeZoneInfo BoilerTz { get; set; } = TimeZoneInfo.Utc;
     [Parameter, EditorRequired] public TimeZoneInfo LocalTz { get; set; } = TimeZoneInfo.Utc;

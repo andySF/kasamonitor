@@ -460,6 +460,38 @@ plug's confirmations), so what lies near a hidden anonymous one goes to another 
 several consumers keep the old rule. The first regrouping after
 the upgrade does the cleaning (at 03:30, at a start when the last one is older than 24 h, or on „Regrupează acum”).
 
+## 0.14.0 – Power over time from the aggregates
+
+**Context.** The raw 10 s readings (`Samples`) grow by ≈ 400 MB per plug and year; production is to keep 3 months of them.
+Old power curves and comparisons must stay visible in KasaMonitor itself, so the chart of `/history` „Putere” reads only the
+aggregates: minute rows (`OneMinuteAggregates`) for periods up to 2 days, hour rows (`OneHourAggregates`, unwritten before)
+up to 45 days, days computed from the hours beyond (`PowerHistory.ResolutionFor`).
+
+**Decision: the roll-up every 15 minutes, plug by plug from its last minute.** The daily roll of yesterday left today empty
+and lost a day when the worker missed it. Each cycle reads a plug's readings from its last stored minute (less 5 minutes
+for late readings), with seeks on `idx_samples_plug_time`, so a stop of any length is caught up; once a day the whole of
+yesterday again, then the retention, only after a roll without errors. A one-time backfill (marker `PowerBackfillDoneUtc`)
+fills the minutes of past days that have readings but none, and the hours of days that have minutes but none. A failing
+plug does not stop the others and is retried with a growing pause.
+
+**Decision: an aggregate is never replaced by one from less data** (`PowerHistory.Replaces`: readings for a minute, minutes
+for an hour) and never deleted. A day rolled again after the retention took its readings, wholly or from the middle of a
+minute, keeps its minutes and hours.
+
+**Decision: `SampleCount` of an hour row counts minutes, no migration.** The table existed and was empty; the average is the
+mean of the minutes present (each weighs the same), the maximum the largest minute maximum, `EnergyWh` average × minutes.
+`EnergyWh` is rounded per hour and is not a source of energy totals (`DailyEnergy` is).
+
+**Decision: „the same interval last year”** is a day by its date (29 February → 28 February), a week 52 weeks back (weekdays
+meet weekdays), a month, a year, a range by its dates; the comparison is aligned by wall clock on the offset from the start
+of each period (on DST days 04:00 meets 04:00), drawn for one series only (the main meter, or the first shown), and only by
+„Putere”: the other sections keep the previous period, and the page says so next to the control.
+
+**Decision: a hand-drawn SVG, not ApexCharts**, like the rest of `/history` (theme tokens for light and dark, the same
+look); at most 180 hover zones, so a day by minute stays ≈ 200 KB of markup. The cache of a series holds the version of
+the aggregates (bumped when rows of a past period were written) and a period that ended less than a cycle and the overlap
+ago is not cached, so a chart read during the backfill or right after midnight is not kept with gaps.
+
 ## 0.13.2 – The row of a single-appliance plug comes from the plug
 
 **Context.** After 0.13.1 the signature of a plug with a single appliance holds only what it confirmed, and that turned out to be

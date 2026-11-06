@@ -130,11 +130,15 @@ builder.Services.AddHostedService(sp => new HistorySyncWorker(
     discovered: sp.GetRequiredService<IPlugDiscoveredChannel>(),
     shelly: sp.GetRequiredService<IShellyClient>()));
 
+// 0.14.0: the version of the power aggregates (RollupWorker bumps it after writing rows of a past period; part of the
+// cache key of the „Putere” chart).
+builder.Services.AddSingleton<PowerAggregatesVersion>();
 builder.Services.AddHostedService(sp => new RollupWorker(
     sp.GetRequiredService<IServiceScopeFactory>(),
     sp.GetRequiredService<ILogger<RollupWorker>>(),
     sp.GetRequiredService<ReadingsRetentionService>(),
-    sp.GetRequiredService<IKasaSettingsService>()));
+    sp.GetRequiredService<IKasaSettingsService>(),
+    version: sp.GetRequiredService<PowerAggregatesVersion>()));
 
 builder.Services.AddSingleton(sp => new LiveStreamWorker(
     sp.GetRequiredService<IServiceScopeFactory>(),
@@ -284,7 +288,8 @@ builder.Services.AddSingleton(sp => new HistoryService(
 builder.Services.AddSingleton(sp => new PowerHistoryService(
     sp.GetRequiredService<IServiceScopeFactory>(),
     sp.GetRequiredService<EnergyReportService>(),
-    sp.GetRequiredService<ILogger<PowerHistoryService>>()));
+    sp.GetRequiredService<ILogger<PowerHistoryService>>(),
+    version: sp.GetRequiredService<PowerAggregatesVersion>()));
 
 // Home page „Acasă” (/): period aggregates cached per minute, standby floor and bill estimate (also on /metrics).
 builder.Services.AddSingleton(sp => new HomeService(

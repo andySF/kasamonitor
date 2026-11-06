@@ -143,7 +143,7 @@ minute and hour aggregates are kept without limit; only `LiveSamples` is purged 
 | `PollingWorker` | Every plug on the base interval (default 10 s); legacy counters every 5 min; Shelly info hourly |
 | `LiveStreamWorker` | Main meter every 1 s; other channels 1–10 s adaptive; flush to the database every 10 s; reconnection backoff 1 → 30 s |
 | `HistorySyncWorker` | Plugs' own history every 6 h (retry every minute while no plug has history) |
-| `RollupWorker` | Every 15 min: raw samples → minute → hour aggregates (the first cycle: the last 7 days and the one-time hourly backfill); daily: all of yesterday, then the optional purge |
+| `RollupWorker` | Every 15 min, plug by plug from its last stored minute: raw samples → minute → hour aggregates; once (marker `PowerBackfillDoneUtc`) the backfill of past minutes and hours; daily: all of yesterday, then the optional purge |
 | `HeatingPollWorker` | Viessmann cloud, one bulk call per interval (default 120 s, minimum 60 s) within the daily API budget; backoff up to 30 min |
 | `MieleStreamWorker` | One SSE stream; after 3 failed attempts polls `GET /devices` every 60 s and retries SSE at each backoff |
 | `MieleHistorySync` | Program history after connection, every 6 h and 2 minutes after a cycle ends |

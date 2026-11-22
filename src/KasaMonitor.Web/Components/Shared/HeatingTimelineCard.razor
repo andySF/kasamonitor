@@ -262,14 +262,21 @@
 
         long min = from.ToUnixTimeMilliseconds(), max = to.ToUnixTimeMilliseconds();
         _bandOptions = BandOptions(min, max);
-        _tempOptions = LineOptions(min, max, null, 1, Curve.Straight);
+        _tempOptions = LineOptions(min, max, null, 1, Curve.Straight, padded: true);
         _modOptions = LineOptions(min, max, 100, 1, Curve.Stepline);
         _key++;
     }
 
     /// <summary>Same fixed y-axis label width on the three charts, so their time axes line up.</summary>
-    private static List<YAxis> Axis(double? max, bool showLabels = true) =>
-        new() { new() { Min = max is null ? null : 0, Max = max, DecimalsInFloat = 0, Labels = new YAxisLabels { MinWidth = 48, MaxWidth = 48, Show = showLabels } } };
+    private static List<YAxis> Axis(double? max, bool showLabels = true, bool padded = false) =>
+        new() { new() { Min = padded ? PadMin : max is null ? null : 0, Max = padded ? PadMax : max, DecimalsInFloat = 0, Labels = new YAxisLabels { MinWidth = 48, MaxWidth = 48, Show = showLabels } } };
+
+    /// <summary>
+    /// The temperature axis ends at least half a degree beyond the lowest and the highest visible value (ApexCharts calls
+    /// these with the range of the visible series), so a line at the edge, such as a target, is not drawn on the axis.
+    /// </summary>
+    private static readonly CustomFunction PadMin = new("function(min) { return Math.floor(min - 0.5); }");
+    private static readonly CustomFunction PadMax = new("function(max) { return Math.ceil(max + 0.5); }");
 
     private static ApexChartOptions<BandItem> BandOptions(long min, long max) => new()
     {
@@ -282,13 +289,13 @@
         Tooltip = new Tooltip { Enabled = true },
     };
 
-    private static ApexChartOptions<TempPoint> LineOptions(long min, long max, double? yMax, int width, Curve curve) => new()
+    private static ApexChartOptions<TempPoint> LineOptions(long min, long max, double? yMax, int width, Curve curve, bool padded = false) => new()
     {
         Chart = new Chart { Toolbar = new Toolbar { Show = false }, Animations = new Animations { Enabled = false }, Zoom = new Zoom { Enabled = false } },
         Stroke = new Stroke { Width = width + 1, Curve = curve },
         DataLabels = new DataLabels { Enabled = false },
         Xaxis = new XAxis { Min = min, Max = max, Labels = new XAxisLabels { DatetimeUTC = false } },
-        Yaxis = Axis(yMax),
+        Yaxis = Axis(yMax, padded: padded),
         Tooltip = new Tooltip { Shared = true, X = new TooltipX { Format = "dd.MM HH:mm" } },
     };
 

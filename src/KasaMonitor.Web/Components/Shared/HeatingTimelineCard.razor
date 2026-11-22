@@ -275,8 +275,8 @@
     /// The temperature axis ends at least half a degree beyond the lowest and the highest visible value (ApexCharts calls
     /// these with the range of the visible series), so a line at the edge, such as a target, is not drawn on the axis.
     /// </summary>
-    private static readonly CustomFunction PadMin = new("function(min) { return Math.floor(min - 0.5); }");
-    private static readonly CustomFunction PadMax = new("function(max) { return Math.ceil(max + 0.5); }");
+    private static readonly object PadMin = ApexJs.Function("function(min) { return Math.floor(min - 0.5); }");
+    private static readonly object PadMax = ApexJs.Function("function(max) { return Math.ceil(max + 0.5); }");
 
     private static ApexChartOptions<BandItem> BandOptions(long min, long max) => new()
     {

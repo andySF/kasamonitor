@@ -116,7 +116,7 @@ public class HeatingMetricsTests
         {
             "heating_burner_active", "heating_burner_purpose_info", "heating_burner_modulation_percent", "heating_boiler_temperature_c", "heating_boiler_target_c", "heating_supply_temperature_c",
             "heating_return_temperature_c", "heating_outside_temperature_c", "heating_dhw_temperature_c", "heating_dhw_target_c",
-            "heating_room_temperature_c", "heating_pump_percent", "heating_pressure_bar", "heating_burner_starts_total", "heating_burner_hours_total",
+            "heating_room_temperature_c", "heating_room_target_c", "heating_supply_target_c", "heating_energy_saving_active", "heating_circuit_pump_on", "heating_pump_percent", "heating_pressure_bar", "heating_burner_starts_total", "heating_burner_hours_total",
             "heating_gas_consumption_m3", "heating_gas_consumption_m3_total", "heating_heat_production_kwh", "heating_heat_production_kwh_total",
             "heating_power_consumption_kwh", "heating_power_consumption_kwh_total", "heating_dhw_mode_info", "heating_program_info",
             "heating_gateway_wifi_dbm", "heating_room_sensor_battery_percent", "heating_error_active", "heating_api_calls_today",

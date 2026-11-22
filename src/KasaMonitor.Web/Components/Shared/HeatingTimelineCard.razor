@@ -51,21 +51,35 @@
             {
                 <div class="small text-secondary border rounded px-2 py-1 mb-2">Arzătorul n-a pornit în acest interval.</div>
             }
-            else
+            @if (_band.Count > 0 || _eco.Count > 0)
             {
-                <ApexChart @key="_key" TItem="BandItem" Options="_bandOptions" Height="90" XAxisType="XAxisType.Datetime">
+                <ApexChart @key="_key" TItem="BandItem" Options="_bandOptions" Height="@(_eco.Count > 0 ? 120 : 90)" XAxisType="XAxisType.Datetime">
                     <ChildContent>
                         @foreach (var (purpose, name, color) in Purposes)
                         {
-                            var items = _band.Where(b => b.Segment.Purpose == purpose).ToList();
+                            var items = _band.Where(b => b.Segment?.Purpose == purpose).ToList();
                             if (items.Count > 0)
                             {
                                 <ApexRangeSeries TItem="BandItem" Items="items" Name="@name" Color="@color" XValue="@(b => b.Row)" YMinValue="@(b => b.StartMs)" YMaxValue="@(b => b.EndMs)" />
                             }
                         }
+                        @if (_eco.Count > 0)
+                        {
+                            <ApexRangeSeries TItem="BandItem" Items="_eco" Name="Eco" Color="@EcoColor" XValue="@(b => b.Row)" YMinValue="@(b => b.StartMs)" YMaxValue="@(b => b.EndMs)" />
+                        }
                     </ChildContent>
                     <ApexPointTooltip>
-                        @{ var seg = context.DataPoint.Items.First().Segment; }
+                        @{ var item = context.DataPoint.Items.First(); var seg = item.Segment; }
+                        @if (seg is null)
+                        {
+                            <div class="p-2 small">
+                                <div class="fw-semibold">Economie (Eco)@(item.Note is { } why ? $": {HeatingFormat.EcoReason(why)}" : "")</div>
+                                <div>@UiFormat.FullLocal(DateTimeOffset.FromUnixTimeMilliseconds((long)item.StartMs))[11..16] – @UiFormat.FullLocal(DateTimeOffset.FromUnixTimeMilliseconds((long)item.EndMs))[11..16]</div>
+                                <div class="text-secondary">Centrala a redus încălzirea programului activ.</div>
+                            </div>
+                        }
+                        else
+                        {
                         <div class="p-2 small">
                             <div class="fw-semibold">@PurposeName(seg.Purpose)@(seg.Ongoing ? " (în curs)" : "")</div>
                             <div>@UiFormat.FullLocal(seg.StartUtc)[11..16] – @UiFormat.FullLocal(seg.EndUtc)[11..16] · @UiFormat.DurationRo(seg.Duration.TotalSeconds)</div>
@@ -73,6 +87,7 @@
                             @if (GasText(seg) is { } gas) { <div>gaz (contorul centralei): @gas</div> }
                             <div class="text-secondary">@seg.Reason</div>
                         </div>
+                        }
                     </ApexPointTooltip>
                 </ApexChart>
             }
@@ -80,26 +95,43 @@
                #d3d3d3 for the others (grey lines, legend still coloured). The per-series widths replace Stroke.Width. *@
             <ApexChart @key="(_key + 100000)" TItem="TempPoint" Options="_tempOptions" Height="230" XAxisType="XAxisType.Datetime">
                 <ApexPointSeries TItem="TempPoint" Items="_temps" Name="Tur (°C)" Color="#D55E00" SeriesType="SeriesType.Line" XValue="@(p => p.Ms)" YValue="@(p => p.SupplyC)" Stroke="@(new SeriesStroke { Color = "#D55E00", Width = 3 })" />
+                <ApexPointSeries TItem="TempPoint" Items="_temps" Name="Țintă tur (°C)" Color="#E69F00" SeriesType="SeriesType.Line" XValue="@(p => p.Ms)" YValue="@(p => p.SupplyTargetC)" Stroke="@(new SeriesStroke { Color = "#E69F00", Width = 2, DashSpace = 5 })" />
                 <ApexPointSeries TItem="TempPoint" Items="_temps" Name="Apă caldă (°C)" Color="#0072B2" SeriesType="SeriesType.Line" XValue="@(p => p.Ms)" YValue="@(p => p.DhwC)" Stroke="@(new SeriesStroke { Color = "#0072B2", Width = 3 })" />
                 <ApexPointSeries TItem="TempPoint" Items="_temps" Name="Țintă apă caldă (°C)" Color="#56B4E9" SeriesType="SeriesType.Line" XValue="@(p => p.Ms)" YValue="@(p => p.DhwTargetC)" Stroke="@(new SeriesStroke { Color = "#56B4E9", Width = 2, DashSpace = 5 })" />
                 <ApexPointSeries TItem="TempPoint" Items="_temps" Name="Cameră (°C)" Color="#009E73" SeriesType="SeriesType.Line" XValue="@(p => p.Ms)" YValue="@(p => p.RoomC)" Stroke="@(new SeriesStroke { Color = "#009E73", Width = 3 })" />
+                <ApexPointSeries TItem="TempPoint" Items="_temps" Name="Țintă cameră (°C)" Color="#7FD1B9" SeriesType="SeriesType.Line" XValue="@(p => p.Ms)" YValue="@(p => p.RoomTargetC)" Stroke="@(new SeriesStroke { Color = "#7FD1B9", Width = 2, DashSpace = 5 })" />
             </ApexChart>
+            @if (_estimatedTargets)
+            {
+                <div class="small text-secondary">Ținta camerei înainte de 0.15.0 nu era salvată: e estimată din programul activ de atunci și temperaturile programelor de acum.</div>
+            }
             <ApexChart @key="(_key + 200000)" TItem="TempPoint" Options="_modOptions" Height="150" XAxisType="XAxisType.Datetime">
                 <ApexPointSeries TItem="TempPoint" Items="_temps" Name="Modulare (%)" Color="#CC79A7" SeriesType="SeriesType.Area" XValue="@(p => p.Ms)" YValue="@(p => p.ModulationPct)" />
                 <ApexPointSeries TItem="TempPoint" Items="_temps" Name="Pompă (%)" Color="#999999" SeriesType="SeriesType.Line" XValue="@(p => p.Ms)" YValue="@(p => p.PumpPct)" />
+                @if (_temps.Any(t => t.CircuitPump is not null))
+                {
+                    <ApexPointSeries TItem="TempPoint" Items="_temps" Name="Pompă circuit (pornită = 100)" Color="#009E73" SeriesType="SeriesType.Line" XValue="@(p => p.Ms)" YValue="@(p => p.CircuitPump)" />
+                }
             </ApexChart>
         }
     </div>
 </div>
 
 @code {
-    public sealed record BandItem(string Row, decimal StartMs, decimal EndMs, BurnerSegment Segment);
-    public sealed record TempPoint(long Ms, decimal? SupplyC, decimal? DhwC, decimal? DhwTargetC, decimal? RoomC, decimal? ModulationPct, decimal? PumpPct);
+    /// <summary>A bar of the band chart: a burner run (<see cref="Segment"/>) or an Eco interval (no segment, <see cref="Note"/> = reason).</summary>
+    public sealed record BandItem(string Row, decimal StartMs, decimal EndMs, BurnerSegment? Segment, string? Note = null);
+    public sealed record TempPoint(long Ms, decimal? SupplyC, decimal? SupplyTargetC, decimal? DhwC, decimal? DhwTargetC, decimal? RoomC, decimal? RoomTargetC,
+        decimal? ModulationPct, decimal? PumpPct, decimal? CircuitPump);
+
+    private const string EcoColor = "#009E73";
 
     [Parameter, EditorRequired] public Guid DeviceId { get; set; }
 
     /// <summary>Changes when the boiler was read again (the parent passes the poll time): the live window reloads.</summary>
     [Parameter] public DateTimeOffset? LastReadUtc { get; set; }
+
+    /// <summary>The room temperature of each program now: estimates the target of readings saved before 0.15.0 (no RoomTargetC).</summary>
+    [Parameter] public IReadOnlyDictionary<string, double>? ProgramTemps { get; set; }
 
     private static readonly (TimeSpan Span, string Name)[] Spans =
     {
@@ -130,11 +162,13 @@
     private DateTimeOffset? _end;   // null = up to now (follows the new readings)
     private DateTimeOffset _from, _to;
     private bool _loaded;
+    private bool _estimatedTargets;
     private string? _error;
     private int _key;
     private DateTimeOffset? _loadedFor;
     private List<BurnerSegment> _segments = new();
     private List<BandItem> _band = new();
+    private List<BandItem> _eco = new();
     private List<TempPoint> _temps = new();
     private ApexChartOptions<BandItem> _bandOptions = new();
     private ApexChartOptions<TempPoint> _tempOptions = new();
@@ -211,12 +245,19 @@
             .Where(s => s.EndUtc > from && s.StartUtc < to)
             .ToList();
         _band = _segments.Select(s => new BandItem("Arzător", Ms(Max(s.StartUtc, from)), Ms(Min(s.EndUtc, to)), s)).ToList();
+        _eco = EcoTimeline.Build(readings, cadence, now)
+            .Where(e => e.EndUtc > from && e.StartUtc < to)
+            .Select(e => new BandItem("Eco", Ms(Max(e.StartUtc, from)), Ms(Min(e.EndUtc, to)), null, e.Reason))
+            .ToList();
 
         var inWindow = readings.Where(r => r.TsUtc >= from && r.TsUtc <= to).ToList();
         var step = Math.Max(1, (int)Math.Ceiling(inWindow.Count / (double)MaxPoints));
+        _estimatedTargets = false;
         _temps = inWindow.Where((_, i) => i % step == 0 || i == inWindow.Count - 1)
-            .Select(r => new TempPoint(r.TsUtc.ToUnixTimeMilliseconds(), Dec(r.SupplyTempC), Dec(r.DhwTempC), Dec(r.DhwTargetC), Dec(r.RoomTempC),
-                Dec(r.ModulationPct), Dec(r.PumpPct)))
+            .Select(r => new TempPoint(r.TsUtc.ToUnixTimeMilliseconds(), Dec(r.SupplyTempC),
+                // 0 = no demand: no line rather than a drop to 0 °C.
+                Dec(r.SupplyTargetC is > 0 ? r.SupplyTargetC : null), Dec(r.DhwTempC), Dec(r.DhwTargetC), Dec(r.RoomTempC),
+                Dec(RoomTarget(r)), Dec(r.ModulationPct), Dec(r.PumpPct), r.CircuitPumpOn is { } on ? (on ? 100 : 0) : null))
             .ToList();
 
         long min = from.ToUnixTimeMilliseconds(), max = to.ToUnixTimeMilliseconds();
@@ -253,7 +294,7 @@
 
     private (int Count, double Seconds) Totals(BurnerPurpose purpose)
     {
-        var items = _band.Where(b => b.Segment.Purpose == purpose).ToList();
+        var items = _band.Where(b => b.Segment?.Purpose == purpose).ToList();
         return (items.Count, (double)items.Sum(b => b.EndMs - b.StartMs) / 1000);
     }
 
@@ -271,6 +312,15 @@
         if (s.GasHeatingM3 is > 0.04) parts.Add("încălzire +" + HeatingFormat.Number(s.GasHeatingM3, 1) + " m³");
         if (s.GasDhwM3 is > 0.04) parts.Add("apă caldă +" + HeatingFormat.Number(s.GasDhwM3, 1) + " m³");
         return parts.Count == 0 ? null : string.Join(", ", parts);
+    }
+
+    /// <summary>The stored target, or for an older reading the temperature its active program has now.</summary>
+    private double? RoomTarget(HeatingReading r)
+    {
+        if (r.RoomTargetC is { } stored) return stored;
+        var estimate = HeatingProgram.Target(r.ActiveProgram, ProgramTemps);
+        if (estimate is not null) _estimatedTargets = true;
+        return estimate;
     }
 
     private static decimal Ms(DateTimeOffset t) => t.ToUnixTimeMilliseconds();

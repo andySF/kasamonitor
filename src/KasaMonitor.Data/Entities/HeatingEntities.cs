@@ -44,6 +44,14 @@ public sealed class HeatingReadingEntity
     public double? GasDhwTodayM3 { get; set; }
     public double? PowerTodayKwh { get; set; }
     public double? HeatTodayKwh { get; set; }
+    /// <summary>The room target at this reading: the temperature of the active program (null before 0.15.0).</summary>
+    public double? RoomTargetC { get; set; }
+    /// <summary>The supply target of circuit 0 (0 = no demand), the energy saving of the active program and its reason,
+    /// the circulation pump of circuit 0 (all null before 0.15.0).</summary>
+    public double? SupplyTargetC { get; set; }
+    public bool? EcoActive { get; set; }
+    public string? EcoReason { get; set; }
+    public bool? CircuitPumpOn { get; set; }
 }
 
 /// <summary>

@@ -72,6 +72,19 @@ public sealed class HeatingSnapshot
     public string? ActiveProgram { get; init; }
     /// <summary>Target room temperature per program (normal, comfort, reduced).</summary>
     public IReadOnlyDictionary<string, double> ProgramTemps { get; init; } = new Dictionary<string, double>();
+    /// <summary>The room target now: the temperature of the active program (null when the program has none, e.g. standby).</summary>
+    public double? RoomTargetC => HeatingProgram.Target(ActiveProgram, ProgramTemps);
+    /// <summary><c>heating.circuits.0.temperature</c>: the supply target of circuit 0 from the heating curve (0 when there is no demand).</summary>
+    public double? SupplyTargetC { get; init; }
+    /// <summary><c>heating.circuits.0.temperature.levels</c>: the lowest and highest supply temperature of circuit 0 (settings).</summary>
+    public double? SupplyMinC { get; init; }
+    public double? SupplyMaxC { get; init; }
+    /// <summary>Energy saving (Eco) of the active program: <c>…programs.&lt;program&gt;EnergySaving.active</c>, or the active program is itself one.</summary>
+    public bool? EcoActive { get; init; }
+    /// <summary>Why the energy saving is on (e.g. <c>summerEco</c>); null when it is off.</summary>
+    public string? EcoReason { get; init; }
+    /// <summary><c>heating.circuits.0.circulation.pump</c>: the circulation pump of circuit 0 is on.</summary>
+    public bool? CircuitPumpOn { get; init; }
     public string? CircuitName { get; init; }
     public IReadOnlyList<HeatingScheduleSlot> Schedule { get; init; } = Array.Empty<HeatingScheduleSlot>();
     public string? FrostProtection { get; init; }
@@ -105,4 +118,12 @@ public sealed class HeatingSnapshot
 
     public int FeatureCount { get; init; }
     public IReadOnlyList<HeatingFeatureRef> Unmapped { get; init; } = Array.Empty<HeatingFeatureRef>();
+}
+
+/// <summary>The room target of a heating program.</summary>
+public static class HeatingProgram
+{
+    /// <summary>The temperature of <paramref name="program"/> in <paramref name="temps"/>; null when it has none.</summary>
+    public static double? Target(string? program, IReadOnlyDictionary<string, double>? temps) =>
+        program is not null && temps is not null && temps.TryGetValue(program, out var t) ? t : null;
 }

@@ -16,16 +16,39 @@ public class SchemaTests
     {
         var cs = await MsSql.NewDatabaseAsync("kasa_schema");
         await using var ctx = MsSql.Context(cs);
-        ctx.Database.GetMigrations().Select(m => m[(m.IndexOf('_') + 1)..]).Should().Equal("InitialCreate", "DurationBands");
+        ctx.Database.GetMigrations().Select(m => m[(m.IndexOf('_') + 1)..]).Should().Equal("InitialCreate", "DurationBands", "BoilerCircuit");
 
         await ctx.Database.MigrateAsync();
 
-        (await ctx.Database.GetAppliedMigrationsAsync()).Should().HaveCount(2);
+        (await ctx.Database.GetAppliedMigrationsAsync()).Should().HaveCount(3);
         ctx.Database.HasPendingModelChanges().Should().BeFalse("the migration matches the model");
         var tables = await ctx.Database.SqlQueryRaw<string>("SELECT name AS Value FROM sys.tables WHERE name NOT LIKE '__EF%'").ToListAsync();
         tables.Should().BeEquivalentTo(ctx.Model.GetEntityTypes().Select(e => e.GetTableName()));
         tables.Should().Contain(["Plugs", "Samples", "LiveSamples", "LiveMinuteAggregates", "MeterEvents", "HeatingReadings", "MieleCycles",
             "ClimateSensors", "ClimateReadings", "ClimateDaily"]);
+    }
+
+    [SqlServerFact]
+    public async Task BoilerCircuit_AppliesOverExistingReadings_AndLeavesTheNewValuesEmpty()
+    {
+        var cs = await MsSql.NewDatabaseAsync("kasa_roomtarget");
+        await using var ctx = MsSql.Context(cs);
+        var migrator = ctx.GetService<IMigrator>();
+        await migrator.MigrateAsync(ctx.Database.GetMigrations().Single(m => m.EndsWith("_DurationBands")));
+        var device = Guid.NewGuid();
+        await ctx.Database.ExecuteSqlRawAsync(
+            "INSERT INTO HeatingReadings (DeviceId, Ts, RoomTempC, ActiveProgram) VALUES ({0}, 1793548800, 22.4, N'normal')", device);
+
+        await ctx.Database.MigrateAsync();
+
+        var kept = await ctx.HeatingReadings.AsNoTracking().SingleAsync();
+        kept.RoomTempC.Should().Be(22.4);
+        kept.ActiveProgram.Should().Be("normal");
+        kept.RoomTargetC.Should().BeNull("older readings have no stored target");
+        kept.SupplyTargetC.Should().BeNull();
+        kept.EcoActive.Should().BeNull();
+        kept.EcoReason.Should().BeNull();
+        kept.CircuitPumpOn.Should().BeNull();
     }
 
     [SqlServerFact]

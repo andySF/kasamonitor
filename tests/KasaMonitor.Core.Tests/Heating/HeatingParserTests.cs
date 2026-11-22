@@ -40,6 +40,18 @@ public class HeatingParserTests
         s.OperatingMode.Should().Be("heating");
         s.ActiveProgram.Should().Be("normal");
         s.ProgramTemps.Should().BeEquivalentTo(new Dictionary<string, double> { ["normal"] = 23, ["comfort"] = 22, ["reduced"] = 21.5 });
+        s.RoomTargetC.Should().Be(23, "the temperature of the active program");
+        HeatingReading.From(Guid.NewGuid(), s).RoomTargetC.Should().Be(23, "a reading keeps the room target");
+        new HeatingSnapshot { ActiveProgram = "reduced", ProgramTemps = s.ProgramTemps }.RoomTargetC.Should().Be(21.5);
+        new HeatingSnapshot { ActiveProgram = "standby", ProgramTemps = s.ProgramTemps }.RoomTargetC.Should().BeNull("a program without a temperature has no target");
+        HeatingProgram.Target(null, s.ProgramTemps).Should().BeNull();
+        HeatingProgram.Target("normal", null).Should().BeNull();
+        s.SupplyTargetC.Should().Be(0, "no demand at the moment of the dump");
+        s.SupplyMinC.Should().Be(20);
+        s.SupplyMaxC.Should().Be(82);
+        s.EcoActive.Should().BeFalse("normalEnergySaving.active = false");
+        s.EcoReason.Should().BeNull("the reason only when the energy saving is on");
+        s.CircuitPumpOn.Should().BeNull("the dump of 1 Nov has no heating.circuits.0.circulation.pump");
         s.CircuitName.Should().Be("Centrala bucatarie");
         s.Schedule.Should().HaveCount(7).And.OnlyContain(x => x.Mode == "normal" && x.Start == "06:00" && x.End == "22:00");
         s.FrostProtection.Should().Be("off");
@@ -110,10 +122,12 @@ public class HeatingParserTests
         var names = s.Unmapped.Select(u => u.Name).ToList();
 
         names.Should().Contain(new[] { "device.serial", "device.etn", "heating.configuration.houseLocation", "gateway.devices",
-            "heating.circuits.0.operating.programs.normalEnergySaving", "device.identification" });
+            "device.identification" });
         names.Should().NotContain(new[] { "heating.gas.consumption.summary.dhw", "heating.dhw.sensors.temperature.outlet",
             "heating.dhw.sensors.temperature.hotWaterStorage", "heating.circuits.0.sensors.temperature.supply", "device.power.battery",
-            "tcu.wifi", "gateway.wifi", "heating.sensors.pressure.supply", "heating.circuits.0.name", "heating.circuits.0" });
+            "tcu.wifi", "gateway.wifi", "heating.sensors.pressure.supply", "heating.circuits.0.name", "heating.circuits.0",
+            "heating.circuits.0.operating.programs.normalEnergySaving", "heating.circuits.0.operating.programs.reducedEnergySaving",
+            "heating.circuits.0.operating.programs.comfortEnergySaving", "heating.circuits.0.temperature", "heating.circuits.0.temperature.levels" });
         (s.FeatureCount - s.Unmapped.Count).Should().BeGreaterThan(40);
     }
 
@@ -189,5 +203,60 @@ public class HeatingParserTests
         ViessmannApi.InstallationsUrl.Should().Be("https://api.viessmann-climatesolutions.com/iot/v2/equipment/installations?includeGateways=true");
         ViessmannApi.CallsPerDay(120).Should().Be(720);
         ViessmannApi.CallsPerDay(60).Should().Be(1440);
+    }
+
+    /// <summary>The B0KA dump with the given features' properties replaced (or the feature added for the boiler, device "0").</summary>
+    private static string B0kaWith(params (string Feature, string PropertiesJson)[] changes)
+    {
+        var root = System.Text.Json.Nodes.JsonNode.Parse(VicareFixtures.B0ka)!;
+        var data = root["data"]!.AsArray();
+        foreach (var (feature, props) in changes)
+        {
+            var f = data.FirstOrDefault(x => (string?)x!["feature"] == feature && (string?)x["deviceId"] == "0");
+            if (f is null)
+            {
+                f = new System.Text.Json.Nodes.JsonObject { ["feature"] = feature, ["deviceId"] = "0" };
+                data.Add(f);
+            }
+            f["properties"] = System.Text.Json.Nodes.JsonNode.Parse(props);
+        }
+        return root.ToJsonString();
+    }
+
+    [Fact]
+    public void Eco_IsTheEnergySavingOfTheActiveProgram_WithItsReason()
+    {
+        const string on = """{"active":{"type":"boolean","value":true},"reason":{"type":"string","value":"summerEco"},"demand":{"type":"string","value":"heating"}}""";
+        const string reduced = """{"value":{"type":"string","value":"reduced"}}""";
+
+        var normalOn = HeatingFeatureParser.Parse(B0kaWith(("heating.circuits.0.operating.programs.normalEnergySaving", on)), ReadAt);
+        normalOn.EcoActive.Should().BeTrue();
+        normalOn.EcoReason.Should().Be("summerEco");
+
+        var otherProgram = HeatingFeatureParser.Parse(B0kaWith(("heating.circuits.0.operating.programs.normalEnergySaving", on),
+            ("heating.circuits.0.operating.programs.active", reduced)), ReadAt);
+        otherProgram.EcoActive.Should().BeFalse("only the energy saving of the active program counts");
+        otherProgram.EcoReason.Should().BeNull();
+
+        var ecoProgram = HeatingFeatureParser.Parse(B0kaWith(("heating.circuits.0.operating.programs.active",
+            """{"value":{"type":"string","value":"normalEnergySaving"}}""")), ReadAt);
+        ecoProgram.EcoActive.Should().BeTrue("the active program is itself an energy saving one");
+        ecoProgram.RoomTargetC.Should().BeNull("an energy saving program has no temperature of its own");
+    }
+
+    [Theory]
+    [InlineData("on", true)]
+    [InlineData("off", false)]
+    public void CircuitPump_AndSupplyTarget(string status, bool expected)
+    {
+        var s = HeatingFeatureParser.Parse(B0kaWith(("heating.circuits.0.circulation.pump", $$$"""{"status":{"type":"string","value":"{{{status}}}"}}"""),
+            ("heating.circuits.0.temperature", """{"value":{"type":"number","value":40.8,"unit":"celsius"}}""")), ReadAt);
+
+        s.CircuitPumpOn.Should().Be(expected);
+        s.SupplyTargetC.Should().Be(40.8);
+        s.Unmapped.Select(u => u.Name).Should().NotContain("heating.circuits.0.circulation.pump");
+        var r = HeatingReading.From(Guid.NewGuid(), s);
+        r.CircuitPumpOn.Should().Be(expected);
+        r.SupplyTargetC.Should().Be(40.8);
     }
 }

@@ -227,6 +227,7 @@ public sealed class KasaDbContext : DbContext
             e.Property(r => r.ActiveProgram).HasMaxLength(IdentifierLength);
             e.Property(r => r.DhwMode).HasMaxLength(IdentifierLength);
             e.Property(r => r.StatusCode).HasMaxLength(IdentifierLength);
+            e.Property(r => r.EcoReason).HasMaxLength(IdentifierLength);
         });
 
         mb.Entity<HeatingEnergyDailyEntity>(e =>

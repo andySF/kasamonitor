@@ -115,12 +115,21 @@ else if (!_settings.HasClientId || _settings.Token is null)
                     {
                         <div class="small text-secondary mt-2">Ținte cameră pe program: @string.Join(" · ", pt.Select(kv => $"{HeatingFormat.Program(kv.Key)} {HeatingFormat.Temp(kv.Value)}"))</div>
                     }
+                    @if (s is not null && (s.SupplyTargetC is not null || s.SupplyMinC is not null || s.EcoActive is not null || s.CircuitPumpOn is not null))
+                    {
+                        <div class="small text-secondary mt-1">
+                            @if (s.SupplyTargetC is { } st) { <span>Țintă tur: @(st > 0 ? HeatingFormat.Temp(st) : "fără cerere")</span> }
+                            @if (s.SupplyMinC is { } mn && s.SupplyMaxC is { } mx) { <span> · limite tur circuit: @HeatingFormat.Temp(mn) – @HeatingFormat.Temp(mx)</span> }
+                            @if (s.EcoActive is { } eco) { <span> · Eco: @(eco ? "activ, " + HeatingFormat.EcoReason(s.EcoReason) : "oprit")</span> }
+                            @if (s.CircuitPumpOn is { } pump) { <span> · pompă circuit: @(pump ? "pornită" : "oprită")</span> }
+                        </div>
+                    }
                 </div>
             </div>
         </div>
     </div>
 
-    <HeatingTimelineCard DeviceId="live.Device.Id" LastReadUtc="live.LastSuccessUtc" />
+    <HeatingTimelineCard DeviceId="live.Device.Id" LastReadUtc="live.LastSuccessUtc" ProgramTemps="live.Snapshot?.ProgramTemps" />
 
     <HeatingReportsCard DeviceId="live.Device.Id" LastReadUtc="live.LastSuccessUtc" />
 

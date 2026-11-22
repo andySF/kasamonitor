@@ -96,6 +96,11 @@ public sealed class HeatingRepository : IHeatingRepository
         row.GasDhwTodayM3 = r.GasDhwTodayM3;
         row.PowerTodayKwh = r.PowerTodayKwh;
         row.HeatTodayKwh = r.HeatTodayKwh;
+        row.RoomTargetC = r.RoomTargetC;
+        row.SupplyTargetC = r.SupplyTargetC;
+        row.EcoActive = r.EcoActive;
+        row.EcoReason = r.EcoReason;
+        row.CircuitPumpOn = r.CircuitPumpOn;
         await _db.SaveChangesAsync(ct);
         _db.ChangeTracker.Clear();
     }
@@ -111,7 +116,8 @@ public sealed class HeatingRepository : IHeatingRepository
             r.BoilerTempC, r.BoilerTargetC, r.SupplyTempC, r.ReturnTempC, r.OutsideTempC, r.RoomTempC, r.DhwTempC, r.DhwTargetC,
             r.BurnerActive, r.ModulationPct, r.PumpPct, r.PressureBar, r.BurnerStarts, r.BurnerHours,
             r.OperatingMode, r.ActiveProgram, r.DhwMode, r.ActiveError, r.StatusCode,
-            r.GasHeatingTodayM3, r.GasDhwTodayM3, r.PowerTodayKwh, r.HeatTodayKwh)).ToList();
+            r.GasHeatingTodayM3, r.GasDhwTodayM3, r.PowerTodayKwh, r.HeatTodayKwh, r.RoomTargetC,
+            r.SupplyTargetC, r.EcoActive, r.EcoReason, r.CircuitPumpOn)).ToList();
     }
 
     public async Task<IReadOnlyList<HeatingCounterReading>> ListCounterReadingsAsync(Guid deviceId, DateTimeOffset fromUtc, DateTimeOffset toUtc, CancellationToken ct)

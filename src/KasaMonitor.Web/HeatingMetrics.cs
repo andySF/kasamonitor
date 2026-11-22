@@ -31,6 +31,10 @@ public static class HeatingMetrics
     public static readonly KasaMetrics.MetricInfo DhwTempInfo = G("heating_dhw_temperature_c", "°C", "Domestic hot water temperature.");
     public static readonly KasaMetrics.MetricInfo DhwTargetInfo = G("heating_dhw_target_c", "°C", "Domestic hot water target temperature.");
     public static readonly KasaMetrics.MetricInfo RoomTempInfo = G("heating_room_temperature_c", "°C", "Room temperature (room sensor of circuit 0).");
+    public static readonly KasaMetrics.MetricInfo RoomTargetInfo = G("heating_room_target_c", "°C", "Room target of circuit 0: the temperature of the active program.");
+    public static readonly KasaMetrics.MetricInfo SupplyTargetInfo = G("heating_supply_target_c", "°C", "Supply target of circuit 0 from the heating curve (heating.circuits.0.temperature; 0 when there is no demand).");
+    public static readonly KasaMetrics.MetricInfo EcoInfo = G("heating_energy_saving_active", "0/1", "Energy saving (Eco) of the active program is on.");
+    public static readonly KasaMetrics.MetricInfo CircuitPumpInfo = G("heating_circuit_pump_on", "0/1", "Circulation pump of circuit 0 on (1) or off (0).");
     public static readonly KasaMetrics.MetricInfo PumpInfo = G("heating_pump_percent", "%", "Internal pump target.");
     public static readonly KasaMetrics.MetricInfo PressureInfo = G("heating_pressure_bar", "bar", "Supply pressure (only when the sensor is connected).");
     public static readonly KasaMetrics.MetricInfo StartsInfo = C("heating_burner_starts_total", "starts", "Burner starts (boiler counter).");
@@ -53,7 +57,7 @@ public static class HeatingMetrics
     public static readonly IReadOnlyList<KasaMetrics.MetricInfo> Catalog = new[]
     {
         BurnerActiveInfo, BurnerPurposeInfo, ModulationInfo, BoilerTempInfo, BoilerTargetInfo, SupplyTempInfo, ReturnTempInfo, OutsideTempInfo, DhwTempInfo, DhwTargetInfo,
-        RoomTempInfo, PumpInfo, PressureInfo, StartsInfo, HoursInfo, GasInfo, GasTotalInfo, HeatInfo, HeatTotalInfo, PowerInfo,
+        RoomTempInfo, RoomTargetInfo, SupplyTargetInfo, EcoInfo, CircuitPumpInfo, PumpInfo, PressureInfo, StartsInfo, HoursInfo, GasInfo, GasTotalInfo, HeatInfo, HeatTotalInfo, PowerInfo,
         PowerTotalInfo, DhwModeInfo, ProgramInfo, WifiInfo, BatteryInfo, ErrorInfo, CallsInfo, LastSuccessInfo, OnlineInfo,
     };
 
@@ -71,6 +75,10 @@ public static class HeatingMetrics
     private static readonly Gauge DhwTemp = Gauge(DhwTempInfo);
     private static readonly Gauge DhwTarget = Gauge(DhwTargetInfo);
     private static readonly Gauge RoomTemp = Gauge(RoomTempInfo);
+    private static readonly Gauge RoomTarget = Gauge(RoomTargetInfo);
+    private static readonly Gauge SupplyTarget = Gauge(SupplyTargetInfo);
+    private static readonly Gauge Eco = Gauge(EcoInfo);
+    private static readonly Gauge CircuitPump = Gauge(CircuitPumpInfo);
     private static readonly Gauge Pump = Gauge(PumpInfo);
     private static readonly Gauge Pressure = Gauge(PressureInfo);
     private static readonly Counter Starts = Counter(StartsInfo);
@@ -92,7 +100,7 @@ public static class HeatingMetrics
 
     private static readonly Collector[] All =
     {
-        BurnerActive, BurnerPurpose, Modulation, BoilerTemp, BoilerTarget, SupplyTemp, ReturnTemp, OutsideTemp, DhwTemp, DhwTarget, RoomTemp, Pump, Pressure,
+        BurnerActive, BurnerPurpose, Modulation, BoilerTemp, BoilerTarget, SupplyTemp, ReturnTemp, OutsideTemp, DhwTemp, DhwTarget, RoomTemp, RoomTarget, SupplyTarget, Eco, CircuitPump, Pump, Pressure,
         Starts, Hours, Gas, GasTotal, Heat, HeatTotal, Power, PowerTotal, DhwMode, Program, Wifi, Battery, Error, Calls, LastSuccess, Online,
     };
 
@@ -134,6 +142,10 @@ public static class HeatingMetrics
             Set(DhwTemp, labels, s.DhwTempC);
             Set(DhwTarget, labels, s.DhwTargetC);
             Set(RoomTemp, labels, s.RoomTempC);
+            Set(RoomTarget, labels, s.RoomTargetC);
+            Set(SupplyTarget, labels, s.SupplyTargetC);
+            Set(Eco, labels, s.EcoActive is { } eco ? (eco ? 1 : 0) : null);
+            Set(CircuitPump, labels, s.CircuitPumpOn is { } cp ? (cp ? 1 : 0) : null);
             Set(Pump, labels, s.PumpPct);
             Set(Pressure, labels, s.PressureBar);
             Set(Wifi, labels, s.WifiDbm);

@@ -17,7 +17,7 @@ namespace KasaMonitor.Data.Migrations
         {
 #pragma warning disable 612, 618
             modelBuilder
-                .HasAnnotation("ProductVersion", "10.0.14")
+                .HasAnnotation("ProductVersion", "10.0.15")
                 .HasAnnotation("Relational:MaxIdentifierLength", 128);
 
             SqlServerModelBuilderExtensions.UseIdentityColumns(modelBuilder);
@@ -696,6 +696,9 @@ namespace KasaMonitor.Data.Migrations
                     b.Property<long?>("BurnerStarts")
                         .HasColumnType("bigint");
 
+                    b.Property<bool?>("CircuitPumpOn")
+                        .HasColumnType("bit");
+
                     b.Property<string>("DhwMode")
                         .HasMaxLength(64)
                         .HasColumnType("nvarchar(64)");
@@ -705,6 +708,13 @@ namespace KasaMonitor.Data.Migrations
 
                     b.Property<double?>("DhwTempC")
                         .HasColumnType("float");
+
+                    b.Property<bool?>("EcoActive")
+                        .HasColumnType("bit");
+
+                    b.Property<string>("EcoReason")
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
 
                     b.Property<double?>("GasDhwTodayM3")
                         .HasColumnType("float");
@@ -737,12 +747,18 @@ namespace KasaMonitor.Data.Migrations
                     b.Property<double?>("ReturnTempC")
                         .HasColumnType("float");
 
+                    b.Property<double?>("RoomTargetC")
+                        .HasColumnType("float");
+
                     b.Property<double?>("RoomTempC")
                         .HasColumnType("float");
 
                     b.Property<string>("StatusCode")
                         .HasMaxLength(64)
                         .HasColumnType("nvarchar(64)");
+
+                    b.Property<double?>("SupplyTargetC")
+                        .HasColumnType("float");
 
                     b.Property<double?>("SupplyTempC")
                         .HasColumnType("float");

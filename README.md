@@ -7,7 +7,7 @@ plugs and energy meters (e.g. Shelly EM Gen3, local JSON-RPC; the only write is 
 with SQL Server, a web UI on port 8910 and a Prometheus `/metrics` endpoint. An optional Prometheus + Grafana stack
 with a ready-made dashboard and alert rules is included.
 
-Version: **0.14.0** (`Directory.Build.props`). Docker image: `duobit/kasamonitor`.
+Version: **0.15.0** (`Directory.Build.props`). Docker image: `duobit/kasamonitor`.
 
 **Requirements:** SQL Server 2019+ (any edition reachable from the Docker host; Express is limited to 10 GB per
 database), a Docker host on the same LAN as the devices (host networking). Up to 0.11 the data were in a SQLite file;
@@ -92,7 +92,7 @@ TP-Link (Tapo app) account in `/settings/tplink` and press **Adaugă** → TP-Li
   consumers, climate (with heating degree days and the energy signature), costs and events; Δ at the same share of the
   previous period, drill-down, CSV per section; and
   „Rapoarte” on `/centrala` (gas, boiler electricity, heat produced). See [History](#history-history-istoric).
-- **Version in the menu**: „v0.14.0” at the right of the navigation bar; the tooltip shows the commit and the build time.
+- **Version in the menu**: „v0.15.0” at the right of the navigation bar; the tooltip shows the commit and the build time.
 - **Browser errors in the server log**: JavaScript errors and the Blazor error banner are reported to
   `POST /api/client-error` and logged at Warning (category `KasaMonitor.ClientErrors`), so `docker logs` shows them.
 - **HTTP API for the appliance detection** (`/api/nilm/*`, LAN only): list, sheet, label, merge, add to, hide, regroup,
@@ -726,8 +726,8 @@ controller, not measured by a gas meter**: compare it with the gas bill before r
 
 **Burner timeline (since 0.8.4).** The first chart of `/centrala`, „Cronologie arzător”, shows when the burner burns and
 for what — **heating** (orange), **hot water** (blue), **burning, purpose unknown** (dark grey); off = no bar — over
-6 h / 24 h / 3 days / 7 days (◀ ▶ move by one window), with the supply, hot water (target dashed) and room temperatures
-and the modulation and pump % on the same time axis (they replace the former „Ultimele 24 de ore” charts). The tooltip of
+6 h / 24 h / 3 days / 7 days (◀ ▶ move by one window), with the supply (target dashed, since 0.15.0), hot water (target
+dashed) and room temperatures (target dashed, since 0.15.0), an „Eco” row under the burner bars (0.15.0) and the modulation and pump % on the same time axis (they replace the former „Ultimele 24 de ore” charts). The tooltip of
 a bar gives start, end, duration, mean modulation and the gas the boiler's counters attributed to it. The Viessmann API
 has no explicit „heating hot water” signal (no `heating.dhw.charging` on a Vitodens 050-W), so the purpose is inferred
 (`BurnerTimeline`, Core) on each contiguous run of `BurnerActive = true` (a missing reading of up to 5 minutes beyond the
@@ -742,6 +742,19 @@ than the supply, or the supply stayed flat (< 1 °C) and the hot water rose ≥ 
 and the hot water did not rise more; otherwise unknown. The same rule, applied at every poll to the readings of the last
 12 hours, gives `heating_burner_purpose_info`: a run still going may be „unknown” until a counter moves. The page
 re-evaluates closed runs when the late counter arrives; samples already in Prometheus keep the value they had.
+Since 0.15.0 every reading also stores (migration `BoilerCircuit`, all null in older rows):
+- `RoomTargetC`: the room target, the temperature of the active program (`heating.circuits.0.operating.programs.<program>`,
+  e.g. normal 22 °C, reduced 21.5 °C; null for a program without a temperature, such as standby or an energy saving one).
+  For readings saved before 0.15.0 the chart estimates it from their `ActiveProgram` and the program temperatures of now,
+  and says so under the chart;
+- `SupplyTargetC`: `heating.circuits.0.temperature`, the supply target of circuit 0 from the heating curve; 0 when there is
+  no demand, drawn as no line;
+- `EcoActive`, `EcoReason`: the energy saving of the active program (`…programs.<program>EnergySaving`, or the active program
+  is itself one), the reason only while it is on (e.g. `summerEco`). The „Eco” row of the timeline runs from the first reading
+  with it on to the next reading (`EcoTimeline`, Core);
+- `CircuitPumpOn`: `heating.circuits.0.circulation.pump`, drawn as 0/100 on the modulation chart.
+The lowest and highest supply of the circuit (`heating.circuits.0.temperature.levels`, 20–82 °C on a 050-W) are settings:
+shown on `/centrala` with the supply target, Eco and the circuit pump, not stored.
 
 **Storage.** `HeatingDevices`, `HeatingReadings` (one row per poll: about 720 rows a day at 120 s; kept forever unless
 `HeatingReadingsRetentionDays` > 0),
@@ -761,6 +774,10 @@ boiler does not report has no series):
 | `heating_return_temperature_c`, `heating_outside_temperature_c` | gauge | °C | `heating.sensors.temperature.return` / `.outside` (not on 050-W) |
 | `heating_dhw_temperature_c`, `heating_dhw_target_c` | gauge | °C | `heating.dhw.sensors.temperature.*`, `heating.dhw.temperature.main` |
 | `heating_room_temperature_c` | gauge | °C | `heating.circuits.0.sensors.temperature.room` |
+| `heating_room_target_c` | gauge | °C | temperature of the active program (0.15.0) |
+| `heating_supply_target_c` | gauge | °C | `heating.circuits.0.temperature` (0 = no demand; 0.15.0) |
+| `heating_energy_saving_active` | gauge | 0/1 | `heating.circuits.0.operating.programs.<active>EnergySaving` (0.15.0) |
+| `heating_circuit_pump_on` | gauge | 0/1 | `heating.circuits.0.circulation.pump` (0.15.0) |
 | `heating_pump_percent` | gauge | % | `heating.boiler.pumps.internal.target` |
 | `heating_pressure_bar` | gauge | bar | `heating.sensors.pressure.supply` (only when connected) |
 | `heating_burner_starts_total`, `heating_burner_hours_total` | counter | starts, h | `heating.burners.0.statistics` |

@@ -39,7 +39,12 @@ public sealed record HeatingReading(
     double? GasHeatingTodayM3 = null,
     double? GasDhwTodayM3 = null,
     double? PowerTodayKwh = null,
-    double? HeatTodayKwh = null)
+    double? HeatTodayKwh = null,
+    double? RoomTargetC = null,
+    double? SupplyTargetC = null,
+    bool? EcoActive = null,
+    string? EcoReason = null,
+    bool? CircuitPumpOn = null)
 {
     /// <summary>
     /// The reading of a snapshot, with the boiler's "today" counters (gas per purpose in m³, electricity and heat summed
@@ -51,7 +56,8 @@ public sealed record HeatingReading(
         s.BurnerActive, s.ModulationPct, s.PumpPct, s.PressureBar, s.BurnerStarts, s.BurnerHours,
         s.OperatingMode, s.ActiveProgram, s.DhwMode, s.ActiveError, s.StatusCode,
         GasToday(s.GasHeating, kwhPerM3, assumedGasUnit), GasToday(s.GasDhw, kwhPerM3, assumedGasUnit),
-        SumToday(s.PowerHeating, s.PowerDhw), SumToday(s.HeatHeating, s.HeatDhw));
+        SumToday(s.PowerHeating, s.PowerDhw), SumToday(s.HeatHeating, s.HeatDhw), s.RoomTargetC,
+        s.SupplyTargetC, s.EcoActive, s.EcoReason, s.CircuitPumpOn);
 
     /// <summary>"Today" of a summary: currentDay, or day[0] of a series.</summary>
     public static double? Today(EnergySummary? summary) =>

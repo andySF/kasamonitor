@@ -29,6 +29,14 @@ public static class HeatingFormat
         _ => mode,
     };
 
+    /// <summary>Why the boiler saves energy, in Romanian (the API's reason codes; an unknown one is shown as it is).</summary>
+    public static string EcoReason(string? reason) => reason switch
+    {
+        "summerEco" => "Eco de vară (temperatura de afară peste prag)",
+        null or "" => "—",
+        _ => reason,
+    };
+
     public static string Program(string? program) => program switch
     {
         null => "—",

@@ -77,6 +77,30 @@ public static class HeatingFeatureParser
             if (Number($"heating.circuits.0.operating.programs.{program}", "temperature") is { } t)
                 programTemps[program] = t;
 
+        // Energy saving: the feature of the active program (normal → normalEnergySaving); the active program may also be
+        // one of them. All three are read, so none stays "unmapped".
+        var activeProgram = Text("heating.circuits.0.operating.programs.active");
+        var eco = new Dictionary<string, (bool? Active, string? Reason)>();
+        foreach (var program in new[] { "normal", "comfort", "reduced" })
+        {
+            var f = Main($"heating.circuits.0.operating.programs.{program}EnergySaving");
+            if (f is not null) eco[program + "EnergySaving"] = (Bool(f, "active"), Str(f, "reason"));
+        }
+        bool? ecoActive = null;
+        string? ecoReason = null;
+        if (activeProgram is { } ap)
+        {
+            var isEcoProgram = ap.EndsWith("EnergySaving", StringComparison.Ordinal);
+            var key = isEcoProgram ? ap : ap + "EnergySaving";
+            if (eco.TryGetValue(key, out var e))
+            {
+                ecoActive = isEcoProgram || e.Active == true ? true : e.Active;
+                if (ecoActive == true) ecoReason = e.Reason;
+            }
+            else if (isEcoProgram) ecoActive = true;
+        }
+        var circuitPump = Text("heating.circuits.0.circulation.pump", "status");
+
         var circuitName = Text("heating.circuits.0.name", "name");
         var circuitNameOld = Text("heating.circuits.0", "name");
 
@@ -113,7 +137,13 @@ public static class HeatingFeatureParser
             BurnerStarts = Number("heating.burners.0.statistics", "starts") is { } starts ? (long)Math.Round(starts) : null,
             BurnerHours = Num(Main("heating.burners.0.statistics"), "hours"),
             OperatingMode = Text("heating.circuits.0.operating.modes.active"),
-            ActiveProgram = Text("heating.circuits.0.operating.programs.active"),
+            ActiveProgram = activeProgram,
+            SupplyTargetC = Number("heating.circuits.0.temperature"),
+            SupplyMinC = Number("heating.circuits.0.temperature.levels", "min"),
+            SupplyMaxC = Num(Main("heating.circuits.0.temperature.levels"), "max"),
+            EcoActive = ecoActive,
+            EcoReason = ecoReason,
+            CircuitPumpOn = circuitPump is null ? null : circuitPump.Equals("on", StringComparison.OrdinalIgnoreCase),
             ProgramTemps = programTemps,
             CircuitName = circuitName ?? circuitNameOld,
             Schedule = Schedule(Main("heating.circuits.0.heating.schedule")),

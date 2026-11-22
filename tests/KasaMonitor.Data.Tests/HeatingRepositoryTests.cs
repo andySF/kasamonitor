@@ -168,7 +168,8 @@ public class HeatingRepositoryTests
         using var db = new TestDbFactory();
         var repo = new HeatingRepository(db.CreateContext());
         var id = Guid.NewGuid();
-        var r = new HeatingReading(id, T0, null, 20, 36.2, null, null, 23.7, 34.1, 45, false, 0, 0, null, 31089, 2891, "heating", "normal", "eco", null, "S.6");
+        var r = new HeatingReading(id, T0, null, 20, 36.2, null, null, 23.7, 34.1, 45, false, 0, 0, null, 31089, 2891, "heating", "normal", "eco", null, "S.6",
+            RoomTargetC: 23, SupplyTargetC: 40.8, EcoActive: true, EcoReason: "summerEco", CircuitPumpOn: true);
         await repo.SaveReadingAsync(r, CancellationToken.None);
         await repo.SaveReadingAsync(r with { TsUtc = T0.AddMinutes(2), BurnerActive = true, ModulationPct = 40 }, CancellationToken.None);
 

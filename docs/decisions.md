@@ -541,3 +541,25 @@ and rebuilds the runs of its signature. A re-clustering calculates the shadows a
 event was marked stays in the cumulative energy metric, a counter, as with every rebuild. `CorrectAsync` of the other runs still counts a shadow as
 „another event during the run”. The first rebuild deletes the runs from events of those signatures from the plug's first data on (30 days of stream, at most).
 The signatures involved are measured by a plug, so their runs were and stay out of „detected”, `kasa_appliance_*` and `/history`.
+
+---
+
+## 0.15.0 – The targets, Eco and the circuit pump in the burner timeline
+
+**Context.** The burner timeline showed the room and supply temperatures without their targets, so a run could not be read
+against what the boiler was aiming for. The Viessmann API already sent, at each poll, the temperature of every program and
+the active program, the supply target of the circuit (`heating.circuits.0.temperature`), the energy saving state of each
+program and the circulation pump of the circuit; KasaMonitor stored only the program's name (a dump of 22 Nov 2026 listed
+what was read and what was not).
+
+**Decision.** Each reading stores the room target (the temperature of its active program), the supply target, Eco on/off
+with its reason and the circuit pump (five nullable columns, one migration `BoilerCircuit`). The timeline draws both targets
+dashed, an „Eco” row under the burner bars and the pump as 0/100; a supply target of 0 (no demand) is no line rather than a
+drop to 0 °C. The circuit's supply limits are settings and are only shown on `/centrala`. Older readings are not rewritten:
+the chart estimates their room target from the program then and the temperatures now, and a note under the chart says so;
+the other values stay empty for them.
+
+**Consequences.** The estimate is wrong for a period in which a program's temperature was changed afterwards; from 0.15.0
+on, the stored values are exact. No new API call: the values were already in the response. Four new metric families and
+MQTT entities follow the same values.
+
